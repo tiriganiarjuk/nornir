@@ -1,0 +1,12 @@
+[package]
+name = "read_tomlx_json"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "read_tomlx_json"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { workspace = true }
+reader_io = { path = "../../capability/reader_io" }

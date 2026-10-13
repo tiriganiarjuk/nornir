@@ -14,7 +14,7 @@ Tier 2: CAPABILITY (feature libraries, may have I/O)
     capability/* — depend on core + other capability crates
 
 Tier 3: BINARIES (executables and Python extensions)
-    gates/*, cli/*, writers/*, hooks/*, senders/*, converters/*,
+    gates/*, readers/*, cli/*, writers/*, hooks/*, senders/*, converters/*,
     rewriters/*, watchers/*, dispatchers/*, interceptors/*, daemons/*
     — depend on core + capability, NEVER on other binaries
 ```
@@ -34,6 +34,7 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 | `check_` | `cli/` | Validates a file against a schema, exits 0/1/2 |
 | `convert_` | `converters/` | Reads one format on stdin, writes another on stdout |
 | `gate_` | `gates/` | PyO3 module: validates at a pipeline stage boundary |
+| `read_` | `readers/` | PyO3 module: reads one file format, validates against a schema named at call time, returns a JSON string |
 | `hook_` | `hooks/` | Intercepts an LLM tool call for security/quality |
 | `send_` | `senders/` | Fire-and-forget datagram to hlidskjalf socket |
 | `rewrite_` | `rewriters/` | Reads JSON on stdin, modifies content, writes JSON on stdout |
@@ -52,7 +53,9 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 
 **Capability:** Descriptive name, no `_core` suffix. Examples: `write_engine`, `hook_io`, `datagram_io`, `saga_runner`.
 
-**Gates:** `gate_{stage}_{direction}` — stage matches schema name with underscores, direction is `input` or `output`.
+**Gates:** `gate_{stage}_{direction}` — stage matches schema name with underscores, direction is `input` or `output`. A gate is custom: it embeds one schema at compile time, so it carries that schema's name.
+
+**Readers:** `read_{format}_validate_json` — four slots: `read` is the direction, `{format}` the input format, `validate` says a schema is a parameter (`read(file_path, schema_name, schema_dir)`), `json` the output format. A reader is general: any schema, any caller. Self-describing formats drop the `validate` slot (`read_tomlx_json`, `read_tomlx_json_schema`). Thin wrappers over `reader_io`.
 
 ### Identity Rule
 
@@ -168,7 +171,8 @@ Before writing logic, check if it already exists:
 | Line-level diffing | `diff_core` |
 | Hook stdin/stdout/decision contract | `hook_io` |
 | Hook rule parsing from TOML | `hook_io::rules` |
-| Gate I/O orchestration | `gate_io` |
+| Gate I/O orchestration (compile-time schema) | `gate_io` |
+| Reader I/O: format→JSON + schema loaded by name at call time | `reader_io` |
 | Datagram emission to Hlidskjalf | `datagram_io` |
 | Schema constants | `schemas_embedded` |
 | File-arg diagnostic CLI contract | `io_check` |
@@ -186,6 +190,7 @@ Do NOT use bare `cargo build --release` — it skips symlinks, verification, and
 nornir_deploy --all                  # rebuild + deploy everything
 nornir_deploy --non-pyo3             # all cargo crates, skip maturin gates
 nornir_deploy --build gates          # single category
+nornir_deploy --build readers        # the reader modules (maturin, like gates)
 nornir_deploy --build hooks,writers  # multiple categories
 nornir_deploy --list                 # show categories and crate counts
 ```
@@ -213,7 +218,7 @@ After schema changes (draupnir regeneration): `nornir_deploy --build gates`
 
 - All tests must pass before committing. Run `cargo test -p {crate}` per crate.
 - PyO3 crates (`cdylib+rlib`) fail to link without Python headers — use `nornir_deploy --build <category>` for those.
-- Full workspace (excluding PyO3 crates): `cargo test --workspace $(for d in gates/*/; do echo "--exclude $(basename $d)"; done) --exclude intercept_io --exclude traffic_interceptor_rewriter`
+- Full workspace (excluding PyO3 crates): `cargo test --workspace $(for d in gates/*/ readers/*/; do echo "--exclude $(basename $d)"; done) --exclude intercept_io --exclude traffic_interceptor_rewriter`
 - Security hooks require dual-direction tests: malicious input IS detected, benign input is NOT flagged.
 - Tests verify specification, not implementation. "Does `severity_rank("error")` return 2?" not "Does the internal BTreeMap have 4 entries?"
 - Pure logic must be testable: takes parameters, returns `Result`, no side effects.

@@ -1802,17 +1802,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gate_verdandi_input"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "jsonschema",
- "pyo3",
- "serde_json",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3754,6 +3743,73 @@ dependencies = [
  "time",
  "unicode-segmentation",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "read_json_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
+name = "read_toml_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
+name = "read_tomlx_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
+name = "read_tomlx_json_schema"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
+name = "read_toon_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
+name = "read_xml_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
+name = "read_yaml_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
+name = "reader_io"
+version = "0.1.0"
+dependencies = [
+ "error_core",
+ "format_core",
+ "jsonschema",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

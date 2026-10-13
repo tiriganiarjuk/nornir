@@ -163,6 +163,18 @@ gate_crates = [
     "gate_output_structure_input",
     "gate_output_content_input",
     "gate_output_display_input",
-    "gate_verdandi_input",
 ]
 gate_verify = "python_import"
+
+[readers]
+python_version = "python3.13"
+pyo3_crates = [
+    "read_json_validate_json",
+    "read_yaml_validate_json",
+    "read_toml_validate_json",
+    "read_toon_validate_json",
+    "read_xml_validate_json",
+    "read_tomlx_json",
+    "read_tomlx_json_schema",
+]
+pyo3_verify = "python_import"

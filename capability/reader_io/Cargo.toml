@@ -1,15 +1,14 @@
 [package]
-name = "gate_verdandi_input"
+name = "reader_io"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "gate_verdandi_input"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
-pyo3 = { workspace = true }
-format_core = { path = "../../core/format_core" }
 error_core = { path = "../../core/error_core" }
+format_core = { path = "../../core/format_core" }
 jsonschema = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
