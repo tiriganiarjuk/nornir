@@ -344,6 +344,35 @@ mod tests {
     }
 
     #[test]
+    fn no_direct_file_io_messages_present() {
+        let msgs = messages("no_direct_file_io");
+        assert!(!msgs.detail.is_empty());
+        assert!(!msgs.signal.is_empty());
+        assert!(!msgs.direction.is_empty());
+        assert!(!msgs.canary.is_empty());
+    }
+
+    #[test]
+    fn run_checks_v2_blocks_direct_file_io_in_impure_simple() {
+        let source = b"import tomllib\n";
+        let violations = run_checks_v2("/project/src/pkg/logic/impure/registry/simple.py", source);
+        let hit = violations
+            .iter()
+            .find(|v| v.check_name == "no_direct_file_io")
+            .expect("no_direct_file_io must fire on import tomllib in the impure zone");
+        assert_eq!(hit.severity, Severity::Blocked);
+        assert!(hit.message.contains("read_toml_validate_json"));
+        assert!(!hit.direction.is_empty(), "messages must be stamped");
+    }
+
+    #[test]
+    fn run_checks_v2_script_shebang_not_subject_to_direct_file_io() {
+        let source = b"#!/usr/bin/env -S uv run --script\nimport tomllib\n";
+        let violations = run_checks_v2("/project/scripts/gen.py", source);
+        assert!(violations.iter().all(|v| v.check_name != "no_direct_file_io"));
+    }
+
+    #[test]
     fn run_checks_on_empty_file() {
         let violations = run_checks("/test/empty.py", b"");
         assert!(violations.is_empty());

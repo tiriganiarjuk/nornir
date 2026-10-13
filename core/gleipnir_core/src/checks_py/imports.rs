@@ -2,7 +2,7 @@
 //!
 //! Checks: no_unsafe_imports, impure_module_quarantine,
 //! no_type_checking_imports, no_parent_imports, no_disallowed_stdlib,
-//! no_sys_path_mutation.
+//! no_direct_file_io, no_sys_path_mutation.
 
 use crate::classify;
 use crate::parsing::{
@@ -319,7 +319,6 @@ const DISALLOWED_STDLIB: &[(&str, &str)] = &[
     ("argparse", "typer"),
     ("logging", "loguru"),
     ("unittest", "pytest"),
-    ("configparser", "toml + pydantic"),
     ("json", "pydantic model_dump_json() / model_validate_json()"),
 ];
 
@@ -356,6 +355,256 @@ pub fn check_no_disallowed_stdlib(
         }
     }
 
+    violations
+}
+
+// -------------------------------------------------------------------------
+// no_direct_file_io — structured data enters only through compiled gates
+// -------------------------------------------------------------------------
+//
+// Proxy: "Python performs no direct file IO." Two surfaces, one check:
+//   A. imports of structured-file parsers (tomllib, yaml, ...) — incl. aliased
+//      and dynamic (__import__ / importlib.import_module) forms
+//   B. raw file handles: open(), .open(), .read_text/.read_bytes/.write_text/.write_bytes
+// The violation message names the replacement for the surface that fired.
+// `json` is deliberately absent: no_disallowed_stdlib owns it (in-memory,
+// replacement is model_validate_json). json.load(fh) is still caught — by the
+// handle on the open() line.
+
+const NO_READER_YET: &str = "no reader gate exists for it yet — the violation stands until one does";
+const READ_REPLACEMENT: &str = "a read_*_validate_json reader for structured data";
+const WRITE_REPLACEMENT: &str = "a nornir writer tool";
+
+/// Structured-file parsers that bypass the reader gates. (top-level module, replacement)
+const GATE_BYPASS_PARSERS: &[(&str, &str)] = &[
+    ("tomllib", "read_toml_validate_json"),
+    ("tomli", "read_toml_validate_json"),
+    ("toml", "read_toml_validate_json"),
+    ("tomlkit", "read_toml_validate_json"),
+    ("configparser", "read_toml_validate_json"),
+    ("tomli_w", WRITE_REPLACEMENT),
+    ("yaml", "read_yaml_validate_json"),
+    ("ruamel", "read_yaml_validate_json"),
+    ("xml", "read_xml_validate_json"),
+    ("lxml", "read_xml_validate_json"),
+    ("csv", NO_READER_YET),
+    ("pickle", NO_READER_YET),
+    ("shelve", NO_READER_YET),
+];
+
+/// Method names that are direct file IO on any receiver. (method, verb, replacement)
+const DIRECT_FILE_METHODS: &[(&str, &str, &str)] = &[
+    ("read_text", "read", READ_REPLACEMENT),
+    ("read_bytes", "read", READ_REPLACEMENT),
+    ("write_text", "write", WRITE_REPLACEMENT),
+    ("write_bytes", "write", WRITE_REPLACEMENT),
+];
+
+/// Receivers whose `.open(` is not a file handle. Grows only with a no-fire
+/// test carrying the real snippet.
+const NON_FILE_OPEN_RECEIVERS: &[&str] = &["webbrowser", "pdfplumber", "Image"];
+
+/// Look up the top-level segment of a dotted module in the parser table.
+fn parser_replacement(module: &str) -> Option<(&'static str, &'static str)> {
+    let top = module.split('.').next().unwrap_or("");
+    GATE_BYPASS_PARSERS
+        .iter()
+        .find(|(name, _)| *name == top)
+        .map(|&(name, replacement)| (name, replacement))
+}
+
+fn parser_violation(line: usize, module_top: &str, replacement: &str, via_suffix: &str) -> Violation {
+    violation(line, format!("'{module_top}' bypasses the reader gates{via_suffix} — use {replacement}"))
+}
+
+/// Surface A1: `import x[.y] [as z]` — unwraps aliased_import, which the
+/// sibling check's loop never sees.
+fn collect_parser_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
+    for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let module_node = match child.kind() {
+                "dotted_name" => Some(child),
+                "aliased_import" => child.child_by_field_name("name"),
+                _ => None,
+            };
+            let Some(module_node) = module_node else { continue };
+            let module = node_text(module_node, source.source_bytes);
+            if let Some((top, replacement)) = parser_replacement(module) {
+                violations.push(parser_violation(node_line(node), top, replacement, ""));
+            }
+        }
+    }
+}
+
+/// Surface A2: `from x[.y] import ...` — absolute imports only.
+fn collect_parser_from_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
+    for node in find_nodes_by_type(source.tree.root_node(), "import_from_statement") {
+        let (module, level) = extract_module_info(node, source.source_bytes);
+        if level != 0 {
+            continue;
+        }
+        if let Some((top, replacement)) = parser_replacement(&module) {
+            violations.push(parser_violation(node_line(node), top, replacement, ""));
+        }
+    }
+}
+
+/// Text of a string-literal node without its quotes, or None if not a plain literal.
+fn string_literal_text<'a>(node: tree_sitter::Node, source: &'a [u8]) -> Option<&'a str> {
+    if node.kind() != "string" {
+        return None;
+    }
+    let text = node_text(node, source);
+    let trimmed = text.trim_matches(|c| c == '"' || c == '\'');
+    if trimmed.len() == text.len() {
+        return None;
+    }
+    Some(trimmed)
+}
+
+/// First positional argument of a call, if any.
+fn first_positional_arg(call: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let args = call.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let first = args
+        .named_children(&mut cursor)
+        .find(|a| a.kind() != "keyword_argument" && a.kind() != "comment");
+    first
+}
+
+/// Is this call `__import__(...)` or `<anything>.import_module(...)`?
+fn is_dynamic_import(func: tree_sitter::Node, source: &[u8]) -> bool {
+    match func.kind() {
+        "identifier" => node_text(func, source) == "__import__",
+        "attribute" => func
+            .child_by_field_name("attribute")
+            .is_some_and(|a| node_text(a, source) == "import_module"),
+        _ => false,
+    }
+}
+
+/// Surface A3: dynamic import of a parser with a string-literal module name.
+fn dynamic_import_violation(call: tree_sitter::Node, func: tree_sitter::Node, source: &[u8]) -> Option<Violation> {
+    if !is_dynamic_import(func, source) {
+        return None;
+    }
+    let arg = first_positional_arg(call)?;
+    let module = string_literal_text(arg, source)?;
+    let (top, replacement) = parser_replacement(module)?;
+    Some(parser_violation(node_line(call), top, replacement, " via dynamic import"))
+}
+
+/// Walk an attribute chain's receiver leftwards to its root identifier.
+fn receiver_root<'a>(mut node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    loop {
+        match node.kind() {
+            "identifier" => return Some(node),
+            "attribute" => node = node.child_by_field_name("object")?,
+            "call" => node = node.child_by_field_name("function")?,
+            "subscript" => node = node.child_by_field_name("value")?,
+            "parenthesized_expression" => node = node.named_child(0)?,
+            _ => return None,
+        }
+    }
+}
+
+/// The mode string of an `open(...)` call: second positional argument or `mode=`.
+fn open_mode<'a>(call: tree_sitter::Node, source: &'a [u8]) -> Option<&'a str> {
+    let args = call.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let mut positional_index = 0;
+    for arg in args.named_children(&mut cursor) {
+        if arg.kind() == "keyword_argument" {
+            let is_mode = arg
+                .child_by_field_name("name")
+                .is_some_and(|n| node_text(n, source) == "mode");
+            if is_mode {
+                return arg.child_by_field_name("value").and_then(|v| string_literal_text(v, source));
+            }
+            continue;
+        }
+        if arg.kind() == "comment" {
+            continue;
+        }
+        if positional_index == 1 {
+            return string_literal_text(arg, source);
+        }
+        positional_index += 1;
+    }
+    None
+}
+
+fn is_write_mode(mode: &str) -> bool {
+    mode.chars().any(|c| matches!(c, 'w' | 'a' | 'x' | '+'))
+}
+
+/// Surfaces B1/B2: `open(` and `<receiver>.open(`.
+fn open_violation(call: tree_sitter::Node, func: tree_sitter::Node, source: &[u8]) -> Option<Violation> {
+    let receiver_display = match func.kind() {
+        "identifier" if node_text(func, source) == "open" => "open".to_string(),
+        "attribute" => {
+            let is_open = func
+                .child_by_field_name("attribute")
+                .is_some_and(|a| node_text(a, source) == "open");
+            if !is_open {
+                return None;
+            }
+            let object = func.child_by_field_name("object")?;
+            if let Some(root) = receiver_root(object) {
+                if NON_FILE_OPEN_RECEIVERS.contains(&node_text(root, source)) {
+                    return None;
+                }
+            }
+            node_text(func, source).to_string()
+        }
+        _ => return None,
+    };
+
+    let line = node_line(call);
+    match open_mode(call, source) {
+        Some(mode) if is_write_mode(mode) => Some(violation(
+            line,
+            format!("direct file write ({receiver_display}, mode '{mode}') — use {WRITE_REPLACEMENT}"),
+        )),
+        _ => Some(violation(
+            line,
+            format!("direct file read ({receiver_display}) — use {READ_REPLACEMENT}"),
+        )),
+    }
+}
+
+/// Surface B3: `.read_text(` / `.read_bytes(` / `.write_text(` / `.write_bytes(` on any receiver.
+fn file_method_violation(call: tree_sitter::Node, func: tree_sitter::Node, source: &[u8]) -> Option<Violation> {
+    if func.kind() != "attribute" {
+        return None;
+    }
+    let method = node_text(func.child_by_field_name("attribute")?, source);
+    let &(name, verb, replacement) = DIRECT_FILE_METHODS.iter().find(|(m, _, _)| *m == method)?;
+    Some(violation(
+        node_line(call),
+        format!("direct file {verb} (.{name}) — use {replacement}"),
+    ))
+}
+
+fn collect_call_surfaces(source: &ParsedSource, violations: &mut Vec<Violation>) {
+    for call in find_nodes_by_type(source.tree.root_node(), "call") {
+        let Some(func) = call.child_by_field_name("function") else { continue };
+        let bytes = source.source_bytes;
+        let hit = dynamic_import_violation(call, func, bytes)
+            .or_else(|| open_violation(call, func, bytes))
+            .or_else(|| file_method_violation(call, func, bytes));
+        if let Some(v) = hit {
+            violations.push(v);
+        }
+    }
+}
+
+pub fn check_no_direct_file_io(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    collect_parser_imports(source, &mut violations);
+    collect_parser_from_imports(source, &mut violations);
+    collect_call_surfaces(source, &mut violations);
     violations
 }
 
@@ -918,11 +1167,10 @@ mod tests {
     }
 
     #[test]
-    fn configparser_caught() {
-        let parsed = parse("import configparser\n");
-        let violations = check_no_disallowed_stdlib(&parsed, &default_config());
-        assert_eq!(violations.len(), 1);
-        assert!(violations[0].message.contains("pydantic"));
+    fn json_import_still_disallowed_stdlib_only() {
+        let parsed = parse("import json\n");
+        assert_eq!(check_no_disallowed_stdlib(&parsed, &default_config()).len(), 1);
+        assert!(check_no_direct_file_io(&parsed, &default_config()).is_empty());
     }
 
     #[test]
@@ -937,6 +1185,241 @@ mod tests {
         let parsed = parse("import typer\n");
         let violations = check_no_disallowed_stdlib(&parsed, &default_config());
         assert!(violations.is_empty());
+    }
+
+    // -- no_direct_file_io --
+
+    fn direct_io(code: &str) -> Vec<Violation> {
+        check_no_direct_file_io(&parse(code), &default_config())
+    }
+
+    // fire: parser imports
+
+    #[test]
+    fn direct_io_tomllib_import_caught() {
+        let v = direct_io("import tomllib\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("'tomllib' bypasses the reader gates"), "{}", v[0].message);
+        assert!(v[0].message.contains("read_toml_validate_json"));
+    }
+
+    #[test]
+    fn direct_io_yaml_from_import_caught() {
+        let v = direct_io("from yaml import safe_load\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("read_yaml_validate_json"));
+    }
+
+    #[test]
+    fn direct_io_xml_submodule_caught() {
+        let v = direct_io("import xml.etree.ElementTree as ElementTree\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("read_xml_validate_json"));
+    }
+
+    #[test]
+    fn direct_io_tomli_w_names_writer() {
+        let v = direct_io("import tomli_w\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("writer tool"));
+    }
+
+    #[test]
+    fn direct_io_configparser_caught() {
+        let v = direct_io("import configparser\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("read_toml_validate_json"));
+        assert!(check_no_disallowed_stdlib(&parse("import configparser\n"), &default_config()).is_empty());
+    }
+
+    #[test]
+    fn direct_io_csv_states_no_reader_yet() {
+        let v = direct_io("import csv\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("no reader gate exists"));
+    }
+
+    // fire: file handles
+
+    #[test]
+    fn direct_io_path_open_caught() {
+        let v = direct_io("from pathlib import Path\ndef load(path: Path):\n    with path.open(\"rb\") as fh:\n        return fh.read()\n");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].line, 3);
+        assert!(v[0].message.contains("direct file read (path.open)"), "{}", v[0].message);
+    }
+
+    #[test]
+    fn direct_io_builtin_open_read_caught() {
+        let v = direct_io("def load(p: str):\n    with open(p) as fh:\n        return fh.read()\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("direct file read (open)"));
+        assert!(v[0].message.contains("read_*_validate_json"));
+    }
+
+    #[test]
+    fn direct_io_builtin_open_write_mode_caught() {
+        let v = direct_io("def save(p: str, s: str):\n    with open(p, \"w\") as fh:\n        fh.write(s)\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("direct file write (open, mode 'w')"), "{}", v[0].message);
+        assert!(v[0].message.contains("writer tool"));
+    }
+
+    #[test]
+    fn direct_io_open_mode_keyword_caught() {
+        let v = direct_io("fh = open(p, mode=\"ab\")\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("direct file write"));
+    }
+
+    #[test]
+    fn direct_io_read_text_caught() {
+        let v = direct_io("content = output_path.read_text()\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("direct file read (.read_text)"));
+        assert!(v[0].message.contains("read_*_validate_json"));
+    }
+
+    #[test]
+    fn direct_io_write_text_caught() {
+        let v = direct_io("output_path.write_text(report, encoding=\"utf-8\")\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("direct file write (.write_text)"));
+        assert!(v[0].message.contains("writer tool"));
+    }
+
+    #[test]
+    fn direct_io_write_bytes_caught() {
+        let v = direct_io("path.write_bytes(json_bytes)\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("direct file write (.write_bytes)"));
+    }
+
+    #[test]
+    fn direct_io_unbound_path_read_text_caught() {
+        let v = direct_io("from pathlib import Path\ntext = Path.read_text(p)\n");
+        assert_eq!(v.len(), 1);
+    }
+
+    #[test]
+    fn direct_io_registry_specimen_two_firings() {
+        // The specimen that motivated the check: import + handle fire, the parser call does not.
+        let code = "import tomllib\nfrom pathlib import Path\n\ndef load_registry(path: Path):\n    with path.open(\"rb\") as file_handle:\n        data = tomllib.load(file_handle)\n    return data\n";
+        let v = direct_io(code);
+        let lines: Vec<usize> = v.iter().map(|x| x.line).collect();
+        assert_eq!(lines, vec![1, 5], "{:?}", v.iter().map(|x| &x.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn direct_io_tomllib_loads_over_read_text_two_firings() {
+        let v = direct_io("import tomllib\nconfig = tomllib.loads(CONFIG_PATH.read_text())\n");
+        let lines: Vec<usize> = v.iter().map(|x| x.line).collect();
+        assert_eq!(lines, vec![1, 2]);
+    }
+
+    // no-fire
+
+    #[test]
+    fn direct_io_json_loads_string_not_flagged() {
+        let v = direct_io("import json\ndef extract(user_id: str):\n    return json.loads(user_id).get(\"session_id\")\n");
+        assert!(v.is_empty(), "{:?}", v.iter().map(|x| &x.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn direct_io_webbrowser_open_not_flagged() {
+        assert!(direct_io("import webbrowser\nwebbrowser.open(page.as_uri())\n").is_empty());
+    }
+
+    #[test]
+    fn direct_io_pdfplumber_open_not_flagged() {
+        assert!(direct_io("import pdfplumber\npdf = pdfplumber.open(PDF)\n").is_empty());
+    }
+
+    #[test]
+    fn direct_io_attribute_named_open_not_flagged() {
+        assert!(direct_io("class Shop(BaseModel):\n    open: bool\nif shop.open:\n    pass\n").is_empty());
+    }
+
+    #[test]
+    fn direct_io_relative_import_not_flagged() {
+        assert!(direct_io("from .yaml_helpers import thing\n").is_empty());
+    }
+
+    #[test]
+    fn direct_io_similar_module_name_not_flagged() {
+        assert!(direct_io("from mypkg.toml_support import thing\nimport yamlish\n").is_empty());
+    }
+
+    #[test]
+    fn direct_io_pydantic_and_pathlib_imports_not_flagged() {
+        let v = direct_io("from pydantic import BaseModel\nfrom pathlib import Path\np = Path.home() / \"x\"\nexists = p.exists()\n");
+        assert!(v.is_empty(), "{:?}", v.iter().map(|x| &x.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn direct_io_gate_and_reader_module_imports_not_flagged() {
+        let v = direct_io("import gate_output_content_input\nimport read_toml_validate_json\nfrom galdr.logic.impure.gate_validate.simple import validate_input\n");
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn direct_io_dynamic_import_non_literal_not_flagged() {
+        assert!(direct_io("import importlib\nmod = importlib.import_module(name)\n").is_empty());
+    }
+
+    #[test]
+    fn direct_io_commented_and_string_mentions_not_flagged() {
+        assert!(direct_io("# import tomllib\nhint = \"use open(path)\"\n").is_empty());
+    }
+
+    // canary: must still fire
+
+    #[test]
+    fn direct_io_aliased_import_caught() {
+        let v = direct_io("import tomllib as cfg\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("'tomllib'"));
+    }
+
+    #[test]
+    fn direct_io_aliased_from_import_caught() {
+        assert_eq!(direct_io("from yaml import safe_load as load_cfg\n").len(), 1);
+    }
+
+    #[test]
+    fn direct_io_dunder_import_caught() {
+        let v = direct_io("cfg = __import__(\"tomllib\")\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("via dynamic import"));
+        assert!(v[0].message.contains("read_toml_validate_json"));
+    }
+
+    #[test]
+    fn direct_io_importlib_import_module_caught() {
+        let v = direct_io("import importlib\ny = importlib.import_module(\"yaml\")\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("read_yaml_validate_json"));
+    }
+
+    #[test]
+    fn direct_io_importlib_dotted_name_caught() {
+        let v = direct_io("import importlib\nm = importlib.import_module(\"xml.etree.ElementTree\")\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("read_xml_validate_json"));
+    }
+
+    #[test]
+    fn direct_io_builtins_open_caught() {
+        let v = direct_io("import builtins\nfh = builtins.open(p)\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("builtins.open"));
+    }
+
+    #[test]
+    fn direct_io_io_open_write_caught() {
+        let v = direct_io("import io\nfh = io.open(p, \"w\")\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("direct file write"));
     }
 
     // -- no_before_validators --

@@ -38,6 +38,7 @@ static CHECK_REGISTRY: &[(&str, CheckFn)] = &[
     ("no_type_checking_imports", imports::check_no_type_checking_imports),
     ("no_parent_imports", imports::check_no_parent_imports),
     ("no_disallowed_stdlib", imports::check_no_disallowed_stdlib),
+    ("no_direct_file_io", imports::check_no_direct_file_io),
     ("no_sys_path_mutation", imports::check_no_sys_path_mutation),
     ("no_deferred_imports", imports::check_no_deferred_imports),
     ("v2_import_boundaries", imports::check_v2_import_boundaries),

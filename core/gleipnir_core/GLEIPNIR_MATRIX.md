@@ -30,6 +30,7 @@
 | no_type_checking_imports |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_parent_imports        |   🟠   |  ⚫  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_disallowed_stdlib     |  ⚫  |  ⚫  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
+| no_direct_file_io        |  ⚫  |  ⚫  |   🔴    |   🔴   |   🔴   |  🔴   |  🔴   |   🔴    |
 | no_sys_path_mutation     |   🔴   |  🔴  |   🔴    |   🔴   |   🔴   |  🔴   |  🔴   |   🔴    |
 | no_deferred_imports      |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | **PROHIBITED**           |        |      |         |        |        |       |       |         |
@@ -94,6 +95,7 @@
 | **IMPORTS**              |       |       |       |        |       |       |        |       |        |       |        |       |         |       |
 | no_type_checking_imports |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
 | no_disallowed_stdlib     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
+| no_direct_file_io        |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |
 | v2_import_boundaries     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
 | no_before_validators     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
 | no_sys_path_mutation     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |

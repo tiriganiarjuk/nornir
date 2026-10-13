@@ -178,6 +178,24 @@ pub fn check_no_broad_exceptions(source: &ParsedSource, _config: &CheckConfig) -
 // no_print
 // -------------------------------------------------------------------------
 
+/// True when `print(` appears as a standalone name on the line — not as the
+/// tail of a longer identifier such as `fingerprint(` or `sprint(`.
+fn has_bare_print_call(line: &str, pattern: &str) -> bool {
+    let mut search_from = 0;
+    while let Some(offset) = line[search_from..].find(pattern) {
+        let start = search_from + offset;
+        let preceded_by_name_char = line[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if !preceded_by_name_char {
+            return true;
+        }
+        search_from = start + pattern.len();
+    }
+    false
+}
+
 pub fn check_no_print(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
     // Pattern constructed at runtime to avoid self-triggering
     let pattern = format!("{}(", "print");
@@ -188,7 +206,7 @@ pub fn check_no_print(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viola
         if line.trim_start().starts_with('#') {
             continue;
         }
-        if line.contains(&pattern) {
+        if has_bare_print_call(line.as_ref(), &pattern) {
             violations.push(violation(line_num, "print() call".to_string()));
         }
     }
@@ -760,6 +778,29 @@ mod tests {
         let parsed = parse("x = 42\n");
         let violations = check_no_print(&parsed, &default_config());
         assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn fingerprint_call_not_flagged() {
+        // Specimen: `print(` as the tail of a longer identifier is not the builtin.
+        let parsed = parse("digest = fingerprint(data)\nshort = sprint(value)\n");
+        let violations = check_no_print(&parsed, &default_config());
+        assert!(violations.is_empty(), "{:?}", violations.iter().map(|v| v.line).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn indented_and_nested_print_still_caught() {
+        let code = "def show(x):\n    print(x)\n    return len(print(x) or [])\n";
+        let parsed = parse(code);
+        let violations = check_no_print(&parsed, &default_config());
+        assert_eq!(violations.len(), 2);
+    }
+
+    #[test]
+    fn fingerprint_then_print_same_line_caught() {
+        let parsed = parse("print(fingerprint(data))\n");
+        let violations = check_no_print(&parsed, &default_config());
+        assert_eq!(violations.len(), 1);
     }
 
     // -- no_future_annotations --
