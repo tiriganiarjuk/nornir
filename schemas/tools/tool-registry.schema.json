@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tool-registry-schema-v1",
+  "title": "Tool Registry",
+  "description": "Deployed writer tools for agent definition L8 resolution. Each entry describes one writer binary — its output format, write frequency and output path shape — so regin can match an agent's writing_output spec to the correct tool. Source: nornir/tool_registry.toml. The output_path_kind value decides which path fields are required; the others are forbidden.",
+  "type": "object",
+  "required": ["tools"],
+  "additionalProperties": false,
+  "properties": {
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tool_entry" }
+    }
+  },
+  "$defs": {
+    "tool_entry": {
+      "type": "object",
+      "required": [
+        "binary_name",
+        "invocation",
+        "output_format",
+        "write_frequency",
+        "output_path_kind",
+        "schema_path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "binary_name": {
+          "type": "string",
+          "pattern": "^(append|write)_[a-z0-9_]+$",
+          "description": "Deployed binary name — a writers/ crate name."
+        },
+        "invocation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Bash heredoc template. {json_data} is the payload; {name} appears for the directory_* kinds."
+        },
+        "output_format": {
+          "type": "string",
+          "enum": ["json", "jsonl"]
+        },
+        "write_frequency": {
+          "type": "string",
+          "enum": ["batch", "record"]
+        },
+        "output_path_kind": {
+          "type": "string",
+          "enum": ["fixed_file", "directory_prefix", "directory_name"]
+        },
+        "schema_path": {
+          "type": "string",
+          "pattern": "\\.schema\\.json$",
+          "description": "Path of the writer's embedded schema, relative to the ai root."
+        },
+        "file_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "fixed_file only: the output file, relative to the ai root."
+        },
+        "directory_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "directory_prefix and directory_name: the output directory, relative to the ai root."
+        },
+        "name_suffix": {
+          "type": "string",
+          "pattern": "^\\.[a-z0-9.]+$",
+          "description": "directory_prefix only: appended to {name}, e.g. \".summaries.jsonl\"."
+        },
+        "name_extension": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+$",
+          "description": "directory_name only: extension without the dot, e.g. \"jsonl\"."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "output_path_kind": { "const": "fixed_file" } },
+            "required": ["output_path_kind"]
+          },
+          "then": {
+            "required": ["file_path"],
+            "properties": { "directory_path": false, "name_suffix": false, "name_extension": false }
+          }
+        },
+        {
+          "if": {
+            "properties": { "output_path_kind": { "const": "directory_prefix" } },
+            "required": ["output_path_kind"]
+          },
+          "then": {
+            "required": ["directory_path", "name_suffix"],
+            "properties": { "file_path": false, "name_extension": false }
+          }
+        },
+        {
+          "if": {
+            "properties": { "output_path_kind": { "const": "directory_name" } },
+            "required": ["output_path_kind"]
+          },
+          "then": {
+            "required": ["directory_path", "name_extension"],
+            "properties": { "file_path": false, "name_suffix": false }
+          }
+        }
+      ]
+    }
+  }
+}
