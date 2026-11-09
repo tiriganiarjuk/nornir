@@ -7,7 +7,7 @@ Use `nornir_deploy` instead.
 
 1. **Dependency coherence.** When a shared crate changes (e.g., `datagram_io`, `schemas_embedded`), ALL consumers must rebuild together. Running `cargo build --release -p one_crate` leaves other binaries in the same category running stale code. Strange runtime bugs with no obvious cause.
 
-2. **Deployment.** `cargo build` puts binaries in `target/release/`. They are not deployed until symlinked to `~/ai/tools/bin/`. The deploy tool handles build, symlink, and verification as one atomic operation.
+2. **Deployment.** `cargo build` puts binaries in cargo's target dir — on the Derived volume, per `.cargo/config.toml`, not under this repo. They are not deployed until **copied** to `~/ai/tools/bin/` (copied, never symlinked: a deployed tool must keep working with that drive unplugged). The deploy tool handles build, copy, and verification of the deployed copy as one atomic operation.
 
 3. **Gates require maturin.** PyO3 gate modules cannot be built with `cargo build`. They need `maturin build`, wheel extraction, and `.so` deployment to `~/ai/tools/lib/`. The deploy tool handles all of this.
 

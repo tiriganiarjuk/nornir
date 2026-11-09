@@ -7,11 +7,16 @@
 # ///
 """Unified deploy tool for the nornir workspace.
 
-Builds, symlinks, and verifies nornir binaries by category.
+Builds, copies, and verifies nornir binaries by category.
 Reads crate-to-category mapping from deploy_categories.toml.
 
+Binaries are COPIED into ~/ai/tools/bin, never symlinked: the cargo target
+dir lives on the Derived volume (see .cargo/config.toml), and a deployed tool
+must keep working with that drive unplugged. Where cargo builds is asked of
+`cargo metadata`, never assumed.
+
 Any category can declare:
-  crates       — cargo binaries (build + symlink + verify)
+  crates       — cargo binaries (build + copy + verify)
   cli_crates   — cargo binaries with separate cli_verify (e.g. gates check tools)
   pyo3_crates  — maturin PyO3 modules (build + python_import verify)
   gate_crates  — same as pyo3_crates, used by the gates category
@@ -26,6 +31,8 @@ Usage:
 """
 
 import argparse
+import json
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -76,6 +83,26 @@ def _pyo3_verify(config: dict) -> str:
     return config.get("pyo3_verify", config.get("gate_verify", "python_import"))
 
 
+# --- Target dir ---
+
+def find_target_dir() -> Path:
+    """Ask cargo where it builds for this workspace.
+
+    Honors every config layer (~/.cargo/config.toml, nornir/.cargo/config.toml,
+    CARGO_TARGET_DIR) because cargo resolves them, not us. Exits on failure.
+    """
+    result = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--quiet"],
+        cwd=NORNIR_DIR,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.error("cargo metadata failed: {}", result.stderr.strip())
+        sys.exit(1)
+    return Path(json.loads(result.stdout)["target_directory"])
+
+
 # --- Build functions ---
 
 def build_cargo(crates: list[str]) -> None:
@@ -95,12 +122,12 @@ def build_cargo(crates: list[str]) -> None:
         sys.exit(1)
 
 
-def build_maturin(crates: list[str], python_version: str, crate_dirs: dict[str, Path]) -> None:
+def build_maturin(crates: list[str], python_version: str, crate_dirs: dict[str, Path], target_dir: Path) -> None:
     """Build PyO3 crates with maturin. Extract .so to TOOLS_LIB."""
     if not crates:
         return
     TOOLS_LIB.mkdir(parents=True, exist_ok=True)
-    wheels_dir = NORNIR_DIR / "target" / "wheels"
+    wheels_dir = target_dir / "wheels"
 
     for crate in crates:
         crate_dir = crate_dirs.get(crate)
@@ -141,13 +168,16 @@ def build_maturin(crates: list[str], python_version: str, crate_dirs: dict[str, 
     logger.info("PyO3 modules deployed to {}", TOOLS_LIB)
 
 
-# --- Symlink ---
+# --- Copy ---
 
-def symlink_binaries(crates: list[str], binary_names: dict[str, str]) -> int:
-    """Create/update symlinks in TOOLS_BIN. Returns count of links created."""
+def copy_binaries(crates: list[str], binary_names: dict[str, str], release_dir: Path) -> int:
+    """Copy built binaries into TOOLS_BIN. Returns count of binaries copied.
+
+    An existing entry is removed first: a leftover symlink would otherwise be
+    written THROUGH, overwriting whatever it pointed at instead of replacing it.
+    """
     TOOLS_BIN.mkdir(parents=True, exist_ok=True)
-    release_dir = NORNIR_DIR / "target" / "release"
-    linked = 0
+    copied = 0
 
     for crate in crates:
         bin_name = binary_names.get(crate, crate)
@@ -156,13 +186,13 @@ def symlink_binaries(crates: list[str], binary_names: dict[str, str]) -> int:
             logger.warning("binary not found: {}", binary)
             continue
 
-        link = TOOLS_BIN / bin_name
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(binary)
-        linked += 1
+        deployed = TOOLS_BIN / bin_name
+        if deployed.is_symlink() or deployed.exists():
+            deployed.unlink()
+        shutil.copy2(binary, deployed)
+        copied += 1
 
-    return linked
+    return copied
 
 
 # --- Verify ---
@@ -220,8 +250,11 @@ def verify_crate(crate: str, binary: Path, method: str, category_config: dict) -
 
 # --- Category deployment ---
 
-def deploy_category(name: str, config: dict, crate_dirs: dict[str, Path], skip_maturin: bool = False) -> None:
-    """Deploy a single category: build -> symlink -> verify.
+def deploy_category(name: str, config: dict, crate_dirs: dict[str, Path], target_dir: Path, skip_maturin: bool = False) -> None:
+    """Deploy a single category: build -> copy -> verify.
+
+    Verification runs against the DEPLOYED copy in TOOLS_BIN, not the build
+    output — it proves what is on PATH works, not what is in target/.
 
     Handles three crate types in any combination:
       crates      — cargo binaries
@@ -230,19 +263,19 @@ def deploy_category(name: str, config: dict, crate_dirs: dict[str, Path], skip_m
     """
     logger.info("--- deploying: {} ---", name)
     binary_names = config.get("binary_names", {})
+    release_dir = target_dir / "release"
 
     # Cargo binaries
     crates = config.get("crates", [])
     if crates:
         build_cargo(crates)
-        linked = symlink_binaries(crates, binary_names)
-        logger.info("{} symlinks updated in {}", linked, TOOLS_BIN)
+        copied = copy_binaries(crates, binary_names, release_dir)
+        logger.info("{} binaries copied to {}", copied, TOOLS_BIN)
         method = config.get("verify", "help")
-        release_dir = NORNIR_DIR / "target" / "release"
         failures = []
         for crate in crates:
             bin_name = binary_names.get(crate, crate)
-            if verify_crate(crate, release_dir / bin_name, method, config):
+            if verify_crate(crate, TOOLS_BIN / bin_name, method, config):
                 logger.info("  {}: {}", name, bin_name)
             else:
                 failures.append(bin_name)
@@ -254,13 +287,12 @@ def deploy_category(name: str, config: dict, crate_dirs: dict[str, Path], skip_m
     cli_crates = config.get("cli_crates", [])
     if cli_crates:
         build_cargo(cli_crates)
-        linked = symlink_binaries(cli_crates, {})
-        logger.info("{} CLI symlinks updated in {}", linked, TOOLS_BIN)
+        copied = copy_binaries(cli_crates, {}, release_dir)
+        logger.info("{} CLI binaries copied to {}", copied, TOOLS_BIN)
         cli_method = config.get("cli_verify", "help")
-        release_dir = NORNIR_DIR / "target" / "release"
         failures = []
         for crate in cli_crates:
-            if verify_crate(crate, release_dir / crate, cli_method, config):
+            if verify_crate(crate, TOOLS_BIN / crate, cli_method, config):
                 logger.info("  CLI: {}", crate)
             else:
                 failures.append(crate)
@@ -272,7 +304,7 @@ def deploy_category(name: str, config: dict, crate_dirs: dict[str, Path], skip_m
     pyo3 = _pyo3_crates(config)
     if pyo3 and not skip_maturin:
         python_version = config.get("python_version", "python3.13")
-        build_maturin(pyo3, python_version, crate_dirs)
+        build_maturin(pyo3, python_version, crate_dirs, target_dir)
         failures = []
         for crate in pyo3:
             if verify_python_import(crate, python_version):
@@ -366,20 +398,22 @@ def run(args: argparse.Namespace) -> None:
 
     ensure_bootstrap()
     crate_dirs = find_crate_dirs()
+    target_dir = find_target_dir()
+    logger.info("cargo target dir: {}", target_dir)
 
     if args.all:
         for name, config in categories.items():
-            deploy_category(name, config, crate_dirs, skip_maturin=False)
+            deploy_category(name, config, crate_dirs, target_dir, skip_maturin=False)
     elif args.non_pyo3:
         for name, config in categories.items():
-            deploy_category(name, config, crate_dirs, skip_maturin=True)
+            deploy_category(name, config, crate_dirs, target_dir, skip_maturin=True)
     elif args.build:
         requested = [c.strip() for c in args.build.split(",")]
         for name in requested:
             if name not in categories:
                 logger.error("unknown category: {} (available: {})", name, ", ".join(categories))
                 sys.exit(1)
-            deploy_category(name, categories[name], crate_dirs, skip_maturin=False)
+            deploy_category(name, categories[name], crate_dirs, target_dir, skip_maturin=False)
 
     logger.info("DEPLOY COMPLETE")
 
