@@ -104,7 +104,7 @@ The STRUCTURAL_AUDIT_GUIDE.md Priority 9 section lists check names and categorie
 - The `OutputPath` variants and when to use each
 - The `WriteFrequency` enum
 - `write_truncate_fsync` (used for compaction truncation) and why it preserves inodes
-- `ai_home()` — the only approved way to resolve `$HOME/.ai`
+- `ai_home()` — the only approved way to resolve `$HOME/ai`
 
 A session adding a new writer would need to read existing writers and reverse-engineer the API.
 

@@ -23,7 +23,7 @@
 
 ## Purpose
 
-A Rust monorepo of compiled validators, tools and hooks for the `.ai` ecosystem — including the gates that own every boundary the Python stages cross.
+A Rust monorepo of compiled validators, tools and hooks for the `ai` ecosystem — including the gates that own every boundary the Python stages cross.
 
 ---
 
