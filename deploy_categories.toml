@@ -68,6 +68,7 @@ syn_cli = "syn"
 [converters]
 crates = [
     "convert_json_to_toml",
+    "convert_json_to_yaml",
 ]
 verify = "stdin"
 verify_input = '{"test": true}'
@@ -174,6 +175,7 @@ pyo3_crates = [
     "read_toml_validate_json",
     "read_toon_validate_json",
     "read_xml_validate_json",
+    "read_markdown_validate_json",
     "read_tomlx_json",
     "read_tomlx_json_schema",
 ]

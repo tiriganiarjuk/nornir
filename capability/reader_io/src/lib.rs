@@ -22,7 +22,9 @@ use jsonschema::Validator;
 use serde_json::Value;
 
 use error_core::{format_educational_message, FormatError, ValidationIssue};
-use format_core::convert::{json_to_json, toml_to_json, toon_to_json, xml_to_json, yaml_to_json};
+use format_core::convert::{
+    json_to_json, markdown_to_json, toml_to_json, toon_to_json, xml_to_json, yaml_to_json,
+};
 use format_core::serialize::to_json;
 use format_core::tomlx::{parse_tomlx, TomlxOutput};
 
@@ -38,6 +40,9 @@ pub enum SourceFormat {
     Toml,
     Toon,
     Xml,
+    /// A Markdown document with optional YAML frontmatter; arrives as the
+    /// envelope `{"frontmatter": {...}, "body": "..."}` — the schema targets that shape.
+    Markdown,
 }
 
 impl SourceFormat {
@@ -49,6 +54,7 @@ impl SourceFormat {
             SourceFormat::Toml => "TOML",
             SourceFormat::Toon => "TOON",
             SourceFormat::Xml => "XML",
+            SourceFormat::Markdown => "MARKDOWN",
         }
     }
 
@@ -59,6 +65,7 @@ impl SourceFormat {
             SourceFormat::Toml => toml_to_json(content),
             SourceFormat::Toon => toon_to_json(content),
             SourceFormat::Xml => xml_to_json(content),
+            SourceFormat::Markdown => markdown_to_json(content),
         }
     }
 }
@@ -347,6 +354,22 @@ mod tests {
         let json = read_validate_json(SourceFormat::Xml, &file, "valid_xml", dir_str(&dir)).unwrap();
         let value: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["root"]["name"], "x");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn valid_markdown() {
+        // Markdown arrives as {"frontmatter": {...}, "body": "..."} — the schema targets that shape.
+        let dir = temp_dir("valid_markdown");
+        let schema = r#"{"type": "object", "required": ["frontmatter", "body"],
+            "properties": {"frontmatter": {"type": "object", "required": ["name"]},
+                           "body": {"type": "string"}}}"#;
+        write_schema(&dir, "valid_markdown", schema);
+        let file = write_data(&dir, "data.md", "---\nname: x\n---\nThe body.\n");
+        let json = read_validate_json(SourceFormat::Markdown, &file, "valid_markdown", dir_str(&dir)).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["frontmatter"]["name"], "x");
+        assert_eq!(value["body"], "The body.\n");
         fs::remove_dir_all(&dir).ok();
     }
 

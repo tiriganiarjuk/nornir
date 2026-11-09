@@ -1,0 +1,13 @@
+[package]
+name = "convert_json_to_yaml"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "convert_json_to_yaml"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+format_core = { path = "../../core/format_core" }
+write_engine = { path = "../../capability/write_engine" }

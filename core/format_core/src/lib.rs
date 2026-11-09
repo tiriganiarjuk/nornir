@@ -1,7 +1,7 @@
 //! Format conversion infrastructure for Nornir.
 //!
 //! Provides parse, serialize, and convert functions for all supported formats:
-//! JSON, YAML, TOML, TOON (and TOMLX in future).
+//! JSON, YAML, TOML, TOON, XML, and Markdown-with-frontmatter (parse only).
 //!
 //! # Modules
 //!

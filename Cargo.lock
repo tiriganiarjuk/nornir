@@ -735,6 +735,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_json_to_yaml"
+version = "0.1.0"
+dependencies = [
+ "format_core",
+ "serde_json",
+ "write_engine",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3747,6 +3756,14 @@ dependencies = [
 
 [[package]]
 name = "read_json_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
+name = "read_markdown_validate_json"
 version = "0.1.0"
 dependencies = [
  "pyo3",

@@ -206,6 +206,62 @@ fn build_xml_element(
 }
 
 // =============================================================================
+// Markdown with YAML frontmatter
+// =============================================================================
+
+/// Parse a Markdown document with optional YAML frontmatter to Value.
+///
+/// Envelope: `{"frontmatter": {...}, "body": "..."}`.
+/// - The frontmatter is the YAML block between an opening `---` line at the
+///   very start of the document and the next `---` line, parsed with [`yaml`].
+/// - No opening fence → `frontmatter` is an empty object, `body` is the whole
+///   document. An empty block is also an empty object.
+/// - An opening fence with no closing fence is a parse error.
+/// - The body is everything after the closing fence line, verbatim.
+pub fn markdown(content: &str) -> Result<Value, FormatError> {
+    let (frontmatter_text, body) = split_frontmatter(content)?;
+    let frontmatter = match frontmatter_text {
+        None => Value::Object(serde_json::Map::new()),
+        Some(text) => frontmatter_object(yaml(text)?),
+    };
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("frontmatter".to_string(), frontmatter);
+    envelope.insert("body".to_string(), Value::String(body.to_string()));
+    Ok(Value::Object(envelope))
+}
+
+/// Split a document into (frontmatter YAML text, body). `None` frontmatter
+/// means no opening fence. The fences are `---` lines: the opening one at
+/// byte 0, the closing one the first subsequent line equal to `---`.
+fn split_frontmatter(content: &str) -> Result<(Option<&str>, &str), FormatError> {
+    let Some(after_open) = content.strip_prefix("---\n") else {
+        return Ok((None, content));
+    };
+    if let Some(body) = after_open.strip_prefix("---\n") {
+        return Ok((Some(""), body));
+    }
+    if let Some(close_at) = after_open.find("\n---\n") {
+        return Ok((Some(&after_open[..close_at]), &after_open[close_at + 5..]));
+    }
+    if let Some(yaml_text) = after_open.strip_suffix("\n---") {
+        return Ok((Some(yaml_text), ""));
+    }
+    Err(FormatError::MarkdownParse(
+        "opening frontmatter fence without a closing fence".to_string(),
+    ))
+}
+
+/// An empty or whitespace-only block parses as YAML null; the envelope
+/// promises an object, so null becomes `{}`. Any other shape passes through
+/// for the schema to judge.
+fn frontmatter_object(parsed: Value) -> Value {
+    match parsed {
+        Value::Null => Value::Object(serde_json::Map::new()),
+        other => other,
+    }
+}
+
+// =============================================================================
 // TOML → JSON value conversion
 // =============================================================================
 
@@ -282,6 +338,48 @@ mod tests {
     fn test_parse_toml_error() {
         let err = toml("this is not [valid toml").unwrap_err();
         assert!(matches!(err, FormatError::TomlParse(_)));
+    }
+
+    #[test]
+    fn test_parse_markdown_with_frontmatter() {
+        let input = "---\ntitle: Nunavut\ntags: [Arctic]\n---\n\nThe body.\n";
+        let result = markdown(input).unwrap();
+        assert_eq!(result["frontmatter"]["title"], "Nunavut");
+        assert_eq!(result["frontmatter"]["tags"][0], "Arctic");
+        assert_eq!(result["body"], "\nThe body.\n");
+    }
+
+    #[test]
+    fn test_parse_markdown_without_frontmatter() {
+        let result = markdown("Just prose.\n").unwrap();
+        assert_eq!(result["frontmatter"], serde_json::json!({}));
+        assert_eq!(result["body"], "Just prose.\n");
+    }
+
+    #[test]
+    fn test_parse_markdown_empty_block() {
+        let result = markdown("---\n---\nbody").unwrap();
+        assert_eq!(result["frontmatter"], serde_json::json!({}));
+        assert_eq!(result["body"], "body");
+    }
+
+    #[test]
+    fn test_parse_markdown_closing_fence_at_eof() {
+        let result = markdown("---\ntitle: x\n---").unwrap();
+        assert_eq!(result["frontmatter"]["title"], "x");
+        assert_eq!(result["body"], "");
+    }
+
+    #[test]
+    fn test_parse_markdown_unterminated_fence() {
+        let err = markdown("---\ntitle: x\nno closing fence\n").unwrap_err();
+        assert!(matches!(err, FormatError::MarkdownParse(_)));
+    }
+
+    #[test]
+    fn test_parse_markdown_date_stays_string() {
+        let result = markdown("---\noccurrence/effective: 1999-04-01\n---\n").unwrap();
+        assert_eq!(result["frontmatter"]["occurrence/effective"], "1999-04-01");
     }
 
     #[test]

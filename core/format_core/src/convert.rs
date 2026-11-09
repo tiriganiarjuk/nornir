@@ -133,6 +133,17 @@ pub fn xml_to_toon(content: &str) -> Result<String, FormatError> {
 }
 
 // =============================================================================
+// Markdown source conversions
+// =============================================================================
+
+/// Convert a Markdown document (optional YAML frontmatter + body) to the
+/// pretty-printed JSON envelope `{"frontmatter": {...}, "body": "..."}`.
+pub fn markdown_to_json(content: &str) -> Result<String, FormatError> {
+    let value = parse::markdown(content)?;
+    serialize::to_json(&value)
+}
+
+// =============================================================================
 // *-to-XML conversions
 // =============================================================================
 

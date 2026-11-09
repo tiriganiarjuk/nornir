@@ -56,6 +56,9 @@ pub enum FormatError {
     #[error("XML parse error: {0}")]
     XmlParse(String),
 
+    #[error("Markdown parse error: {0}")]
+    MarkdownParse(String),
+
     #[error("Conversion error: {0}")]
     Conversion(String),
 
