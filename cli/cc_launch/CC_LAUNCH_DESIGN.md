@@ -104,13 +104,11 @@ Languages are derived from descriptors, never manually configured in profiles. W
 
 ## Permissions
 
-Permissions are superpowers — rare, deliberate path exemptions for sessions that work ON the security system.
+Extended permissions are a safety policy. They are bound to the persona: a persona either carries a set of path exemptions from the probing/gaming hook checks, or it carries none. Only certain personas can carry one. Today exactly one does: Tyr, who operates the security system, so the power and the role arrive together.
 
-The actual mechanism is `HOOK_LLM_ALLOW_PATHS` — a colon-separated list of paths exempt from probing/gaming hook checks. See `~/ai/tools/scripts/start_tyr` for the real example.
+The persona-to-permission mapping is compiled into the launcher (`src/permissions.rs`), so the grant has the same protection as the paths it opens: changing it means editing nornir source and rebuilding through `nornir_deploy`. The grant follows the persona into whatever workspace it is launched in.
 
-**Permissions are NEVER auto-selected.** They must be manually toggled in the TUI. Most sessions need zero permissions.
-
-**IMPORTANT:** The current `permissions.rs` contains FABRICATED env var names (GLEIPNIR_ENABLED, VOICE_ENABLED, WORKSPACE_REGISTRY_ENABLED). These are wrong and need replacing with the real `HOOK_LLM_ALLOW_PATHS` mechanism. See the pending work section.
+The mechanism is two environment variables set once at launch, before `exec`ing claude: `HOOK_LLM_ALLOW_PATHS` (path prefixes) and `HOOK_LLM_ALLOW_PATTERNS` (path substrings). A running session cannot acquire them. The TUI shows what the selected persona carries in its summary column.
 
 ---
 
@@ -127,7 +125,6 @@ persona = "eitri"
 primary_descriptor = "nornir"
 coding = true
 expertise = ["functional-programming", "boundary-architecture", "schema-first"]
-permissions = ["gleipnir"]
 ```
 
 ### Profile Fields
@@ -140,13 +137,12 @@ permissions = ["gleipnir"]
 | `descriptors` | Additional descriptors to pre-select (e.g., yggdrasil children). |
 | `coding` | Whether coding mode is enabled (default: true). |
 | `expertise` | Which expertise modules to pre-select. |
-| `permissions` | NOT USED for auto-selection. Parsed but ignored. Permissions are manual only. |
 
 ### Cascade Behavior
 
 1. User selects workspace → profile fills defaults (persona, coding, expertise, descriptors)
 2. Languages derived from selected descriptors (not in profile)
-3. Permissions NOT auto-selected (manual only)
+3. Permissions arrive with the persona (see Permissions); a profile carries none
 4. User can override ANY default before launching
 5. Coding toggle: "Disable coding mode" — when disabled, languages greyed and locked
 6. Selecting "Auto (current dir)" clears all profile defaults
@@ -181,7 +177,7 @@ cc_launch TUI
   → languages derived from descriptor union
   → prompt assembled in layer order (identity → context → mode)
   → writes to /tmp/cc_launch_prompt.xml
-  → sets env vars for permissions (HOOK_LLM_ALLOW_PATHS)
+  → sets the permission env vars the selected persona carries, if any
   → exec: claude --system-prompt-file /tmp/cc_launch_prompt.xml [passthrough flags]
 ```
 
@@ -212,7 +208,7 @@ All at `nornir/cli/cc_launch/src/`:
 | `assembly.rs` | Prompt composition in layer order, token estimation, env var building |
 | `tui.rs` | 3-column ratatui TUI with scrolling, cursor tracking, panic hook |
 | `profiles.rs` | Loads workspace profiles from TOML |
-| `permissions.rs` | **FABRICATED** — needs replacing with real HOOK_LLM_ALLOW_PATHS mechanism |
+| `permissions.rs` | The compiled-in persona-to-permission mapping and the env var values built from it |
 
 ### TUI Layout
 
@@ -229,13 +225,11 @@ All at `nornir/cli/cc_launch/src/`:
 │  [ ] Disable      │                              │  Est. tokens: ~4200     │
 │  [x] python       │                              └─────────────────────────┘
 │  [x] rust         │
-├─ Permissions ────┤
-│  [ ] Gleipnir     │
 └──────────────────┘
  Tab section  ↑↓ navigate  Space toggle  Enter launch  q quit
 ```
 
-Column 1 (Identity): Workspace, Persona, Coding, Permissions
+Column 1 (Identity): Workspace, Persona, Coding
 Column 2 (Content): Systems (scrollable), Expertise
 Column 3 (Summary): Ordered context, token estimate
 
@@ -251,8 +245,29 @@ Column 3 (Summary): Ordered context, token estimate
 
 ## Pending Work
 
-### Critical
-- [ ] Replace permissions.rs with real `HOOK_LLM_ALLOW_PATHS` mechanism (current env vars are fabricated)
+### Critical — Johnny's rulings, 2026-11-09
+
+- [ ] **Defaults that are simply correct.** Each persona preselects the features and knowledge it commonly needs. The default comes from the persona and/or the workspace; Johnny adjusts only what differs and does not click through everything on every launch.
+- [ ] **Auto mode loads the space.** Started in a directory that is a space, Auto never loads that space's block. Johnny: "worse".
+- [ ] **Auto mode's starting persona.** It starts on the first persona alphabetically, so sessions that were never story work have run as Bragi. Johnny: "not great". To decide with him: what Auto starts on when the directory matches no profile.
+- [ ] **Permissions housekeeping.** The policy is as the Permissions section states and the code implements. Left over: the `permissions` key on six profiles in `~/ai/control/cc_launch_profiles.toml`, which nothing reads. Any future grant is tracked here and compiled in; right now Tyr's is the only one.
+- [ ] **Heimdallr's role is wider than his persona file says.** Johnny: Heimdallr is the supervisor in the general sense, making sure everything runs smoothly, as Tyr is responsible for overall safety. The division, in his words: "cc_launch is critical infra -> heimdallr... gleipnir is critical safety -> tyr". So this launcher is Heimdallr's to look after. The persona definition describes traffic supervision only; he has a space folder, no space descriptor, and no profile pointing at it or at this crate.
+- [ ] **Two copies of this document.** `~/ai/control/library/_orientation/CC_LAUNCH_DESIGN.md` disagrees with this one. Johnny decides which survives.
+
+### Reported 2026-11-09, for Johnny to judge
+
+From a read of the launcher source against the documents. Each is a difference, with no view taken on which side is right.
+
+- Prompt assembly order: this document places the persona seventh, after the platform fragments; the code places it second, after the collaboration paradigm, which it reads from `foundation/`, where this document says `cognitive-mode/`.
+- `~/ai/control/library/systems/cc-launch.xml`, which is itself loaded into prompts, says `cc_launch --workspace nornir` pre-selects a profile; in the code `--workspace` takes a path and requires `--update`.
+- The TUI sketch below shows a "None" persona option; the persona list has none.
+- This document names `/tmp/cc_launch_prompt.xml`; the code uses the system temp directory and writes the workspace copy as `.SYSTEM_PROMPT.xml`.
+- Profiles name expertise ids that have no file (`data-pipeline`, `anti-rigidity`, `knowledge-synthesis`, `workspace-orientation`); the launcher skips them silently.
+- The profile key is `[odin]`; the persona, directory and descriptor are `odinn`.
+- `primary_descriptor` on the five space profiles names the space id, which is looked up only among system descriptors and matches nothing; the space loads through the path rule.
+- Several recent stored prompts are about 144 KB, carrying every system descriptor and every expertise module, against Core Design Principle 1.
+- `huginn` and `muninn` are defined with no space, no descriptor and no profile.
+- The Key Files table lists `systems/README.md`, `spaces/README.md`, `systems/DISPATCH_PROTOCOL.md` and `~/ai/tools/scripts/start_tyr`, none of which exist, and places `PROMPT_DESIGN.md` at the library root; it is in `_orientation/`.
 
 ### Library
 - [ ] System architecture thinking framework

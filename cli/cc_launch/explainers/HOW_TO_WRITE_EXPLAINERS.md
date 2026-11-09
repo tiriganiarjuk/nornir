@@ -1,0 +1,1 @@
+../../../../../sites/tiriganiarjuk.earth/HOW_TO_WRITE_EXPLAINERS.md
