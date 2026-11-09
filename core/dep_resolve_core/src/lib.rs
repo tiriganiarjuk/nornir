@@ -11,6 +11,7 @@
 //! No I/O — callers provide source bytes via callback.
 
 pub mod extract;
+pub mod references;
 pub mod resolve;
 pub mod render;
 mod ts;
@@ -196,6 +197,76 @@ mod tests {
 
         assert_eq!(syms.len(), 1);
         assert!(syms[0].rendered.starts_with("async def fetch"));
+    }
+
+    // ── References ──────────────────────────────────────────────
+
+    /// The names mentioned by the first top-level statement of `source`.
+    fn references_of_first(source: &[u8]) -> Vec<String> {
+        let tree = ts::parse_python(source).unwrap();
+        let definition = tree.root_node().named_child(0).unwrap();
+        references::collect_references(definition, source)
+            .into_iter()
+            .collect()
+    }
+
+    fn has(names: &[String], wanted: &str) -> bool {
+        names.iter().any(|name| name == wanted)
+    }
+
+    #[test]
+    fn references_include_body_names() {
+        let names = references_of_first(b"def f(x):\n    return helper(x) + LIMIT\n");
+        assert!(has(&names, "helper"));
+        assert!(has(&names, "LIMIT"));
+    }
+
+    #[test]
+    fn references_include_annotations_defaults_and_return_type() {
+        let names =
+            references_of_first(b"def f(a: Alpha, b: int = FALLBACK) -> Beta:\n    pass\n");
+        assert!(has(&names, "Alpha"));
+        assert!(has(&names, "FALLBACK"));
+        assert!(has(&names, "Beta"));
+    }
+
+    #[test]
+    fn references_include_decorators() {
+        let names = references_of_first(b"@register(Kind)\ndef f():\n    pass\n");
+        assert!(has(&names, "register"));
+        assert!(has(&names, "Kind"));
+    }
+
+    #[test]
+    fn references_exclude_attribute_side() {
+        let names = references_of_first(b"def f(obj):\n    return obj.helper.deeper\n");
+        assert!(has(&names, "obj"));
+        assert!(!has(&names, "helper"));
+        assert!(!has(&names, "deeper"));
+    }
+
+    #[test]
+    fn references_exclude_keyword_argument_names() {
+        let names = references_of_first(b"def f():\n    return build(label=VALUE)\n");
+        assert!(has(&names, "build"));
+        assert!(has(&names, "VALUE"));
+        assert!(!has(&names, "label"));
+    }
+
+    #[test]
+    fn references_of_class_cover_bases_fields_and_methods() {
+        let source = b"class C(Base):\n    field: FieldType = make()\n    def m(self) -> Out:\n        return util(self.x)\n";
+        let names = references_of_first(source);
+        for wanted in ["Base", "FieldType", "make", "Out", "util"] {
+            assert!(has(&names, wanted), "missing {wanted}");
+        }
+        assert!(!has(&names, "x"));
+    }
+
+    #[test]
+    fn references_are_sorted_and_unique() {
+        let names = references_of_first(b"def f():\n    return zeta(alpha) + zeta(alpha)\n");
+        assert_eq!(names, vec!["alpha", "f", "zeta"]);
     }
 
     // ── Render: injection ───────────────────────────────────────
