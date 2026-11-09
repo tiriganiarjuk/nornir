@@ -475,6 +475,7 @@ mod tests {
             },
         );
         let config = Config {
+            backend: Backend::default(),
             voices: HashMap::new(),
             default: ProfileSettings::default(),
             profile: profiles,
@@ -507,6 +508,7 @@ mod tests {
             },
         );
         let config = Config {
+            backend: Backend::default(),
             voices: HashMap::new(),
             default: ProfileSettings::default(),
             profile: profiles,
@@ -557,6 +559,7 @@ mod tests {
             },
         );
         let config = Config {
+            backend: Backend::default(),
             voices,
             default: ProfileSettings {
                 voice: Some("myvoice".to_string()),
