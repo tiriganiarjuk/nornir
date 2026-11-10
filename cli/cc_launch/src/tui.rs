@@ -139,11 +139,7 @@ fn handle_space(state: &mut AppState) {
                 }
             }
         }
-        Section::Persona => {
-            if state.section_cursor < state.library.personas.len() {
-                state.selected_persona = Some(state.section_cursor);
-            }
-        }
+        Section::Persona => state.choose_persona(state.section_cursor),
         Section::Descriptors => {
             // Map cursor position to actual descriptor index (systems only)
             if let Some(desc_index) = state.system_cursor_to_index(state.section_cursor) {
@@ -206,17 +202,18 @@ fn draw_identity_column(frame: &mut ratatui::Frame, area: Rect, state: &AppState
     let workspace_height = 2 + state.profiles.len() as u16 + 1;
     let persona_height = 2 + state.library.personas.len() as u16 + 1;
 
+    // Persona is drawn first because it is chosen first.
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(workspace_height),
             Constraint::Length(persona_height),
+            Constraint::Length(workspace_height),
             Constraint::Min(0), // Expertise fills remaining
         ])
         .split(area);
 
-    draw_workspace_section(frame, sections[0], state);
-    draw_persona_section(frame, sections[1], state);
+    draw_persona_section(frame, sections[0], state);
+    draw_workspace_section(frame, sections[1], state);
     draw_expertise_section(frame, sections[2], state);
 }
 

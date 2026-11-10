@@ -84,7 +84,19 @@ fn run(arguments: Cli) -> Result<(), String> {
 
     let library = library::scan_library(&library_path)?;
     let workspace_profiles = profiles::load_profiles(&profiles_path)?;
-    let mut state = AppState::new(library, workspace_profiles, arguments.claude_args, update_mode);
+    // Where the launcher was invoked. With no profile selected this IS the
+    // workspace — without it, "Auto" resolves to no directory at all and every
+    // path-dependent behaviour silently no-ops.
+    let launch_directory = std::env::current_dir()
+        .map_err(|error| format!("get current directory: {error}"))?;
+
+    let mut state = AppState::new(
+        library,
+        workspace_profiles,
+        arguments.claude_args,
+        update_mode,
+        launch_directory,
+    );
 
     match tui::run_tui(&mut state)? {
         TuiOutcome::Launch => {
@@ -227,11 +239,11 @@ fn exec_claude(prompt_path: &Path, state: &AppState) -> Result<(), String> {
         .arg(prompt_path)
         .args(&state.passthrough_flags);
 
-    // If a workspace is selected, cd there before launching
-    if let Some(workspace_path) = state.workspace_path() {
-        if workspace_path.is_dir() {
-            command.current_dir(workspace_path);
-        }
+    // cd to the workspace before launching (the selected profile's path, or the
+    // directory cc_launch was invoked from)
+    let workspace_path = state.workspace_path();
+    if workspace_path.is_dir() {
+        command.current_dir(workspace_path);
     }
 
     // exec replaces this process — only returns on error

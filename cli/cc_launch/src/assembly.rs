@@ -69,13 +69,7 @@ pub fn write_prompt_file(state: &AppState) -> Result<PathBuf, String> {
         .map_err(|e| format!("write prompt file: {e}"))?;
 
     // Persist assembled prompt into workspace for hook-based re-injection on compact.
-    // Use profile workspace path if selected, otherwise fall back to actual CWD
-    // (Auto mode — user launched from their current directory without selecting a profile).
-    let prompt_dir = state
-        .workspace_path()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let workspace_copy = prompt_dir.join(".SYSTEM_PROMPT.xml");
+    let workspace_copy = state.workspace_path().join(".SYSTEM_PROMPT.xml");
     let _ = fs::write(&workspace_copy, &prompt);
 
     Ok(output_path)
@@ -158,8 +152,8 @@ fn assemble_prompt(state: &AppState) -> Result<String, String> {
 
     let workspace_name = state
         .workspace_path()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "auto".to_string());
 
     let body = parts.join("\n\n");
@@ -250,12 +244,10 @@ pub fn write_launch_spec(state: &AppState, prompt_path: &Path) -> Result<(), Str
         "prompt_path".to_string(),
         toml::Value::String(prompt_path.to_string_lossy().to_string()),
     );
-    if let Some(workspace) = state.workspace_path() {
-        table.insert(
-            "workspace_path".to_string(),
-            toml::Value::String(workspace.to_string_lossy().to_string()),
-        );
-    }
+    table.insert(
+        "workspace_path".to_string(),
+        toml::Value::String(state.workspace_path().to_string_lossy().to_string()),
+    );
     if let Some(persona_id) = selected_persona_id(state) {
         table.insert(
             "persona_id".to_string(),

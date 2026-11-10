@@ -82,6 +82,13 @@ pub struct AppState {
     pub section_cursor: usize,
     pub passthrough_flags: Vec<String>,
     pub update_mode: bool,
+    /// True once the user has picked a persona themselves. A workspace profile
+    /// then fills the slot only when this is false — selecting a workspace must
+    /// never silently replace an identity the user already chose.
+    pub persona_chosen_explicitly: bool,
+    /// Where cc_launch was invoked. This is the workspace when no profile is
+    /// selected — "Auto" means *this* directory, never "no directory".
+    pub launch_directory: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,31 +107,57 @@ pub enum TuiOutcome {
 
 impl Section {
     /// Next section following column-aware order:
-    /// C1: Workspace → Persona → Expertise
+    /// C1: Persona → Workspace → Expertise
     /// C2: Descriptors → Coding
-    /// Tab wraps: Coding → Workspace
+    /// Tab wraps: Coding → Persona
+    ///
+    /// Persona leads because it decides the most: identity, toolkit and
+    /// permissions travel with it, while the workspace defaults to wherever
+    /// the launcher was invoked and usually needs no decision at all.
     pub fn next(self) -> Self {
         match self {
-            Section::Workspace => Section::Persona,
-            Section::Persona => Section::Expertise,
+            Section::Persona => Section::Workspace,
+            Section::Workspace => Section::Expertise,
             Section::Expertise => Section::Descriptors,
             Section::Descriptors => Section::Coding,
-            Section::Coding => Section::Workspace,
+            Section::Coding => Section::Persona,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Section::Workspace => Section::Coding,
-            Section::Persona => Section::Workspace,
-            Section::Expertise => Section::Persona,
+            Section::Persona => Section::Coding,
+            Section::Workspace => Section::Persona,
+            Section::Expertise => Section::Workspace,
             Section::Descriptors => Section::Expertise,
             Section::Coding => Section::Descriptors,
         }
     }
 }
 
+/// Persona used when nothing else determines one — no profile selected, or a
+/// profile naming a persona that does not exist. Odinn is the all-rounder, so
+/// it is the least wrong identity for a session that has not been told who it
+/// is. Previously this was whichever persona sorted first by filename, which
+/// made Bragi the default by alphabetical accident.
+const DEFAULT_PERSONA_ID: &str = "odinn";
+
 impl Library {
+    /// Index of the default persona, or None only when the library has none.
+    /// Falls back to the first persona if DEFAULT_PERSONA_ID is missing — a
+    /// renamed file must not leave a session with no identity at all.
+    pub fn default_persona_index(&self) -> Option<usize> {
+        if self.personas.is_empty() {
+            return None;
+        }
+        Some(
+            self.personas
+                .iter()
+                .position(|persona| persona.id == DEFAULT_PERSONA_ID)
+                .unwrap_or(0),
+        )
+    }
+
     /// Returns indices of system descriptors only (not spaces).
     pub fn system_indices(&self) -> Vec<usize> {
         self.descriptors
@@ -157,6 +190,7 @@ impl AppState {
         profiles: Vec<WorkspaceProfile>,
         passthrough_flags: Vec<String>,
         update_mode: bool,
+        launch_directory: PathBuf,
     ) -> Self {
         let expertise_count = library.expertise.len();
         let descriptor_count = library.descriptors.len();
@@ -167,7 +201,7 @@ impl AppState {
             selected_languages[0] = true;
         }
 
-        let initial_persona = if library.personas.is_empty() { None } else { Some(0) };
+        let initial_persona = library.default_persona_index();
 
         Self {
             library,
@@ -178,10 +212,12 @@ impl AppState {
             selected_languages,
             selected_expertise: vec![false; expertise_count],
             selected_descriptors: vec![false; descriptor_count],
-            active_section: Section::Workspace,
+            active_section: Section::Persona,
             section_cursor: 0,
             passthrough_flags,
             update_mode,
+            persona_chosen_explicitly: false,
+            launch_directory,
         }
     }
 
@@ -235,10 +271,15 @@ impl AppState {
         }
     }
 
-    pub fn workspace_path(&self) -> Option<&Path> {
+    /// The directory this session will run in. A selected profile names it;
+    /// otherwise it is the directory cc_launch was invoked from. There is
+    /// always an answer — every path-dependent behaviour (space matching,
+    /// language derivation, the launch spec) depends on that being true.
+    pub fn workspace_path(&self) -> &Path {
         self.selected_workspace
             .and_then(|index| self.profiles.get(index))
             .map(|profile| profile.path.as_path())
+            .unwrap_or(self.launch_directory.as_path())
     }
 
     /// Returns the auto-matched space descriptor index, if any.
@@ -247,8 +288,8 @@ impl AppState {
         let persona_id = self.selected_persona
             .and_then(|i| self.library.personas.get(i))
             .map(|p| p.id.as_str())?;
-        let workspace_path = self.workspace_path()?;
-        self.library.matching_space_index(persona_id, workspace_path)
+        self.library
+            .matching_space_index(persona_id, self.workspace_path())
     }
 
     /// Returns system descriptor indices ordered for prompt assembly:
@@ -315,6 +356,15 @@ impl AppState {
         self.library.system_indices().len()
     }
 
+    /// Record the user's own persona choice. Distinct from assigning a default
+    /// so that a later workspace selection knows not to overwrite it.
+    pub fn choose_persona(&mut self, persona_index: usize) {
+        if persona_index < self.library.personas.len() {
+            self.selected_persona = Some(persona_index);
+            self.persona_chosen_explicitly = true;
+        }
+    }
+
     pub fn apply_workspace_profile(&mut self, profile_index: usize) {
         let profile = match self.profiles.get(profile_index) {
             Some(profile) => profile.clone(),
@@ -323,12 +373,20 @@ impl AppState {
 
         self.selected_workspace = Some(profile_index);
 
-        // Set persona
-        self.selected_persona = self
-            .library
-            .personas
-            .iter()
-            .position(|persona| persona.id == profile.persona);
+        // The profile's persona is a DEFAULT, not an override: it fills the slot
+        // only when the user has not chosen for themselves. A profile naming a
+        // persona that does not exist leaves the current one standing rather
+        // than clearing it — a session must never end up with no identity.
+        if !self.persona_chosen_explicitly {
+            if let Some(index) = self
+                .library
+                .personas
+                .iter()
+                .position(|persona| persona.id == profile.persona)
+            {
+                self.selected_persona = Some(index);
+            }
+        }
 
         // Set coding
         self.coding_enabled = profile.coding;
@@ -409,7 +467,9 @@ impl AppState {
 
     pub fn clear_workspace_profile(&mut self) {
         self.selected_workspace = None;
-        self.selected_persona = if self.library.personas.is_empty() { None } else { Some(0) };
+        if !self.persona_chosen_explicitly {
+            self.selected_persona = self.library.default_persona_index();
+        }
         self.coding_enabled = true;
         for (index, _) in self.library.languages.iter().enumerate() {
             self.selected_languages[index] = index == 0;
