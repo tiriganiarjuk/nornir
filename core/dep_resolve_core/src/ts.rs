@@ -63,12 +63,19 @@ pub fn extract_module_info(node: Node, source: &[u8]) -> (String, usize) {
     (full_text.to_string(), 0)
 }
 
-/// Get names imported by an import_from_statement.
+/// A name bound by `from x import …`: the local name and the name in `x`.
 ///
-/// For `from x import a, b, c` returns `["a", "b", "c"]`.
-/// For `from x import *` returns `["*"]`.
-pub fn extract_imported_names(node: Node, source: &[u8]) -> Vec<String> {
-    let mut names = Vec::new();
+/// `from x import a` binds `a` → `a`; `from x import a as b` binds `b` → `a`;
+/// `from x import *` binds `*` → `*`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportBinding {
+    pub local: String,
+    pub original: String,
+}
+
+/// The names bound by an import_from_statement, in source order.
+pub fn extract_import_bindings(node: Node, source: &[u8]) -> Vec<ImportBinding> {
+    let mut bindings = Vec::new();
     let mut past_import = false;
 
     let mut cursor = node.walk();
@@ -77,18 +84,47 @@ pub fn extract_imported_names(node: Node, source: &[u8]) -> Vec<String> {
             past_import = true;
             continue;
         }
-        if past_import && child.kind() == "dotted_name" {
-            names.push(node_text(child, source).to_string());
+        if !past_import {
+            continue;
         }
-        if past_import && child.kind() == "aliased_import" {
-            // `from x import y as z` — we want the original name "y"
-            if let Some(name_node) = child.child_by_field_name("name") {
-                names.push(node_text(name_node, source).to_string());
+        match child.kind() {
+            "dotted_name" => {
+                let name = node_text(child, source).to_string();
+                bindings.push(ImportBinding { local: name.clone(), original: name });
             }
-        }
-        if past_import && child.kind() == "wildcard_import" {
-            names.push("*".to_string());
+            "aliased_import" => {
+                let original = child.child_by_field_name("name").map(|n| node_text(n, source));
+                let alias = child.child_by_field_name("alias").map(|n| node_text(n, source));
+                if let (Some(original), Some(alias)) = (original, alias) {
+                    bindings.push(ImportBinding {
+                        local: alias.to_string(),
+                        original: original.to_string(),
+                    });
+                }
+            }
+            "wildcard_import" => {
+                bindings.push(ImportBinding { local: "*".to_string(), original: "*".to_string() });
+            }
+            _ => {}
         }
     }
-    names
+    bindings
+}
+
+/// The dotted module names of a plain `import a.b, c as d` statement.
+pub fn extract_plain_import_modules(node: Node, source: &[u8]) -> Vec<String> {
+    let mut modules = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "dotted_name" => modules.push(node_text(child, source).to_string()),
+            "aliased_import" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    modules.push(node_text(name, source).to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    modules
 }

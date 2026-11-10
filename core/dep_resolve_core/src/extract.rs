@@ -1,12 +1,20 @@
 //! Symbol extraction from Python tree-sitter ASTs.
 //!
-//! Given a parsed Python file and a list of symbol names to find,
-//! extracts their definitions as either signatures or full bodies.
+//! Given a parsed Python file and a list of top-level names, extracts their
+//! definitions as either signatures or full bodies.
 
 use tree_sitter::{Node, Tree};
 
 use crate::ts::{node_field, node_text};
-use crate::{ResolveMode, ResolvedSymbol, SymbolKind};
+use crate::{ResolveMode, SymbolKind};
+
+/// A top-level definition, rendered.
+#[derive(Debug, Clone)]
+pub struct Definition {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub rendered: String,
+}
 
 /// Shared context for symbol extraction — avoids threading 4+ params through every call.
 struct ExtractContext<'a> {
@@ -30,7 +38,7 @@ pub fn extract_symbols(
     tree: &Tree,
     names: &[String],
     mode: ResolveMode,
-) -> Vec<ResolvedSymbol> {
+) -> Vec<Definition> {
     let exctx = ExtractContext {
         source,
         mode,
@@ -69,7 +77,7 @@ pub fn extract_symbols(
     results
 }
 
-/// Extract all top-level exportable names from a Python module.
+/// Extract all public top-level names from a Python module, in file order.
 pub fn extract_all_top_level_names(source: &[u8], tree: &Tree) -> Vec<String> {
     let root = tree.root_node();
     let mut names = Vec::new();
@@ -86,6 +94,19 @@ pub fn extract_all_top_level_names(source: &[u8], tree: &Tree) -> Vec<String> {
     }
 
     names
+}
+
+/// The top-level statement that defines `name`: a function, class, constant
+/// or type alias. For a decorated definition the outer node is returned, so
+/// the decorators are part of it. Imports are not definitions.
+pub fn find_top_level<'a>(tree: &'a Tree, source: &[u8], name: &str) -> Option<Node<'a>> {
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    let found = root.children(&mut cursor).find(|node| {
+        let (_, inner) = unwrap_decorated(*node, source);
+        top_level_name(inner, source).as_deref() == Some(name)
+    });
+    found
 }
 
 // ── Node unwrapping ─────────────────────────────────────────────
@@ -117,13 +138,14 @@ fn has_async_keyword(node: Node) -> bool {
     found
 }
 
-/// Extract the public name from a top-level node, if it defines one.
+/// Extract the name from a top-level node, if it defines one.
 fn top_level_name(node: Node, source: &[u8]) -> Option<String> {
     match node.kind() {
         "function_definition" | "class_definition" => {
             node_field(node, "name").map(|n| node_text(n, source).to_string())
         }
         "expression_statement" => assignment_name(node, source),
+        "type_alias_statement" => type_alias_name(node, source),
         _ => None,
     }
 }
@@ -142,6 +164,11 @@ fn assignment_name(expr_stmt: Node, source: &[u8]) -> Option<String> {
     None
 }
 
+fn type_alias_name(node: Node, source: &[u8]) -> Option<String> {
+    let name_node = node.named_children(&mut node.walk()).next()?;
+    Some(node_text(name_node, source).to_string())
+}
+
 // ── Per-kind extraction ─────────────────────────────────────────
 
 fn try_extract_function(
@@ -149,7 +176,7 @@ fn try_extract_function(
     inner: Node,
     decorators: &str,
     exctx: &ExtractContext,
-) -> Option<ResolvedSymbol> {
+) -> Option<Definition> {
     let name = node_field(inner, "name")
         .map(|n| node_text(n, exctx.source).to_string())?;
     if !exctx.matches(&name) {
@@ -166,9 +193,8 @@ fn try_extract_function(
         }
     };
 
-    Some(ResolvedSymbol {
+    Some(Definition {
         name,
-        import_path: String::new(),
         kind: SymbolKind::Function,
         rendered,
     })
@@ -179,7 +205,7 @@ fn try_extract_class(
     inner: Node,
     decorators: &str,
     exctx: &ExtractContext,
-) -> Option<ResolvedSymbol> {
+) -> Option<Definition> {
     let name = node_field(inner, "name")
         .map(|n| node_text(n, exctx.source).to_string())?;
     if !exctx.matches(&name) {
@@ -202,9 +228,8 @@ fn try_extract_class(
         }
     };
 
-    Some(ResolvedSymbol {
+    Some(Definition {
         name,
-        import_path: String::new(),
         kind: SymbolKind::Class,
         rendered,
     })
@@ -213,7 +238,7 @@ fn try_extract_class(
 fn try_extract_assignment(
     expr_stmt: Node,
     exctx: &ExtractContext,
-) -> Option<ResolvedSymbol> {
+) -> Option<Definition> {
     let mut cursor = expr_stmt.walk();
     for child in expr_stmt.named_children(&mut cursor) {
         if child.kind() != "assignment" {
@@ -227,9 +252,8 @@ fn try_extract_assignment(
         if !exctx.matches(&name) {
             continue;
         }
-        return Some(ResolvedSymbol {
+        return Some(Definition {
             name,
-            import_path: String::new(),
             kind: SymbolKind::Constant,
             rendered: node_text(child, exctx.source).to_string(),
         });
@@ -240,15 +264,13 @@ fn try_extract_assignment(
 fn try_extract_type_alias(
     node: Node,
     exctx: &ExtractContext,
-) -> Option<ResolvedSymbol> {
-    let name_node = node.named_children(&mut node.walk()).next()?;
-    let name = node_text(name_node, exctx.source).to_string();
+) -> Option<Definition> {
+    let name = type_alias_name(node, exctx.source)?;
     if !exctx.matches(&name) {
         return None;
     }
-    Some(ResolvedSymbol {
+    Some(Definition {
         name,
-        import_path: String::new(),
         kind: SymbolKind::TypeAlias,
         rendered: node_text(node, exctx.source).to_string(),
     })

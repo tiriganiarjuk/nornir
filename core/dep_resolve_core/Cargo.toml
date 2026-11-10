@@ -7,5 +7,6 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
+sha2 = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-python = { workspace = true }

@@ -1,10 +1,10 @@
 [package]
-name = "dep_resolve"
+name = "dep_resolve_function"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "dep_resolve"
+name = "dep_resolve_function"
 path = "src/main.rs"
 
 [dependencies]

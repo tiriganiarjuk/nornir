@@ -56,7 +56,8 @@ crates = [
     "hush",
     "announce",
     "cc_launch",
-    "dep_resolve",
+    "dep_resolve_file",
+    "dep_resolve_function",
 ]
 verify = "exit_codes"
 valid_exit_codes = [0, 1, 2]

@@ -1,0 +1,12 @@
+[package]
+name = "dep_resolve_file"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dep_resolve_file"
+path = "src/main.rs"
+
+[dependencies]
+dep_resolve_core = { path = "../../core/dep_resolve_core" }
+clap = { workspace = true }

@@ -1,9 +1,12 @@
 //! PreToolUse hook: dependency context injection for Python file reads.
 //!
-//! When the main LLM reads a Python file, resolves project-local imports
-//! and injects dependency signatures (or full bodies) as additionalContext
-//! BEFORE the Read tool executes. The LLM sees dependencies first, then
-//! the file content from the normal Read result.
+//! When the main LLM reads a Python file, resolves the symbols the file
+//! imports — and what those use, transitively — and injects them as
+//! additionalContext BEFORE the Read tool executes. The LLM sees the
+//! dependencies first, then the file content from the normal Read result.
+//! Dependency findings (cycles, plain project imports, names a module does
+//! not define) are injected with the closure, so the reader learns what
+//! needs fixing; they never block the Read.
 //!
 //! Always allows — the Read proceeds normally.
 //!
@@ -18,9 +21,15 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use dep_resolve_core::resolve::ResolveConfig;
+use dep_resolve_core::render::render_closure;
+use dep_resolve_core::resolve::{resolve_file, ResolveConfig, Target};
 use dep_resolve_core::ResolveMode;
 use hook_io::{HookDecision, HookInput};
+
+/// What the injected text is for, said once before it.
+const PREFACE: &str = "The following are the resolved dependencies of the file being read — the \
+symbols it imports and what those use. Read them to understand the interfaces before modifying \
+the code. A findings block, if present, names dependency problems in these files that need fixing.";
 
 fn main() -> ExitCode {
     hook_io::run_pre_hook(decide)
@@ -52,19 +61,14 @@ fn resolve_context(input: &HookInput) -> Option<String> {
     let source = std::fs::read(file_path).ok()?;
     let config = build_config();
 
-    let result = dep_resolve_core::resolve::resolve_dependencies(
-        file_path,
-        &source,
-        &project_root,
-        |path| std::fs::read(path).ok(),
-        &config,
-    );
+    let target = Target { file_path, source: &source, project_root: &project_root };
+    let closure = resolve_file(&target, |path| std::fs::read(path).ok(), &config).ok()?;
 
-    let rendered = dep_resolve_core::render::render_injection(&result);
+    let rendered = render_closure(&closure);
     if rendered.is_empty() {
         None
     } else {
-        Some(rendered)
+        Some(format!("{PREFACE}\n\n{rendered}"))
     }
 }
 
@@ -87,11 +91,10 @@ fn is_disabled() -> bool {
 }
 
 fn build_config() -> ResolveConfig {
-    let mode = match std::env::var("DEP_RESOLVE_MODE").as_deref() {
-        Ok("hybrid") => ResolveMode::Hybrid,
-        Ok("full") => ResolveMode::Full,
-        _ => ResolveMode::Signatures,
-    };
+    let mode = std::env::var("DEP_RESOLVE_MODE")
+        .ok()
+        .and_then(|value| ResolveMode::parse(&value).ok())
+        .unwrap_or(ResolveMode::Signatures);
 
     let max_depth = std::env::var("DEP_RESOLVE_MAX_DEPTH")
         .ok()
