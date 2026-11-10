@@ -76,6 +76,8 @@ members = [
     "writers/append_raw_jsonl",
     "writers/append_forseti_interview_exchange_record",
     "writers/store_forseti_interview_session",
+    "writers/append_bragi_interview_exchange_record",
+    "writers/store_bragi_interview_session",
     "dispatchers/split_jsonl_batches",
     "capability/hook_io",
     "capability/datagram_io",

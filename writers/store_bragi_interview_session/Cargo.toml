@@ -1,0 +1,12 @@
+[package]
+name = "store_bragi_interview_session"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "store_bragi_interview_session"
+path = "src/main.rs"
+
+[dependencies]
+store_engine = { path = "../../capability/store_engine" }
+schemas_embedded = { path = "../../capability/schemas_embedded" }

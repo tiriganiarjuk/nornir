@@ -151,6 +151,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "append_bragi_interview_exchange_record"
+version = "0.1.0"
+dependencies = [
+ "schemas_embedded",
+ "write_engine",
+]
+
+[[package]]
 name = "append_embedding_normalize_batch_20"
 version = "0.1.0"
 dependencies = [
@@ -4472,6 +4480,14 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "store_bragi_interview_session"
+version = "0.1.0"
+dependencies = [
+ "schemas_embedded",
+ "store_engine",
+]
 
 [[package]]
 name = "store_engine"

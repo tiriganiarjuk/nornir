@@ -1,0 +1,12 @@
+[package]
+name = "append_bragi_interview_exchange_record"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "append_bragi_interview_exchange_record"
+path = "src/main.rs"
+
+[dependencies]
+write_engine = { path = "../../capability/write_engine" }
+schemas_embedded = { path = "../../capability/schemas_embedded" }

@@ -37,6 +37,8 @@ crates = [
     "append_raw_jsonl",
     "append_forseti_interview_exchange_record",
     "store_forseti_interview_session",
+    "append_bragi_interview_exchange_record",
+    "store_bragi_interview_session",
 ]
 verify = "help"
 
