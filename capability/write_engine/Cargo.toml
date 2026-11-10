@@ -11,3 +11,4 @@ serde_json = { workspace = true }
 error_core = { path = "../../core/error_core" }
 schema_core = { path = "../../core/schema_core" }
 path_core = { path = "../../core/path_core" }
+stamp_core = { path = "../../core/stamp_core" }

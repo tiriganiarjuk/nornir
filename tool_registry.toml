@@ -43,6 +43,15 @@ schema_path = "spaces/bragi/schemas/qc-report.schema.json"
 file_path = "spaces/bragi/truth/qc_semantic_report.jsonl"
 
 [[tools]]
+binary_name = "append_forseti_interview_exchange_record"
+invocation = "append_forseti_interview_exchange_record <<'EOF'\n{json_data}\nEOF"
+output_format = "jsonl"
+write_frequency = "record"
+output_path_kind = "fixed_file"
+schema_path = "smidja/nornir/schemas/tools/interview-exchange.schema.json"
+file_path = "spaces/forseti/interview/OPEN.jsonl"
+
+[[tools]]
 binary_name = "write_truth_glossary_record"
 invocation = "write_truth_glossary_record {name} <<'EOF'\n{json_data}\nEOF"
 output_format = "json"

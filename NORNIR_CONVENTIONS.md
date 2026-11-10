@@ -31,6 +31,7 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 |--------|-----------|--------------|
 | `append_` | `writers/` | Accepts data on stdin, appends to a file with fsync |
 | `write_` | `writers/` | Accepts data on stdin, writes a new file atomically |
+| `store_` | `writers/` | Closes an open append file as one stored session: copy, verify, index, truncate |
 | `check_` | `cli/` | Validates a file against a schema, exits 0/1/2 |
 | `convert_` | `converters/` | Reads one format on stdin, writes another on stdout |
 | `gate_` | `gates/` | PyO3 module: validates at a pipeline stage boundary |
@@ -105,22 +106,23 @@ fn main() {
 
 ### Writers (declarative on write_engine)
 
-~16-line binaries. Define config, call `write_engine::run()`:
+~20-line binaries. Define config, call `write_engine::run()`:
 
 ```rust
 use schemas_embedded::MY_SCHEMA;
-use write_engine::{OutputFormat, OutputPath, WriteFrequency, WriterConfig};
+use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfig};
 
 fn main() {
     let base = write_engine::ai_home();
     match write_engine::run(&WriterConfig {
         name: "append_my_thing",
         schema: &MY_SCHEMA,
-        schema_source_path: "schemas/tools/my-thing.schema.json".into(),
+        schema_source_path: base.join("smidja/nornir/schemas/tools/my-thing.schema.json").display().to_string(),
         format: OutputFormat::Jsonl,
         frequency: WriteFrequency::Record,
         output: OutputPath::DirectoryName { dir: base.join("path/to/output"), ext: "jsonl" },
         batch_size: None,
+        stamps: Stamps::NONE,
     }) {
         Ok(msg) => println!("{msg}"),
         Err(msg) => { eprintln!("{msg}"); std::process::exit(1); }
@@ -128,7 +130,21 @@ fn main() {
 }
 ```
 
-To add a new writer: create schema in `schemas/tools/`, add to `schemas_embedded/src/lib.rs`, create writer crate, add to workspace `Cargo.toml` and `deploy_categories.toml` under `[writers]`.
+**Stamps** are fields the writer sets and the author may not: `sequence` (line count + 1),
+`timestamp` (the clock, ISO 8601 Zulu), `session` (the file's session id, minted from the
+first record's timestamp in basic ISO form and copied thereafter). A record that supplies a
+stamped field is refused. The rules are pure in `stamp_core`; `write_engine` gathers the
+context from the file and the clock.
+
+**Stores** (`store_` on `store_engine`) are the counterpart: close the open file as one
+session — copy to `sessions/<id>.jsonl`, verify SHA-256, append a validated index record
+with the closing note from the command line, truncate the open file in place.
+
+To add a writer or a store: create the schema in `schemas/tools/`, add it to
+`schemas_embedded/src/lib.rs`, run `generate_writer.py` (`--kind store` for a store; it
+prints the remaining steps), add the crate to the workspace `Cargo.toml` and to
+`deploy_categories.toml` under `[writers]`, and for a writer add the printed entry to
+`tool_registry.toml`.
 
 ### Hooks (pure decision functions on hook_io)
 

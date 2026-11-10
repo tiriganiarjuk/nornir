@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "interview-exchange-schema-v2",
+  "title": "Interview Exchange Record",
+  "description": "One exchange of an interview session: the interviewer's words, the interviewee's words as dictated, and the interviewer's reading, kept apart. Written only through a stamping writer: exchange, session and ts are set by the writer from the file and the clock, never by the author. One session is one JSONL file; the session id is the first record's timestamp in basic ISO form, and a citation is session:exchange.",
+  "type": "object",
+
+  "required": ["exchange", "session", "ts", "agent", "stt", "user"],
+
+  "properties": {
+
+    "exchange": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Stamped: position in the session file, counted from 1. Never supplied by the author."
+    },
+
+    "session": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z$",
+      "description": "Stamped: the session id, the first record's timestamp as YYYYMMDDTHHMMSSZ. Minted on the first record, copied to every later one. Never supplied by the author."
+    },
+
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Stamped: time of writing, ISO 8601 Zulu. Never supplied by the author."
+    },
+
+    "agent": {
+      "type": "string",
+      "description": "What the interviewer said or asked (may be empty for interviewee-initiated exchanges)."
+    },
+
+    "stt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The interviewee's words as dictated, filler removed, an STT error corrected only at high certainty. Ground truth, immutable. Non-verbatim exchanges use bare markers: '{TRANSFERRED}' for written conversation incorporated into the interview, '{RECONSTRUCTED}' for content reconstructed after the original was lost."
+    },
+
+    "user": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Cleaned transcript, derived from stt. Non-verbatim exchanges are bracketed: '{TRANSFERRED}...{/TRANSFERRED}' (reliable, but denser than speech), '{RECONSTRUCTED}...{/RECONSTRUCTED}' (carries reification risk). Processing agents use these brackets to calibrate trust."
+    },
+
+    "llm_log": {
+      "type": "object",
+      "description": "The interviewer's real-time reading: what it understood, what it planned to ask, what it flagged. Interpretation, never quotable as the interviewee's words.",
+      "properties": {
+        "learned": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What the interviewer understood from this exchange."
+        },
+        "threads": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Follow-up directions the interviewer planned to explore."
+        },
+        "insight": {
+          "type": "string",
+          "description": "A flagged interesting moment, if any."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "correction": {
+      "type": "string",
+      "description": "What an earlier reading got wrong. Corrections are appended as new exchanges, never edited into old ones."
+    },
+
+    "archive": {
+      "type": "string",
+      "description": "Base64-encoded previous version, LLM-opaque audit trail."
+    }
+  },
+
+  "additionalProperties": false
+}

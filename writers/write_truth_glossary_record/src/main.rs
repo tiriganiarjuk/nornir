@@ -1,5 +1,5 @@
 use schemas_embedded::GLOSSARY;
-use write_engine::{OutputFormat, OutputPath, WriteFrequency, WriterConfig};
+use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfig};
 
 fn main() {
     let base = write_engine::ai_home();
@@ -14,6 +14,7 @@ fn main() {
             ext: "json",
         },
         batch_size: None,
+        stamps: Stamps::NONE,
     }) {
         Ok(msg) => println!("{msg}"),
         Err(msg) => {

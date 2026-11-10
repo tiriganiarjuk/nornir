@@ -35,6 +35,8 @@ crates = [
     "append_embedding_normalize_batch_20",
     "append_interview_summaries_record",
     "append_raw_jsonl",
+    "append_forseti_interview_exchange_record",
+    "store_forseti_interview_session",
 ]
 verify = "help"
 

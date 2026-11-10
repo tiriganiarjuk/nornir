@@ -1,5 +1,5 @@
 use schemas_embedded::QC_REPORT;
-use write_engine::{OutputFormat, OutputPath, WriteFrequency, WriterConfig};
+use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfig};
 
 fn main() {
     let base = write_engine::ai_home();
@@ -13,6 +13,7 @@ fn main() {
             base.join("spaces/bragi/truth/qc_semantic_report.jsonl"),
         ),
         batch_size: None,
+        stamps: Stamps::NONE,
     }) {
         Ok(msg) => println!("{msg}"),
         Err(msg) => {

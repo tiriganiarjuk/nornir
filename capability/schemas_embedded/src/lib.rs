@@ -5,7 +5,7 @@
 //! When schema sources move, update the symlinks — not this file.
 //!
 //! agents/  — agent building checkpoint and definition validation (20 schemas)
-//! tools/   — read/write tools with schema based filter gates (6 schemas)
+//! tools/   — read/write tools with schema based filter gates (8 schemas)
 
 use schema_core::EmbeddedValidator;
 
@@ -137,7 +137,7 @@ pub static INCLUDE_GUARDRAILS_ANTI_PATTERNS: EmbeddedValidator =
     EmbeddedValidator::new(INCL_GUARD_ANTI_JSON, "include-guardrails-anti-patterns");
 
 // =============================================================================
-// Tool schemas (6)
+// Tool schemas (8)
 // =============================================================================
 
 static DATAGRAM_JSON: &str =
@@ -169,6 +169,16 @@ static RAW_JSONL_JSON: &str =
     include_str!("../../../schemas/tools/raw-jsonl.schema.json");
 pub static RAW_JSONL_RECORD: EmbeddedValidator =
     EmbeddedValidator::new(RAW_JSONL_JSON, "raw-jsonl");
+
+static INTERVIEW_EXCHANGE_JSON: &str =
+    include_str!("../../../schemas/tools/interview-exchange.schema.json");
+pub static INTERVIEW_EXCHANGE: EmbeddedValidator =
+    EmbeddedValidator::new(INTERVIEW_EXCHANGE_JSON, "interview-exchange");
+
+static INTERVIEW_SESSION_JSON: &str =
+    include_str!("../../../schemas/tools/interview-session.schema.json");
+pub static INTERVIEW_SESSION: EmbeddedValidator =
+    EmbeddedValidator::new(INTERVIEW_SESSION_JSON, "interview-session");
 
 #[cfg(test)]
 mod tests {
@@ -347,6 +357,42 @@ mod tests {
     fn test_raw_jsonl_record_compiles() {
         assert_eq!(RAW_JSONL_RECORD.schema_name(), "raw-jsonl");
         assert!(!RAW_JSONL_RECORD.schema_json().is_empty());
+    }
+
+    #[test]
+    fn test_interview_exchange_compiles() {
+        assert_eq!(INTERVIEW_EXCHANGE.schema_name(), "interview-exchange");
+        assert!(!INTERVIEW_EXCHANGE.schema_json().is_empty());
+    }
+
+    #[test]
+    fn test_interview_exchange_requires_stamps_and_refuses_extras() {
+        let complete = r#"{"exchange":1,"session":"20261110T045515Z","ts":"2026-11-10T04:55:15Z","agent":"q","stt":"a","user":"a","llm_log":{"learned":["x"],"threads":[]}}"#;
+        assert!(INTERVIEW_EXCHANGE.is_valid(complete).unwrap());
+
+        let unstamped = r#"{"agent":"q","stt":"a","user":"a"}"#;
+        assert!(!INTERVIEW_EXCHANGE.is_valid(unstamped).unwrap());
+
+        let flat_learned = r#"{"exchange":1,"session":"20261110T045515Z","ts":"2026-11-10T04:55:15Z","agent":"q","stt":"a","user":"a","learned":["x"]}"#;
+        assert!(!INTERVIEW_EXCHANGE.is_valid(flat_learned).unwrap());
+    }
+
+    #[test]
+    fn test_interview_session_compiles() {
+        assert_eq!(INTERVIEW_SESSION.schema_name(), "interview-session");
+        assert!(!INTERVIEW_SESSION.schema_json().is_empty());
+    }
+
+    #[test]
+    fn test_interview_session_shape() {
+        let complete = r#"{"id":"20261110T045515Z","opened":"2026-11-10T04:55:15Z","closed":"2026-11-10T11:25:09Z","about":"setup","tags":["forseti-setup"],"prior":[]}"#;
+        assert!(INTERVIEW_SESSION.is_valid(complete).unwrap());
+
+        let bad_id = r#"{"id":"2026-11-10","opened":"2026-11-10T04:55:15Z","closed":"2026-11-10T11:25:09Z","about":"setup"}"#;
+        assert!(!INTERVIEW_SESSION.is_valid(bad_id).unwrap());
+
+        let counted = r#"{"id":"20261110T045515Z","opened":"2026-11-10T04:55:15Z","closed":"2026-11-10T11:25:09Z","about":"setup","exchanges":50}"#;
+        assert!(!INTERVIEW_SESSION.is_valid(counted).unwrap());
     }
 
 }

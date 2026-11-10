@@ -56,6 +56,48 @@ pub fn iso_zulu(epoch_secs: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+/// Convert Unix epoch seconds to the ISO 8601 basic Zulu form: `YYYYMMDDTHHMMSSZ` (UTC).
+///
+/// No separators, so the result is safe as a filename component and sorts
+/// chronologically as a plain string.
+pub fn iso_basic(epoch_secs: u64) -> String {
+    let (year, month, day, hour, minute, second) = epoch_to_parts(epoch_secs);
+    format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
+}
+
+/// Reduce an extended Zulu timestamp (`YYYY-MM-DDTHH:MM:SSZ`) to its basic form
+/// (`YYYYMMDDTHHMMSSZ`).
+///
+/// Pure string transform: the shape is checked, not the calendar. Returns the
+/// reason when the input is not exactly the extended Zulu form.
+pub fn iso_zulu_to_basic(iso_zulu: &str) -> Result<String, String> {
+    const EXTENDED_LEN: usize = "YYYY-MM-DDTHH:MM:SSZ".len();
+    if iso_zulu.len() != EXTENDED_LEN {
+        return Err(format!(
+            "expected YYYY-MM-DDTHH:MM:SSZ ({EXTENDED_LEN} chars), got {} chars: {iso_zulu:?}",
+            iso_zulu.len()
+        ));
+    }
+    let bytes = iso_zulu.as_bytes();
+    let separators_ok = bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'Z';
+    if !separators_ok {
+        return Err(format!("expected YYYY-MM-DDTHH:MM:SSZ separators, got {iso_zulu:?}"));
+    }
+    let digits_ok = iso_zulu
+        .char_indices()
+        .filter(|(i, _)| !matches!(i, 4 | 7 | 10 | 13 | 16 | 19))
+        .all(|(_, c)| c.is_ascii_digit());
+    if !digits_ok {
+        return Err(format!("expected digits between separators, got {iso_zulu:?}"));
+    }
+    Ok(iso_zulu.chars().filter(|c| *c != '-' && *c != ':').collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +166,44 @@ mod tests {
     fn iso_zulu_midnight_boundary() {
         // 2024-01-02 00:00:00 UTC = 1704067200 + 86400
         assert_eq!(iso_zulu(1704153600), "2024-01-02T00:00:00Z");
+    }
+
+    // --- iso_basic ---
+
+    #[test]
+    fn iso_basic_known_timestamp() {
+        assert_eq!(iso_basic(1704112245), "20240101T123045Z");
+    }
+
+    #[test]
+    fn iso_basic_sorts_as_string() {
+        assert!(iso_basic(1704112245) < iso_basic(1704112246));
+        assert!(iso_basic(1704153599) < iso_basic(1704153600));
+    }
+
+    // --- iso_zulu_to_basic ---
+
+    #[test]
+    fn iso_zulu_to_basic_round_trips_iso_zulu() {
+        let extended = iso_zulu(1704112245);
+        assert_eq!(iso_zulu_to_basic(&extended).unwrap(), iso_basic(1704112245));
+    }
+
+    #[test]
+    fn iso_zulu_to_basic_rejects_wrong_length() {
+        assert!(iso_zulu_to_basic("2024-01-01T12:30:45").is_err());
+        assert!(iso_zulu_to_basic("2024-01-01T12:30:45.123Z").is_err());
+    }
+
+    #[test]
+    fn iso_zulu_to_basic_rejects_wrong_separators() {
+        assert!(iso_zulu_to_basic("2024/01/01T12:30:45Z").is_err());
+        assert!(iso_zulu_to_basic("2024-01-01 12:30:45Z").is_err());
+    }
+
+    #[test]
+    fn iso_zulu_to_basic_rejects_non_digits() {
+        assert!(iso_zulu_to_basic("2024-01-0aT12:30:45Z").is_err());
     }
 
     // --- is_leap ---

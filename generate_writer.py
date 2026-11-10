@@ -5,36 +5,54 @@
 #     "loguru>=0.7",
 # ]
 # ///
-"""Generate a Nornir writer crate from parameters.
+"""Generate a Nornir writer or store crate from parameters.
 
-Usage:
-    ./generate_writer.py \\
-        --name append_embedding_normalize_batch_20 \\
-        --schema-const EMBEDDING_TARGET \\
-        --format jsonl \\
-        --frequency record \\
-        --output-kind fixed_file \\
-        --file-path /abs/path/to/output.jsonl \\
-        --batch-size 20
+A writer appends or writes one validated record (or batch) through
+write_engine. A store closes an open append file as one stored session
+through store_engine. Both are thin binaries over their engine; this
+script writes the crate so the config is the whole description.
 
+Paths are given relative to the ai root (~/ai) and resolved at runtime
+through write_engine::ai_home(), exactly as the hand-written writers do.
+
+Usage — a writer:
     ./generate_writer.py \\
         --name append_interview_summaries_record \\
         --schema-const SUMMARIES \\
+        --schema-path spaces/bragi/schemas/summaries.schema.json \\
         --format jsonl \\
         --frequency record \\
         --output-kind directory_prefix \\
-        --dir-path /abs/path/to/dir \\
+        --dir-path spaces/bragi/interview/interviews \\
         --suffix .summaries.jsonl
+
+Usage — a stamping writer (fields the writer sets, the author may not):
+    ./generate_writer.py \\
+        --name append_forseti_interview_exchange_record \\
+        --schema-const INTERVIEW_EXCHANGE \\
+        --schema-path schemas/tools/interview-exchange.schema.json \\
+        --format jsonl --frequency record \\
+        --output-kind fixed_file --file-path spaces/forseti/interview/OPEN.jsonl \\
+        --stamp-sequence exchange --stamp-timestamp ts --stamp-session session
+
+Usage — a store:
+    ./generate_writer.py --kind store \\
+        --name store_forseti_interview_session \\
+        --schema-const INTERVIEW_SESSION \\
+        --schema-path schemas/tools/interview-session.schema.json \\
+        --open-file spaces/forseti/interview/OPEN.jsonl \\
+        --sessions-dir spaces/forseti/interview/sessions \\
+        --index-file spaces/forseti/interview/index.jsonl \\
+        --session-field session --timestamp-field ts
 
 Generates:
     writers/{name}/Cargo.toml
     writers/{name}/src/main.rs
 
 Prints (does NOT auto-modify):
-    - schemas_embedded lines to add
     - workspace Cargo.toml member to add
-    - tool_registry.toml entry to add
     - deploy_categories.toml [writers].crates entry to add
+    - tool_registry.toml entry to add (writers only)
 """
 
 import argparse
@@ -45,8 +63,18 @@ from loguru import logger
 
 NORNIR_DIR = Path(__file__).resolve().parent
 
+MAIN_TAIL = """    }) {
+        Ok(msg) => println!("{msg}"),
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    }
+}
+"""
 
-def build_cargo_toml(name: str) -> str:
+
+def build_cargo_toml(name: str, engine: str) -> str:
     return f"""[package]
 name = "{name}"
 version = "0.1.0"
@@ -57,74 +85,119 @@ name = "{name}"
 path = "src/main.rs"
 
 [dependencies]
-write_engine = {{ path = "../../capability/write_engine" }}
+{engine} = {{ path = "../../capability/{engine}" }}
 schemas_embedded = {{ path = "../../capability/schemas_embedded" }}
 """
 
 
-def build_output_path_rust(
-    output_kind: str,
-    file_path: str | None,
-    dir_path: str | None,
-    suffix: str | None,
-    extension: str | None,
-) -> str:
-    if output_kind == "fixed_file":
-        if not file_path:
+def build_output_path_rust(config: argparse.Namespace) -> str:
+    kind = config.output_kind
+    if kind == "fixed_file":
+        if not config.file_path:
             logger.error("--file-path required for fixed_file")
             sys.exit(1)
         return (
-            f'OutputPath::FixedFile(\n'
-            f'            "{file_path}",\n'
-            f'        )'
+            "OutputPath::FixedFile(\n"
+            f'            base.join("{config.file_path}"),\n'
+            "        )"
         )
-    if output_kind == "directory_prefix":
-        if not dir_path or not suffix:
+    if kind == "directory_prefix":
+        if not config.dir_path or not config.suffix:
             logger.error("--dir-path and --suffix required for directory_prefix")
             sys.exit(1)
         return (
-            f'OutputPath::DirectoryPrefix {{\n'
-            f'            dir: "{dir_path}",\n'
-            f'            suffix: "{suffix}",\n'
-            f'        }}'
+            "OutputPath::DirectoryPrefix {\n"
+            f'            dir: base.join("{config.dir_path}"),\n'
+            f'            suffix: "{config.suffix}",\n'
+            "        }"
         )
-    if output_kind == "directory_name":
-        if not dir_path or not extension:
+    if kind == "directory_name":
+        if not config.dir_path or not config.ext:
             logger.error("--dir-path and --ext required for directory_name")
             sys.exit(1)
         return (
-            f'OutputPath::DirectoryName {{\n'
-            f'            dir: "{dir_path}",\n'
-            f'            ext: "{extension}",\n'
-            f'        }}'
+            "OutputPath::DirectoryName {\n"
+            f'            dir: base.join("{config.dir_path}"),\n'
+            f'            ext: "{config.ext}",\n'
+            "        }"
         )
-    logger.error("Unknown output_kind: {}", output_kind)
+    logger.error("Unknown output_kind: {}", kind)
     sys.exit(1)
 
 
-def build_main_rs(
-    config: argparse.Namespace,
-    output_path_rust: str,
-) -> str:
+def rust_option_str(value: str | None) -> str:
+    """Render an optional field name as a Rust `Option<&str>` literal."""
+    return f'Some("{value}")' if value else "None"
+
+
+def build_stamps_rust(config: argparse.Namespace) -> str:
+    if not (config.stamp_sequence or config.stamp_timestamp or config.stamp_session):
+        return "Stamps::NONE"
+    return (
+        "Stamps {\n"
+        f"            sequence: {rust_option_str(config.stamp_sequence)},\n"
+        f"            timestamp: {rust_option_str(config.stamp_timestamp)},\n"
+        f"            session: {rust_option_str(config.stamp_session)},\n"
+        "        }"
+    )
+
+
+def build_writer_main_rs(config: argparse.Namespace) -> str:
     format_variant = "Jsonl" if config.format == "jsonl" else "Json"
     freq_variant = "Record" if config.frequency == "record" else "Batch"
     batch_line = f"Some({config.batch_size})" if config.batch_size else "None"
-    source_path = config.schema_path or "unknown"
     return (
         f"use schemas_embedded::{config.schema_const};\n"
-        f"use write_engine::{{OutputFormat, OutputPath, WriteFrequency, WriterConfig}};\n"
-        f"\n"
-        f"fn main() {{\n"
-        f"    write_engine::run(&WriterConfig {{\n"
+        "use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfig};\n"
+        "\n"
+        "fn main() {\n"
+        "    let base = write_engine::ai_home();\n"
+        "    match write_engine::run(&WriterConfig {\n"
         f'        name: "{config.name}",\n'
         f"        schema: &{config.schema_const},\n"
-        f'        schema_source_path: "{source_path}",\n'
+        f'        schema_source_path: base.join("{config.schema_path}").display().to_string(),\n'
         f"        format: OutputFormat::{format_variant},\n"
         f"        frequency: WriteFrequency::{freq_variant},\n"
-        f"        output: {output_path_rust},\n"
+        f"        output: {build_output_path_rust(config)},\n"
         f"        batch_size: {batch_line},\n"
-        f"    }});\n"
-        f"}}\n"
+        f"        stamps: {build_stamps_rust(config)},\n"
+        + MAIN_TAIL
+    )
+
+
+def build_store_main_rs(config: argparse.Namespace) -> str:
+    required = {
+        "--open-file": config.open_file,
+        "--sessions-dir": config.sessions_dir,
+        "--index-file": config.index_file,
+    }
+    missing = [flag for flag, value in required.items() if not value]
+    if missing:
+        logger.error("--kind store requires {}", ", ".join(missing))
+        sys.exit(1)
+    return (
+        f"use schemas_embedded::{config.schema_const};\n"
+        "use store_engine::{StoreConfig, StoreOutcome};\n"
+        "\n"
+        "fn main() {\n"
+        "    let base = store_engine::ai_home();\n"
+        "    match store_engine::run(&StoreConfig {\n"
+        f'        name: "{config.name}",\n'
+        f'        open_file: base.join("{config.open_file}"),\n'
+        f'        sessions_dir: base.join("{config.sessions_dir}"),\n'
+        f'        index_file: base.join("{config.index_file}"),\n'
+        f"        index_schema: &{config.schema_const},\n"
+        f'        index_schema_source_path: base.join("{config.schema_path}").display().to_string(),\n'
+        f'        session_field: "{config.session_field}",\n'
+        f'        timestamp_field: "{config.timestamp_field}",\n'
+        "    }) {\n"
+        "        Ok(StoreOutcome::Stored(msg)) | Ok(StoreOutcome::Help(msg)) => println!(\"{msg}\"),\n"
+        "        Err((code, msg)) => {\n"
+        "            eprintln!(\"{msg}\");\n"
+        "            std::process::exit(code);\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
     )
 
 
@@ -144,31 +217,25 @@ def build_registry_entry(config: argparse.Namespace) -> str:
         f'output_format = "{config.format}"',
         f'write_frequency = "{config.frequency}"',
         f'output_path_kind = "{config.output_kind}"',
+        f'schema_path = "{config.schema_path}"',
     ]
-    if config.schema_path:
-        lines.append(f'schema_path = "{config.schema_path}"')
-    if config.output_kind == "fixed_file" and config.file_path:
+    if config.output_kind == "fixed_file":
         lines.append(f'file_path = "{config.file_path}"')
-    elif config.output_kind == "directory_name" and config.dir_path:
+    elif config.output_kind == "directory_name":
         lines.append(f'directory_path = "{config.dir_path}"')
-        if config.ext:
-            lines.append(f'name_extension = "{config.ext}"')
-    elif config.output_kind == "directory_prefix" and config.dir_path:
+        lines.append(f'name_extension = "{config.ext}"')
+    elif config.output_kind == "directory_prefix":
         lines.append(f'directory_path = "{config.dir_path}"')
-        if config.suffix:
-            lines.append(f'name_suffix = "{config.suffix}"')
+        lines.append(f'name_suffix = "{config.suffix}"')
     return "\n".join(lines)
 
 
 def generate(config: argparse.Namespace) -> bool:
-    """Generate writer crate files. Returns True on success."""
+    """Generate the crate files. Returns True on success."""
+    engine = "store_engine" if config.kind == "store" else "write_engine"
+    cargo_toml = build_cargo_toml(config.name, engine)
+    main_rs = build_store_main_rs(config) if config.kind == "store" else build_writer_main_rs(config)
     crate_dir = NORNIR_DIR / "writers" / config.name
-    cargo_toml = build_cargo_toml(config.name)
-    output_path_rust = build_output_path_rust(
-        config.output_kind, config.file_path, config.dir_path,
-        config.suffix, config.ext,
-    )
-    main_rs = build_main_rs(config, output_path_rust)
 
     if config.dry_run:
         sys.stdout.write(f"--- writers/{config.name}/Cargo.toml ---\n")
@@ -184,12 +251,12 @@ def generate(config: argparse.Namespace) -> bool:
         logger.info("Generated: writers/{}/src/main.rs", config.name)
 
     sys.stdout.write("\n=== Manual steps required ===\n\n")
-    sys.stdout.write(f'Add to workspace Cargo.toml members:\n')
+    sys.stdout.write("Add to workspace Cargo.toml members:\n")
     sys.stdout.write(f'    "writers/{config.name}",\n\n')
-    sys.stdout.write(f'Add to deploy_categories.toml [writers].crates:\n')
+    sys.stdout.write("Add to deploy_categories.toml [writers].crates:\n")
     sys.stdout.write(f'    "{config.name}",\n\n')
 
-    if config.schema_path:
+    if config.kind == "writer":
         sys.stdout.write("Add to tool_registry.toml:\n")
         sys.stdout.write(build_registry_entry(config))
         sys.stdout.write("\n")
@@ -197,24 +264,40 @@ def generate(config: argparse.Namespace) -> bool:
     return True
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate a Nornir writer crate")
-    parser.add_argument("--name", required=True, help="Binary name")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate a Nornir writer or store crate")
+    parser.add_argument("--kind", choices=["writer", "store"], default="writer")
+    parser.add_argument("--name", required=True, help="Binary name = crate name = directory name")
     parser.add_argument("--schema-const", required=True, help="Rust const in schemas_embedded")
-    parser.add_argument("--format", required=True, choices=["jsonl", "json"])
-    parser.add_argument("--frequency", required=True, choices=["record", "batch"])
-    parser.add_argument(
-        "--output-kind",
-        required=True,
-        choices=["fixed_file", "directory_prefix", "directory_name"],
-    )
-    parser.add_argument("--file-path", help="Absolute path for fixed_file")
-    parser.add_argument("--dir-path", help="Directory for directory_prefix/directory_name")
-    parser.add_argument("--suffix", help="Suffix for directory_prefix")
-    parser.add_argument("--ext", help="Extension for directory_name")
-    parser.add_argument("--batch-size", type=int, help="Batch size limit")
-    parser.add_argument("--schema-path", help="Schema .json path for registry entry")
+    parser.add_argument("--schema-path", required=True, help="Schema path relative to the ai root")
+
+    writer = parser.add_argument_group("writer")
+    writer.add_argument("--format", choices=["jsonl", "json"])
+    writer.add_argument("--frequency", choices=["record", "batch"])
+    writer.add_argument("--output-kind", choices=["fixed_file", "directory_prefix", "directory_name"])
+    writer.add_argument("--file-path", help="fixed_file: output file, relative to the ai root")
+    writer.add_argument("--dir-path", help="directory_*: output directory, relative to the ai root")
+    writer.add_argument("--suffix", help="directory_prefix: suffix appended to the runtime name")
+    writer.add_argument("--ext", help="directory_name: extension without the dot")
+    writer.add_argument("--batch-size", type=int, help="Batch size limit")
+    writer.add_argument("--stamp-sequence", help="Field set to line count + 1")
+    writer.add_argument("--stamp-timestamp", help="Field set to the clock, ISO 8601 Zulu")
+    writer.add_argument("--stamp-session", help="Field set to the file's session id")
+
+    store = parser.add_argument_group("store")
+    store.add_argument("--open-file", help="The open append file, relative to the ai root")
+    store.add_argument("--sessions-dir", help="Where stored sessions go, relative to the ai root")
+    store.add_argument("--index-file", help="The append-only session index, relative to the ai root")
+    store.add_argument("--session-field", default="session", help="Record field carrying the session id")
+    store.add_argument("--timestamp-field", default="ts", help="Record field carrying the timestamp")
+
     parser.add_argument("--dry-run", action="store_true", help="Print files without writing")
 
     args = parser.parse_args()
-    generate(args)
+    if args.kind == "writer" and not (args.format and args.frequency and args.output_kind):
+        parser.error("--kind writer requires --format, --frequency and --output-kind")
+    return args
+
+
+if __name__ == "__main__":
+    generate(parse_args())

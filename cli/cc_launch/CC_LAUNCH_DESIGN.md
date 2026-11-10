@@ -267,6 +267,10 @@ From a read of the launcher source against the documents. Each is a difference, 
 - `primary_descriptor` on the five space profiles names the space id, which is looked up only among system descriptors and matches nothing; the space loads through the path rule.
 - Several recent stored prompts are about 144 KB, carrying every system descriptor and every expertise module, against Core Design Principle 1.
 - `huginn` and `muninn` are defined with no space, no descriptor and no profile.
+- A subagent dispatched into a project from a running session reads that session's stored
+  `SYSTEM_PROMPT.xml` (the memory bootloader tells it to) and so orients as the parent's
+  persona and workspace. On 2026-11-10 four Opus agents sent to four projects all reported
+  running as Bragi in workspace `ai` and flagged it as a mismatch.
 - The Key Files table lists `systems/README.md`, `spaces/README.md`, `systems/DISPATCH_PROTOCOL.md` and `~/ai/tools/scripts/start_tyr`, none of which exist, and places `PROMPT_DESIGN.md` at the library root; it is in `_orientation/`.
 
 ### Library

@@ -159,6 +159,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "append_forseti_interview_exchange_record"
+version = "0.1.0"
+dependencies = [
+ "schemas_embedded",
+ "write_engine",
+]
+
+[[package]]
 name = "append_interview_summaries_record"
 version = "0.1.0"
 dependencies = [
@@ -1008,7 +1016,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5729f5117e208430e437df2f4843f5e5952997175992d1414f94c57d61e270b4"
 
 [[package]]
-name = "dep_resolve"
+name = "dep_resolve_core"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "tree-sitter",
+ "tree-sitter-python",
+]
+
+[[package]]
+name = "dep_resolve_file"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -1016,11 +1033,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "dep_resolve_core"
+name = "dep_resolve_function"
 version = "0.1.0"
 dependencies = [
- "tree-sitter",
- "tree-sitter-python",
+ "clap",
+ "dep_resolve_core",
 ]
 
 [[package]]
@@ -4442,10 +4459,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "stamp_core"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.18",
+ "time_core",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "store_engine"
+version = "0.1.0"
+dependencies = [
+ "schema_core",
+ "serde_json",
+ "sha2",
+ "stamp_core",
+ "time_core",
+ "write_engine",
+]
+
+[[package]]
+name = "store_forseti_interview_session"
+version = "0.1.0"
+dependencies = [
+ "schemas_embedded",
+ "store_engine",
+]
 
 [[package]]
 name = "streaming-iterator"
@@ -6124,6 +6170,7 @@ dependencies = [
  "path_core",
  "schema_core",
  "serde_json",
+ "stamp_core",
 ]
 
 [[package]]

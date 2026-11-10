@@ -1,0 +1,15 @@
+[package]
+name = "store_engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+schema_core = { path = "../../core/schema_core" }
+stamp_core = { path = "../../core/stamp_core" }
+time_core = { path = "../../core/time_core" }
+write_engine = { path = "../write_engine" }

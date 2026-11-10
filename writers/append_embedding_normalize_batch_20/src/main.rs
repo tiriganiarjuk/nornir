@@ -1,5 +1,5 @@
 use schemas_embedded::EMBEDDING_TARGET;
-use write_engine::{OutputFormat, OutputPath, WriteFrequency, WriterConfig};
+use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfig};
 
 fn main() {
     let base = write_engine::ai_home();
@@ -13,6 +13,7 @@ fn main() {
             base.join("spaces/bragi/interview/embedding_format/normalized.jsonl"),
         ),
         batch_size: Some(20),
+        stamps: Stamps::NONE,
     }) {
         Ok(msg) => println!("{msg}"),
         Err(msg) => {

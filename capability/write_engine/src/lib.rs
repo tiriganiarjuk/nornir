@@ -7,12 +7,16 @@
 //! - Educational error messages for LLM consumers
 //! - `--help` output showing all hardcoded configuration
 //! - `--dump-schema` to print embedded JSON Schema for inspection
+//! - Untamperable stamps (sequence, timestamp, session) applied before validation
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use schema_core::EmbeddedValidator;
+pub use stamp_core::Stamps;
+use stamp_core::StampContext;
 
 // =============================================================================
 // Configuration types
@@ -72,6 +76,9 @@ pub struct WriterConfig {
     pub output: OutputPath,
     /// Max records per batch (None = unlimited). Only used with Batch frequency.
     pub batch_size: Option<usize>,
+    /// Fields the writer sets itself, before validation. A record that supplies
+    /// one of them is refused. `Stamps::NONE` writes the record as given.
+    pub stamps: Stamps,
 }
 
 // =============================================================================
@@ -93,6 +100,7 @@ enum WriteError {
     MissingArg(String),
     /// Pre-formatted batch line error (preserves exact original output format).
     BatchLine(String),
+    Stamp(String),
 }
 
 /// Heredoc usage hint shared by stdin-empty and invalid-json errors.
@@ -151,6 +159,11 @@ impl WriteError {
                 name = config.name,
             ),
             WriteError::BatchLine(msg) => msg.clone(),
+            WriteError::Stamp(msg) => format!(
+                "FAIL:stamp — {msg}\n\n\
+                 This writer stamps {fields} itself. Leave those fields out of the record.",
+                fields = config.stamps.field_names().join(", "),
+            ),
         }
     }
 }
@@ -265,6 +278,24 @@ fn format_help_config(config: &WriterConfig, lines: &mut Vec<String>) {
     if let Some(max) = config.batch_size {
         lines.push(format!("  Max batch:   {} records", max));
     }
+    if !config.stamps.is_none() {
+        lines.push(format!("  Stamps:      {}", format_stamps(&config.stamps)));
+    }
+}
+
+/// Describe the configured stamps: field name and what it is set from.
+fn format_stamps(stamps: &Stamps) -> String {
+    let mut parts = Vec::new();
+    if let Some(field) = stamps.sequence {
+        parts.push(format!("{field} = line count + 1"));
+    }
+    if let Some(field) = stamps.timestamp {
+        parts.push(format!("{field} = clock, ISO 8601 Zulu"));
+    }
+    if let Some(field) = stamps.session {
+        parts.push(format!("{field} = first record's timestamp, basic ISO form"));
+    }
+    parts.join("; ")
 }
 
 /// Format the OUTPUT and EXIT CODES sections of --help output.
@@ -279,6 +310,99 @@ fn format_help_output(config: &WriterConfig, lines: &mut Vec<String>) {
     lines.push("EXIT CODES:".into());
     lines.push("  0  success".into());
     lines.push("  1  failure".into());
+}
+
+// =============================================================================
+// Stamping — gather the context from the file and the clock, apply the rules
+// =============================================================================
+
+/// Current time as Unix epoch seconds.
+fn now_epoch() -> Result<u64, WriteError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .map_err(|e| WriteError::IoFailed(format!("system clock: {e}")))
+}
+
+/// The non-empty lines already in a JSONL target. The file must exist.
+fn read_existing_lines(path: &Path) -> Result<Vec<String>, WriteError> {
+    if !path.exists() {
+        return Err(WriteError::FileNotFound(path.display().to_string()));
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|e| WriteError::IoFailed(format!("read {}: {e}", path.display())))?;
+    Ok(content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// What the stamps need: the target's record count, its session id, the clock.
+fn stamp_context(config: &WriterConfig, output_path: &Path) -> Result<StampContext, WriteError> {
+    let existing = match config.format {
+        OutputFormat::Jsonl => read_existing_lines(output_path)?,
+        OutputFormat::Json => Vec::new(),
+    };
+    let session_id = match (config.stamps.session, existing.first()) {
+        (Some(field), Some(first_line)) => Some(
+            stamp_core::session_id_of_first_record(first_line, field)
+                .map_err(|e| WriteError::Stamp(e.to_string()))?,
+        ),
+        _ => None,
+    };
+    Ok(StampContext {
+        line_count: existing.len() as u64,
+        now_epoch: now_epoch()?,
+        session_id,
+    })
+}
+
+/// Stamp one record as the `offset`-th record beyond the context's count.
+fn stamp_record(
+    config: &WriterConfig,
+    context: &StampContext,
+    input: &str,
+    offset: u64,
+) -> Result<String, WriteError> {
+    let record: serde_json::Value = serde_json::from_str(input)
+        .map_err(|e| WriteError::InvalidJson(e.to_string()))?;
+    let context_for_record = StampContext {
+        line_count: context.line_count + offset,
+        now_epoch: context.now_epoch,
+        session_id: context.session_id.clone(),
+    };
+    let stamped = stamp_core::apply(record, &config.stamps, &context_for_record)
+        .map_err(|e| WriteError::Stamp(e.to_string()))?;
+    serde_json::to_string(&stamped)
+        .map_err(|e| WriteError::IoFailed(format!("re-serialization: {e}")))
+}
+
+/// Stamp a batch in order. When the batch opens an empty file, the first record
+/// mints the session id and the rest of the batch copies it.
+fn stamp_lines(
+    config: &WriterConfig,
+    context: &StampContext,
+    lines: &[&str],
+) -> Result<Vec<String>, WriteError> {
+    let mut running = StampContext {
+        line_count: context.line_count,
+        now_epoch: context.now_epoch,
+        session_id: context.session_id.clone(),
+    };
+    let mut stamped_lines = Vec::with_capacity(lines.len());
+    for (offset, line) in lines.iter().enumerate() {
+        let stamped = stamp_record(config, &running, line, offset as u64)
+            .map_err(|e| WriteError::BatchLine(format!("FAIL:line {} — {}", offset + 1, e.format(config))))?;
+        if let (Some(field), None) = (config.stamps.session, &running.session_id) {
+            running.session_id = Some(
+                stamp_core::session_id_of_first_record(&stamped, field)
+                    .map_err(|e| WriteError::Stamp(e.to_string()))?,
+            );
+        }
+        stamped_lines.push(stamped);
+    }
+    Ok(stamped_lines)
 }
 
 // =============================================================================
@@ -438,6 +562,16 @@ pub fn run(config: &WriterConfig) -> Result<String, String> {
 
 /// Handle single-record writes.
 fn run_record(config: &WriterConfig, output_path: &Path, input: &str) -> Result<String, WriteError> {
+    // Stamp first: the stamps are part of the record the schema sees
+    let stamped;
+    let input = if config.stamps.is_none() {
+        input
+    } else {
+        let context = stamp_context(config, output_path)?;
+        stamped = stamp_record(config, &context, input, 0)?;
+        stamped.as_str()
+    };
+
     // Validate JSON + schema
     let result = config
         .schema
@@ -521,14 +655,12 @@ fn validate_batch_lines(config: &WriterConfig, lines: &[&str]) -> Result<Vec<Str
     Ok(validated)
 }
 
-/// Handle batch writes (multiple JSONL lines, all-or-nothing).
-fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<String, WriteError> {
+/// Split batch input into non-empty lines and enforce the batch size.
+fn batch_lines<'a>(config: &WriterConfig, input: &'a str) -> Result<Vec<&'a str>, WriteError> {
     let lines: Vec<&str> = input.lines().filter(|l| !l.trim().is_empty()).collect();
-
     if lines.is_empty() {
         return Err(WriteError::StdinEmpty);
     }
-
     if let Some(max) = config.batch_size {
         if lines.len() > max {
             return Err(WriteError::BatchTooLarge {
@@ -537,60 +669,63 @@ fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<S
             });
         }
     }
+    Ok(lines)
+}
+
+/// Append validated lines to an existing JSONL file, one fsync for the batch.
+fn append_lines(output_path: &Path, validated: &[String]) -> Result<(), WriteError> {
+    if !output_path.exists() {
+        return Err(WriteError::FileNotFound(output_path.display().to_string()));
+    }
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(output_path)
+        .map_err(|e| WriteError::IoFailed(format!("{}: {}", output_path.display(), e)))?;
+    for line in validated {
+        writeln!(file, "{}", line).map_err(|e| WriteError::IoFailed(format!("write: {}", e)))?;
+    }
+    file.sync_all()
+        .map_err(|e| WriteError::IoFailed(format!("fsync: {}", e)))
+}
+
+/// Write validated lines as a pretty JSON array into a new file.
+fn write_json_array(output_path: &Path, validated: &[String]) -> Result<(), WriteError> {
+    if output_path.exists() {
+        return Err(WriteError::FileExists(output_path.display().to_string()));
+    }
+    if let Some(parent) = output_path.parent() {
+        if !parent.exists() {
+            return Err(WriteError::DirectoryNotFound(parent.display().to_string()));
+        }
+    }
+    let values: Vec<serde_json::Value> = validated
+        .iter()
+        .map(|s| serde_json::from_str(s))
+        .collect::<Result<_, _>>()
+        .map_err(|e| WriteError::IoFailed(format!("batch re-parse: {e}")))?;
+    let pretty = serde_json::to_string_pretty(&values)
+        .map_err(|e| WriteError::IoFailed(format!("batch re-serialization: {e}")))?;
+    write_atomic(output_path, &pretty)
+}
+
+/// Handle batch writes (multiple JSONL lines, all-or-nothing).
+fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<String, WriteError> {
+    let lines = batch_lines(config, input)?;
+
+    let stamped_lines;
+    let lines: Vec<&str> = if config.stamps.is_none() {
+        lines
+    } else {
+        let context = stamp_context(config, output_path)?;
+        stamped_lines = stamp_lines(config, &context, &lines)?;
+        stamped_lines.iter().map(String::as_str).collect()
+    };
 
     let validated = validate_batch_lines(config, &lines)?;
 
-    // File must exist for jsonl append
     match config.format {
-        OutputFormat::Jsonl => {
-            if !output_path.exists() {
-                return Err(WriteError::FileNotFound(
-                    output_path.display().to_string(),
-                ));
-            }
-
-            // Append all validated records
-            let mut file = OpenOptions::new()
-                .append(true)
-                .open(output_path)
-                .map_err(|e| {
-                    WriteError::IoFailed(format!("{}: {}", output_path.display(), e))
-                })?;
-
-            for line in &validated {
-                writeln!(file, "{}", line).map_err(|e| {
-                    WriteError::IoFailed(format!("write: {}", e))
-                })?;
-            }
-
-            file.sync_all().map_err(|e| {
-                WriteError::IoFailed(format!("fsync: {}", e))
-            })?;
-        }
-        OutputFormat::Json => {
-            // Batch mode with Json format is unusual but handle it:
-            // write a JSON array
-            if output_path.exists() {
-                return Err(WriteError::FileExists(
-                    output_path.display().to_string(),
-                ));
-            }
-            if let Some(parent) = output_path.parent() {
-                if !parent.exists() {
-                    return Err(WriteError::DirectoryNotFound(
-                        parent.display().to_string(),
-                    ));
-                }
-            }
-            let values: Vec<serde_json::Value> = validated
-                .iter()
-                .map(|s| serde_json::from_str(s))
-                .collect::<Result<_, _>>()
-                .map_err(|e| WriteError::IoFailed(format!("batch re-parse: {e}")))?;
-            let pretty = serde_json::to_string_pretty(&values)
-                .map_err(|e| WriteError::IoFailed(format!("batch re-serialization: {e}")))?;
-            write_atomic(output_path, &pretty)?;
-        }
+        OutputFormat::Jsonl => append_lines(output_path, &validated)?,
+        OutputFormat::Json => write_json_array(output_path, &validated)?,
     }
 
     Ok(format!("OK:{}", validated.len()))
@@ -650,6 +785,7 @@ mod tests {
             frequency: WriteFrequency::Record,
             output: OutputPath::FixedFile(PathBuf::from("/tmp/test.jsonl")),
             batch_size: None,
+            stamps: Stamps::NONE,
         };
         let path = resolve_output_path(&config, None).unwrap();
         assert_eq!(path, PathBuf::from("/tmp/test.jsonl"));
@@ -668,6 +804,7 @@ mod tests {
                 ext: "json",
             },
             batch_size: None,
+            stamps: Stamps::NONE,
         };
         let path = resolve_output_path(&config, Some("entry-123")).unwrap();
         assert_eq!(path, PathBuf::from("/tmp/out/entry-123.json"));
@@ -686,6 +823,7 @@ mod tests {
                 suffix: ".summaries.jsonl",
             },
             batch_size: None,
+            stamps: Stamps::NONE,
         };
         let path = resolve_output_path(&config, Some("interview-42")).unwrap();
         assert_eq!(
@@ -707,6 +845,7 @@ mod tests {
                 ext: "json",
             },
             batch_size: None,
+            stamps: Stamps::NONE,
         };
         assert!(resolve_output_path(&config, Some("../../../etc/passwd")).is_err());
         assert!(resolve_output_path(&config, Some("foo/bar")).is_err());
@@ -726,8 +865,126 @@ mod tests {
                 ext: "json",
             },
             batch_size: None,
+            stamps: Stamps::NONE,
         };
         assert!(resolve_output_path(&config, None).is_err());
+    }
+
+    // =========================================================================
+    // stamps
+    // =========================================================================
+
+    static STAMPED_SCHEMA: &str = r#"{
+        "type": "object",
+        "required": ["exchange", "ts", "session", "stt"],
+        "properties": {
+            "exchange": {"type": "integer", "minimum": 1},
+            "ts": {"type": "string"},
+            "session": {"type": "string"},
+            "stt": {"type": "string"}
+        },
+        "additionalProperties": false
+    }"#;
+    static STAMPED_VALIDATOR: EmbeddedValidator =
+        EmbeddedValidator::new(STAMPED_SCHEMA, "stamped-test");
+
+    const EXCHANGE_STAMPS: Stamps = Stamps {
+        sequence: Some("exchange"),
+        timestamp: Some("ts"),
+        session: Some("session"),
+    };
+
+    fn stamped_config(path: PathBuf) -> WriterConfig {
+        WriterConfig {
+            name: "test_stamped",
+            schema: &STAMPED_VALIDATOR,
+            schema_source_path: "test".into(),
+            format: OutputFormat::Jsonl,
+            frequency: WriteFrequency::Record,
+            output: OutputPath::FixedFile(path),
+            batch_size: None,
+            stamps: EXCHANGE_STAMPS,
+        }
+    }
+
+    fn temp_jsonl(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("we_test_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("OPEN.jsonl");
+        std::fs::write(&path, "").unwrap();
+        (dir, path)
+    }
+
+    fn records_in(path: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn stamped_records_count_on_and_share_the_minted_session() {
+        let (dir, path) = temp_jsonl("stamp_seq");
+        let config = stamped_config(path.clone());
+
+        run_record(&config, &path, r#"{"stt": "first"}"#).unwrap();
+        run_record(&config, &path, r#"{"stt": "second"}"#).unwrap();
+
+        let records = records_in(&path);
+        assert_eq!(records[0]["exchange"], 1);
+        assert_eq!(records[1]["exchange"], 2);
+        let session = records[0]["session"].as_str().unwrap().to_string();
+        assert_eq!(records[1]["session"], session);
+        assert_eq!(session.len(), "YYYYMMDDTHHMMSSZ".len());
+        assert!(records[0]["ts"].as_str().unwrap().ends_with('Z'));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn supplied_stamp_field_is_refused_and_nothing_is_written() {
+        let (dir, path) = temp_jsonl("stamp_refuse");
+        let config = stamped_config(path.clone());
+
+        let err = run_record(&config, &path, r#"{"exchange": 9, "stt": "x"}"#).unwrap_err();
+        assert!(matches!(err, WriteError::Stamp(_)));
+        assert!(err.format(&config).contains("exchange, ts, session"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stamping_needs_the_target_file_to_exist() {
+        let dir = std::env::temp_dir().join(format!("we_test_stamp_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("OPEN.jsonl");
+        let config = stamped_config(path.clone());
+
+        let err = run_record(&config, &path, r#"{"stt": "x"}"#).unwrap_err();
+        assert!(matches!(err, WriteError::FileNotFound(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stamped_batch_mints_once_and_numbers_in_order() {
+        let (dir, path) = temp_jsonl("stamp_batch");
+        let mut config = stamped_config(path.clone());
+        config.frequency = WriteFrequency::Batch;
+
+        let input = "{\"stt\": \"a\"}\n{\"stt\": \"b\"}\n{\"stt\": \"c\"}";
+        assert_eq!(run_batch(&config, &path, input).unwrap(), "OK:3");
+
+        let records = records_in(&path);
+        let numbers: Vec<_> = records.iter().map(|r| r["exchange"].as_u64().unwrap()).collect();
+        assert_eq!(numbers, vec![1, 2, 3]);
+        assert!(records.iter().all(|r| r["session"] == records[0]["session"]));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // =========================================================================

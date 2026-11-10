@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "interview-session-schema-v1",
+  "title": "Interview Session Record",
+  "description": "One stored interview session, as recorded in the append-only session index when the open exchange file is closed and moved. Written by the store tool: id, opened and closed come from the session file and the clock; about, tags and prior are the interviewee's closing note. Nothing here is a count of the file's contents — those are read from the file.",
+  "type": "object",
+
+  "required": ["id", "opened", "closed", "about"],
+
+  "properties": {
+
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z$",
+      "description": "The session id: the first record's timestamp as YYYYMMDDTHHMMSSZ. Equal to the session field stamped on every record in the file, and to the stored file's name stem."
+    },
+
+    "opened": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of the first record, ISO 8601 Zulu."
+    },
+
+    "closed": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Time the session was stored, ISO 8601 Zulu."
+    },
+
+    "about": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What the conversation turned out to be about, in the interviewee's words, given at close. Not read by any categorizer."
+    },
+
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+      },
+      "uniqueItems": true,
+      "description": "The interviewee's own closing tags, slugs. Not read by any categorizer."
+    },
+
+    "prior": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{8}T[0-9]{6}Z$"
+      },
+      "uniqueItems": true,
+      "description": "Session ids this session continues from, as named at close."
+    }
+  },
+
+  "additionalProperties": false
+}
