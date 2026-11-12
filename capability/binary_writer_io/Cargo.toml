@@ -1,0 +1,13 @@
+[package]
+name = "binary_writer_io"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+binary_format_core = { path = "../../core/binary_format_core" }
+write_engine = { path = "../write_engine" }
+flate2 = { workspace = true }
+thiserror = { workspace = true }

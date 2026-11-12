@@ -58,6 +58,13 @@ members = [
     "readers/read_markdown_validate_json",
     "readers/read_tomlx_json",
     "readers/read_tomlx_json_schema",
+    "core/binary_format_core",
+    "capability/binary_writer_io",
+    "binary_writers/write_bytes_verify_png",
+    "binary_writers/write_bytes_verify_quantized_mesh",
+    "core/elevation_core",
+    "capability/binary_reader_io",
+    "binary_readers/read_png_verify_heights",
     "cli/check_raw_definition",
     "cli/check_paths_resolved",
     "cli/check_paths_verified",
@@ -152,6 +159,8 @@ tree-sitter-python = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
 sha2 = "0.10"
+flate2 = "1.1"
+png = "0.18"
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 reqwest = { version = "0.12", features = ["blocking"] }

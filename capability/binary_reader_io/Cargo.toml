@@ -1,0 +1,16 @@
+[package]
+name = "binary_reader_io"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+binary_format_core = { path = "../../core/binary_format_core" }
+elevation_core = { path = "../../core/elevation_core" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+png = { workspace = true }

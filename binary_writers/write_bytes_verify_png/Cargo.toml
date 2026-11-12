@@ -1,0 +1,12 @@
+[package]
+name = "write_bytes_verify_png"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "write_bytes_verify_png"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { workspace = true }
+binary_writer_io = { path = "../../capability/binary_writer_io" }

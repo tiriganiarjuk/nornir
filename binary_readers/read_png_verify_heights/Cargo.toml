@@ -1,0 +1,12 @@
+[package]
+name = "read_png_verify_heights"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "read_png_verify_heights"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { workspace = true }
+binary_reader_io = { path = "../../capability/binary_reader_io" }

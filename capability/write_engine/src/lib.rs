@@ -422,8 +422,13 @@ fn append_line(path: &Path, line: &str) -> Result<(), WriteError> {
     Ok(())
 }
 
-/// Write a complete file atomically (write temp, fsync, rename).
+/// Write a complete text file atomically (write temp, fsync, rename).
 fn write_atomic(path: &Path, content: &str) -> Result<(), WriteError> {
+    write_atomic_bytes(path, content.as_bytes())
+}
+
+/// Write a complete file atomically (write temp, fsync, rename).
+fn write_atomic_bytes(path: &Path, content: &[u8]) -> Result<(), WriteError> {
     let parent = path
         .parent()
         .ok_or_else(|| WriteError::IoFailed("cannot determine parent directory".to_string()))?;
@@ -438,7 +443,7 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), WriteError> {
     // Write to temp file
     let mut file = File::create(&tmp_path)
         .map_err(|e| WriteError::IoFailed(format!("create {}: {}", tmp_path.display(), e)))?;
-    file.write_all(content.as_bytes())
+    file.write_all(content)
         .map_err(|e| WriteError::IoFailed(format!("write {}: {}", tmp_path.display(), e)))?;
     file.sync_all()
         .map_err(|e| WriteError::IoFailed(format!("fsync {}: {}", tmp_path.display(), e)))?;
@@ -469,6 +474,16 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), WriteError> {
 /// writer pipeline (schema validation, stdin parsing, path resolution).
 pub fn write_file_atomic(path: &Path, content: &str) -> Result<(), String> {
     write_atomic(path, content).map_err(|e| match e {
+        WriteError::IoFailed(msg) => msg,
+        other => format!("{other:?}"),
+    })
+}
+
+/// Write a file of bytes atomically (temp file + fsync + rename).
+///
+/// The byte-level form of `write_file_atomic`, for binary content.
+pub fn write_bytes_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
+    write_atomic_bytes(path, content).map_err(|e| match e {
         WriteError::IoFailed(msg) => msg,
         other => format!("{other:?}"),
     })

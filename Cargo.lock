@@ -272,6 +272,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "binary_format_core"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "png",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "binary_reader_io"
+version = "0.1.0"
+dependencies = [
+ "binary_format_core",
+ "elevation_core",
+ "png",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "binary_writer_io"
+version = "0.1.0"
+dependencies = [
+ "binary_format_core",
+ "flate2",
+ "thiserror 2.0.18",
+ "write_engine",
+]
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1145,6 +1175,13 @@ name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+
+[[package]]
+name = "elevation_core"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "email_address"
@@ -3796,6 +3833,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "read_png_verify_heights"
+version = "0.1.0"
+dependencies = [
+ "binary_reader_io",
+ "pyo3",
+]
+
+[[package]]
 name = "read_toml_validate_json"
 version = "0.1.0"
 dependencies = [
@@ -6176,6 +6221,22 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "write_engine",
+]
+
+[[package]]
+name = "write_bytes_verify_png"
+version = "0.1.0"
+dependencies = [
+ "binary_writer_io",
+ "pyo3",
+]
+
+[[package]]
+name = "write_bytes_verify_quantized_mesh"
+version = "0.1.0"
+dependencies = [
+ "binary_writer_io",
+ "pyo3",
 ]
 
 [[package]]

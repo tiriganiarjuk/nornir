@@ -14,8 +14,8 @@ Tier 2: CAPABILITY (feature libraries, may have I/O)
     capability/* — depend on core + other capability crates
 
 Tier 3: BINARIES (executables and Python extensions)
-    gates/*, readers/*, cli/*, writers/*, hooks/*, senders/*, converters/*,
-    rewriters/*, watchers/*, dispatchers/*, interceptors/*, daemons/*
+    gates/*, readers/*, binary_readers/*, binary_writers/*, cli/*, writers/*, hooks/*, senders/*,
+    converters/*, rewriters/*, watchers/*, dispatchers/*, interceptors/*, daemons/*
     — depend on core + capability, NEVER on other binaries
 ```
 
@@ -36,6 +36,8 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 | `convert_` | `converters/` | Reads one format on stdin, writes another on stdout |
 | `gate_` | `gates/` | PyO3 module: validates at a pipeline stage boundary |
 | `read_` | `readers/` | PyO3 module: reads one file format, validates against a schema named at call time, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
+| `read_{format}_verify_` | `binary_readers/` | PyO3 module: reads one binary file format, verifies it against the format and the shape the caller states, returns the binary reader contract — decoded content as `payload`, its description as `data` (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
+| `write_bytes_verify_` | `binary_writers/` | PyO3 module: takes bytes, verifies them against one binary format and the shape the caller states, writes the file atomically, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
 | `hook_` | `hooks/` | Intercepts an LLM tool call for security/quality |
 | `send_` | `senders/` | Fire-and-forget datagram to hlidskjalf socket |
 | `rewrite_` | `rewriters/` | Reads JSON on stdin, modifies content, writes JSON on stdout |
@@ -57,6 +59,10 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 **Gates:** `gate_{stage}_{direction}` — stage matches schema name with underscores, direction is `input` or `output`. A gate is custom: it embeds one schema at compile time, so it carries that schema's name.
 
 **Readers:** `read_{format}_validate_json` — four slots: `read` is the direction, `{format}` the input format, `validate` says a schema is a parameter (`read(file_path, schema_name, schema_dir)`), `json` the output format. A reader is general: any schema, any caller. Self-describing formats drop the `validate` slot (`read_tomlx_json`, `read_tomlx_json_schema`). Thin wrappers over `reader_io`.
+
+**Binary readers:** `read_{format}_verify_{content}` — the readers' four slots with two changes of word: `verify` in place of `validate`, because the check is against the format's own standard plus the shape the caller states, and `{content}` names what comes back, since it is typed content and no longer JSON (`read_png_verify_heights` returns heights). The same strictness as the binary writers applies on the way in: a file carrying anything beyond its stated shape is refused. Thin wrappers over `binary_reader_io`.
+
+**Binary writers:** `write_bytes_verify_{format}` — four slots, mirroring the readers: `write` is the direction, `bytes` what the caller hands over, `verify` says the check is against the format's own standard plus the shape the caller states (`validate` stays reserved for schemas), `{format}` the file format written. A binary writer is general: any caller, but every call states the exact shape it expects, and a file carrying anything beyond that shape — trailing bytes, free-form chunks or extensions — is refused. A writer with its shape compiled in is named for what it writes and built on the same engine. Thin wrappers over `binary_writer_io`.
 
 ### Identity Rule
 
@@ -179,7 +185,12 @@ Before writing logic, check if it already exists:
 | Path field extraction from schema | `path_core` |
 | Path existence checks | `path_verify_io` |
 | Atomic file writes with schema validation | `write_engine` |
+| Atomic file writes of bytes | `write_engine::write_bytes_atomic` |
 | JSONL append with fsync | `write_engine::append_line_fsync` |
+| Binary format verification (PNG, quantized-mesh) | `binary_format_core` |
+| Binary writer I/O: verify bytes, then write atomically | `binary_writer_io` |
+| Binary reader I/O: read a file, verify, decode | `binary_reader_io` |
+| Heights from elevation tiles, bad-pixel repair | `elevation_core` |
 | QA report generation | `saga_runner` |
 | QA report grouping/formatting | `report_render_core` |
 | Jq filter compilation + evaluation | `syn_core` |
@@ -207,6 +218,7 @@ nornir_deploy --all                  # rebuild + deploy everything
 nornir_deploy --non-pyo3             # all cargo crates, skip maturin gates
 nornir_deploy --build gates          # single category
 nornir_deploy --build readers        # the reader modules (maturin, like gates)
+nornir_deploy --build binary_readers,binary_writers  # the binary reader and writer modules (maturin, like gates)
 nornir_deploy --build hooks,writers  # multiple categories
 nornir_deploy --list                 # show categories and crate counts
 ```
@@ -256,4 +268,4 @@ To add a new data shape:
 
 All external crates declared in root `Cargo.toml` `[workspace.dependencies]`. Reference as `{ workspace = true }` in crate Cargo.toml. Never pin a version in a crate's own Cargo.toml.
 
-Current: serde 1.0, serde_json 1.0, serde_yaml 0.9, toml 0.8, toon-format 0.4, jsonschema 0.29, thiserror 2.0, pyo3 0.22, regex 1.11, jaq-interpret 1.5, jaq-parse 1.0, tree-sitter 0.25, tree-sitter-css 0.25, tree-sitter-html 0.23, tree-sitter-python 0.25, tree-sitter-rust 0.24, tree-sitter-typescript 0.23, sha2 0.10, clap 4 (derive), libc 0.2, reqwest 0.12 (blocking), dotenvy 0.15, rodio 0.19.
+Current: serde 1.0, serde_json 1.0, serde_yaml 0.9, toml 0.8, toon-format 0.4, jsonschema 0.29, thiserror 2.0, pyo3 0.22, regex 1.11, jaq-interpret 1.5, jaq-parse 1.0, tree-sitter 0.25, tree-sitter-css 0.25, tree-sitter-html 0.23, tree-sitter-python 0.25, tree-sitter-rust 0.24, tree-sitter-typescript 0.23, sha2 0.10, flate2 1.1, png 0.18, clap 4 (derive), libc 0.2, reqwest 0.12 (blocking), dotenvy 0.15, rodio 0.19.

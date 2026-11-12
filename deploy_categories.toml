@@ -185,3 +185,18 @@ pyo3_crates = [
     "read_tomlx_json_schema",
 ]
 pyo3_verify = "python_import"
+
+[binary_readers]
+python_version = "python3.13"
+pyo3_crates = [
+    "read_png_verify_heights",
+]
+pyo3_verify = "python_import"
+
+[binary_writers]
+python_version = "python3.13"
+pyo3_crates = [
+    "write_bytes_verify_png",
+    "write_bytes_verify_quantized_mesh",
+]
+pyo3_verify = "python_import"
