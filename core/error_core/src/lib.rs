@@ -31,6 +31,24 @@ pub enum NornirError {
     Io(#[from] IoError),
 }
 
+impl NornirError {
+    /// The failure class a caller branches on — the `error.type` of a gate result.
+    /// The vocabulary is the readers' (`reader_io::ReaderError::error_type`), plus the
+    /// two classes only gates produce: `path_error` and `write_error`.
+    pub fn error_type(&self) -> &'static str {
+        match self {
+            NornirError::Format(FormatError::Conversion(_)) => "conversion_error",
+            NornirError::Format(_) => "parse_error",
+            NornirError::Schema(SchemaError::InvalidInput(_)) => "parse_error",
+            NornirError::Schema(SchemaError::SchemaCompilation(_)) => "schema_error",
+            NornirError::Schema(SchemaError::ValidationFailed(_)) => "validation_error",
+            NornirError::Path(_) => "path_error",
+            NornirError::Io(IoError::WriteFailed { .. }) => "write_error",
+            NornirError::Io(_) => "read_error",
+        }
+    }
+}
+
 // =============================================================================
 // Specific error types
 // =============================================================================

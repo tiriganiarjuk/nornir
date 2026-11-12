@@ -22,7 +22,7 @@ fn validate(py: Python<'_>, path: &str) -> PyResult<PyObject> {
             dict.set_item("ok", false)?;
             dict.set_item("data", py.None())?;
             let err = PyDict::new_bound(py);
-            err.set_item("type", "validation_error")?;
+            err.set_item("type", e.error_type())?;
             err.set_item("message", e.to_string())?;
             dict.set_item("error", err)?;
             Ok(dict.into())
