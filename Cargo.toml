@@ -62,6 +62,8 @@ members = [
     "capability/binary_writer_io",
     "binary_writers/write_bytes_verify_png",
     "binary_writers/write_bytes_verify_quantized_mesh",
+    "capability/text_writer_io",
+    "text_writers/write_json_validate_json",
     "core/elevation_core",
     "capability/binary_reader_io",
     "binary_readers/read_png_verify_heights",

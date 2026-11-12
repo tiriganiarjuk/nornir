@@ -187,8 +187,6 @@ pub fn read_validate_json(
     schema_name: &str,
     schema_dir: &str,
 ) -> Result<String, ReaderError> {
-    let schema_path = schema_file_path(schema_name, schema_dir);
-
     let content = read_file(file_path)?;
 
     let json_str = format.to_json(&content).map_err(|format_err| ReaderError::ParseFailed {
@@ -201,6 +199,16 @@ pub fn read_validate_json(
         format: format.label(),
         message: json_err.to_string(),
     })?;
+
+    validate_against_named_schema(&data, schema_name, schema_dir)?;
+    Ok(json_str)
+}
+
+/// Validate parsed JSON against `{schema_dir}/{schema_name}.schema.json`, loaded
+/// by name and compiled once per process. A schema that cannot be read or
+/// compiled is an error: nothing validates without one.
+pub fn validate_against_named_schema(data: &Value, schema_name: &str, schema_dir: &str) -> Result<(), ReaderError> {
+    let schema_path = schema_file_path(schema_name, schema_dir);
 
     let mut cache_guard = VALIDATOR_CACHE
         .lock()
@@ -216,9 +224,9 @@ pub fn read_validate_json(
         message: "not in cache after compilation".to_string(),
     })?;
 
-    let errors: Vec<_> = validator.iter_errors(&data).collect();
+    let errors: Vec<_> = validator.iter_errors(data).collect();
     if errors.is_empty() {
-        return Ok(json_str);
+        return Ok(());
     }
 
     let issues: Vec<_> = errors.iter().map(ValidationIssue::from_schema_error).collect();

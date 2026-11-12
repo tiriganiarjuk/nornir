@@ -14,7 +14,7 @@ Tier 2: CAPABILITY (feature libraries, may have I/O)
     capability/* — depend on core + other capability crates
 
 Tier 3: BINARIES (executables and Python extensions)
-    gates/*, readers/*, binary_readers/*, binary_writers/*, cli/*, writers/*, hooks/*, senders/*,
+    gates/*, readers/*, text_writers/*, binary_readers/*, binary_writers/*, cli/*, writers/*, hooks/*, senders/*,
     converters/*, rewriters/*, watchers/*, dispatchers/*, interceptors/*, daemons/*
     — depend on core + capability, NEVER on other binaries
 ```
@@ -36,6 +36,7 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 | `convert_` | `converters/` | Reads one format on stdin, writes another on stdout |
 | `gate_` | `gates/` | PyO3 module: validates at a pipeline stage boundary |
 | `read_` | `readers/` | PyO3 module: reads one file format, validates against a schema named at call time, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
+| `write_json_validate_` | `text_writers/` | PyO3 module: takes JSON text, validates it against a schema named at call time, writes one file format atomically, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
 | `read_{format}_verify_` | `binary_readers/` | PyO3 module: reads one binary file format, verifies it against the format and the shape the caller states, returns the binary reader contract — decoded content as `payload`, its description as `data` (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
 | `write_bytes_verify_` | `binary_writers/` | PyO3 module: takes bytes, verifies them against one binary format and the shape the caller states, writes the file atomically, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
 | `hook_` | `hooks/` | Intercepts an LLM tool call for security/quality |
@@ -59,6 +60,8 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 **Gates:** `gate_{stage}_{direction}` — stage matches schema name with underscores, direction is `input` or `output`. A gate is custom: it embeds one schema at compile time, so it carries that schema's name.
 
 **Readers:** `read_{format}_validate_json` — four slots: `read` is the direction, `{format}` the input format, `validate` says a schema is a parameter (`read(file_path, schema_name, schema_dir)`), `json` the output format. A reader is general: any schema, any caller. Self-describing formats drop the `validate` slot (`read_tomlx_json`, `read_tomlx_json_schema`). Thin wrappers over `reader_io`.
+
+**Text writers:** `write_json_validate_{format}` — the readers' four slots in the other direction: `write` is the direction, `json` what the caller hands over, `validate` says a schema is a parameter (`write(json_data, file_path, schema_name, schema_dir)`), `{format}` the file format written. A text writer is general: any schema, any caller — and it writes nothing without one. Thin wrappers over `text_writer_io`, which validates through `reader_io`, so a schema is loaded and reported the same way in both directions.
 
 **Binary readers:** `read_{format}_verify_{content}` — the readers' four slots with two changes of word: `verify` in place of `validate`, because the check is against the format's own standard plus the shape the caller states, and `{content}` names what comes back, since it is typed content and no longer JSON (`read_png_verify_heights` returns heights). The same strictness as the binary writers applies on the way in: a file carrying anything beyond its stated shape is refused. Thin wrappers over `binary_reader_io`.
 
@@ -200,6 +203,8 @@ Before writing logic, check if it already exists:
 | Hook rule parsing from TOML | `hook_io::rules` |
 | Gate I/O orchestration (compile-time schema) | `gate_io` |
 | Reader I/O: format→JSON + schema loaded by name at call time | `reader_io` |
+| Validating JSON against a schema loaded by name | `reader_io::validate_against_named_schema` |
+| Text writer I/O: validate JSON against a named schema, then write atomically | `text_writer_io` |
 | Datagram emission to Hlidskjalf | `datagram_io` |
 | Schema constants | `schemas_embedded` |
 | File-arg diagnostic CLI contract | `io_check` |
@@ -217,7 +222,7 @@ Do NOT use bare `cargo build --release` — it skips symlinks, verification, and
 nornir_deploy --all                  # rebuild + deploy everything
 nornir_deploy --non-pyo3             # all cargo crates, skip maturin gates
 nornir_deploy --build gates          # single category
-nornir_deploy --build readers        # the reader modules (maturin, like gates)
+nornir_deploy --build readers,text_writers  # the reader and text writer modules (maturin, like gates); they share reader_io
 nornir_deploy --build binary_readers,binary_writers  # the binary reader and writer modules (maturin, like gates)
 nornir_deploy --build hooks,writers  # multiple categories
 nornir_deploy --list                 # show categories and crate counts

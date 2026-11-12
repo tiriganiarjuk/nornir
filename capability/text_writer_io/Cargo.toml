@@ -1,0 +1,13 @@
+[package]
+name = "text_writer_io"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+reader_io = { path = "../reader_io" }
+write_engine = { path = "../write_engine" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

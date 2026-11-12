@@ -23,7 +23,7 @@ before the crate is written.
 | Kind | Its interface |
 |------|---------------|
 | PyO3 module that reads, validates or checks — gates, readers | returns `{"ok": bool, "data": str \| None, "error": {"type": str, "message": str} \| None}` for every outcome of the read or check; `data` is the validated JSON string — for `read_tomlx_json_schema`, the object `{"data": …, "schema": …}`; for an output or passthrough gate, `None`, because the write is the effect; the defaults gate returns the data it wrote |
-| PyO3 module that verifies bytes and writes them — binary writers | the same contract; a write hands nothing back, so `data` is always `None` |
+| PyO3 module that validates text or verifies bytes, and writes the file — text writers, binary writers | the same contract; a write hands nothing back, so `data` is always `None`. A text writer writes nothing without a schema: one that cannot be read or compiled is a `schema_error` |
 | PyO3 module that reads a binary file — binary readers | returns `{"ok": bool, "data": str \| None, "payload": bytes \| None, "error": {"type": str, "message": str} \| None}` for every outcome; `payload` is the decoded content as bytes, and `data` is the validated JSON string that describes it — its dimensions, its number format, what was found in it. The caller validates `data` into a model and reads `payload` by what the model says. On failure both are `None` |
 | CLI binary | Binary Structure in `NORNIR_CONVENTIONS.md`: `Result` in helpers, exit codes 0 / 1 / 2 from `main()` only |
 | hook | `hook_io`: a pure `decide` function over `HookInput`, and the response builders in `hook_io::response` |
@@ -39,17 +39,17 @@ first produces it.
 | `error.type` | What failed | Produced by |
 |---|---|---|
 | `read_error` | the file could not be read | gates, readers, binary readers |
-| `parse_error` | the file is not valid in its own format | gates, readers, binary readers |
+| `parse_error` | the file, or the text or bytes handed to a writer, is not valid in its own format | gates, readers, binary readers, text writers, binary writers |
 | `conversion_error` | the format→JSON conversion produced invalid JSON — an engine fault | gates, readers |
-| `schema_error` | the schema could not be loaded or compiled, or a tomlx file has no annotations to derive one | gates, readers |
-| `validation_error` | the data does not match the schema | gates, readers |
-| `cache_error` | the validator cache failed — an engine fault | readers |
+| `schema_error` | the schema could not be loaded or compiled, or a tomlx file has no annotations to derive one | gates, readers, text writers |
+| `validation_error` | the data does not match the schema | gates, readers, text writers |
+| `cache_error` | the validator cache failed — an engine fault | readers, text writers |
 | `path_error` | a path the data names does not exist | gates that verify paths |
 | `verification_error` | the bytes are well formed but carry more than the stated shape, or a different one | binary readers, binary writers |
 | `rules_error` | the rules the caller stated are invalid, or do not fit the data | binary readers |
 | `repair_error` | a bad value has no good neighbour to repair from | binary readers |
 | `compression_error` | the bytes could not be compressed | binary writers |
-| `write_error` | the output could not be written | gates, binary writers |
+| `write_error` | the output could not be written | gates, text writers, binary writers |
 
 ### Calling one from Python
 

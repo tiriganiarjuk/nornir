@@ -4864,6 +4864,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "text_writer_io"
+version = "0.1.0"
+dependencies = [
+ "reader_io",
+ "serde_json",
+ "thiserror 2.0.18",
+ "write_engine",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6248,6 +6258,14 @@ dependencies = [
  "schema_core",
  "serde_json",
  "stamp_core",
+]
+
+[[package]]
+name = "write_json_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "text_writer_io",
 ]
 
 [[package]]

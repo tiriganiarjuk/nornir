@@ -186,6 +186,13 @@ pyo3_crates = [
 ]
 pyo3_verify = "python_import"
 
+[text_writers]
+python_version = "python3.13"
+pyo3_crates = [
+    "write_json_validate_json",
+]
+pyo3_verify = "python_import"
+
 [binary_readers]
 python_version = "python3.13"
 pyo3_crates = [
