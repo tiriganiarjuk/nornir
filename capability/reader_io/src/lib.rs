@@ -256,14 +256,15 @@ pub fn read_tomlx_json(file_path: &str) -> Result<String, ReaderError> {
     serialize_value(&output.data)
 }
 
-/// Read a `.tomlx` file and return `(data_json, schema_json)`. Errors with
+/// Read a `.tomlx` file and return one JSON object string, `{"data": …, "schema": …}`:
+/// the converted data and the JSON Schema derived from its annotations. Errors with
 /// `TomlxNoSchema` when the file has no type annotations to derive a schema from.
-pub fn read_tomlx_json_schema(file_path: &str) -> Result<(String, String), ReaderError> {
+pub fn read_tomlx_json_schema(file_path: &str) -> Result<String, ReaderError> {
     let output = read_tomlx(file_path)?;
     let schema = output.schema.as_ref().ok_or_else(|| ReaderError::TomlxNoSchema {
         path: file_path.to_string(),
     })?;
-    Ok((serialize_value(&output.data)?, serialize_value(schema)?))
+    serialize_value(&serde_json::json!({"data": output.data, "schema": schema}))
 }
 
 // =============================================================================
@@ -504,15 +505,14 @@ mod tests {
     }
 
     #[test]
-    fn tomlx_json_schema_returns_tuple() {
+    fn tomlx_json_schema_returns_data_and_schema_object() {
         let dir = temp_dir("tomlx_schema");
         let file = write_data(&dir, "config.tomlx", "\n[features]  # type=bool\ndark_mode = true\n");
-        let (data, schema) = read_tomlx_json_schema(&file).unwrap();
-        let data: Value = serde_json::from_str(&data).unwrap();
-        let schema: Value = serde_json::from_str(&schema).unwrap();
-        assert_eq!(data["features"]["dark_mode"], true);
-        assert_eq!(schema["type"], "object");
-        assert!(schema["properties"].is_object(), "{schema}");
+        let json = read_tomlx_json_schema(&file).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["data"]["features"]["dark_mode"], true);
+        assert_eq!(value["schema"]["type"], "object");
+        assert!(value["schema"]["properties"].is_object(), "{json}");
         fs::remove_dir_all(&dir).ok();
     }
 
