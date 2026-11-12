@@ -11,7 +11,9 @@
 //! from its annotations by `format_core::tomlx`), so those take no schema parameter.
 //!
 //! Flow: read file → format→JSON → load+compile schema (cached per process) →
-//! validate → JSON string, or an educational error.
+//! validate → JSON string, or a typed `ReaderError` with an educational message.
+//! The readers hand both to Python in the gate contract:
+//! `{"ok": bool, "data": str | None, "error": {"type": str, "message": str} | None}`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -74,8 +76,8 @@ impl SourceFormat {
 // Errors
 // =============================================================================
 
-/// Every failure a reader can produce. Display strings are what the Python
-/// caller sees as the `ValueError` text.
+/// Every failure a reader can produce. `error_type()` is the `error.type` a reader
+/// returns to Python; the Display string is the `error.message`.
 #[derive(Debug, thiserror::Error)]
 pub enum ReaderError {
     #[error("Cannot read '{path}': {message}")]
@@ -112,6 +114,23 @@ pub enum ReaderError {
 
     #[error("No type annotations in '{path}' — read_tomlx_json_schema needs at least one annotated section")]
     TomlxNoSchema { path: String },
+}
+
+impl ReaderError {
+    /// The failure class a caller branches on — the `error.type` of the reader result.
+    pub fn error_type(&self) -> &'static str {
+        match self {
+            ReaderError::ReadFailed { .. } => "read_error",
+            ReaderError::ParseFailed { .. } => "parse_error",
+            ReaderError::ConvertedJsonInvalid { .. } => "conversion_error",
+            ReaderError::SchemaReadFailed { .. }
+            | ReaderError::SchemaNotJson { .. }
+            | ReaderError::SchemaCompileFailed { .. }
+            | ReaderError::TomlxNoSchema { .. } => "schema_error",
+            ReaderError::ValidationFailed(_) => "validation_error",
+            ReaderError::CachePoisoned(_) => "cache_error",
+        }
+    }
 }
 
 // =============================================================================

@@ -35,7 +35,7 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 | `check_` | `cli/` | Validates a file against a schema, exits 0/1/2 |
 | `convert_` | `converters/` | Reads one format on stdin, writes another on stdout |
 | `gate_` | `gates/` | PyO3 module: validates at a pipeline stage boundary |
-| `read_` | `readers/` | PyO3 module: reads one file format, validates against a schema named at call time, returns a JSON string |
+| `read_` | `readers/` | PyO3 module: reads one file format, validates against a schema named at call time, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
 | `hook_` | `hooks/` | Intercepts an LLM tool call for security/quality |
 | `send_` | `senders/` | Fire-and-forget datagram to hlidskjalf socket |
 | `rewrite_` | `rewriters/` | Reads JSON on stdin, modifies content, writes JSON on stdout |
