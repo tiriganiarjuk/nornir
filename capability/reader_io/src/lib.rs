@@ -145,6 +145,19 @@ pub fn schema_file_path(schema_name: &str, schema_dir: &str) -> String {
     format!("{}/{}.schema.json", schema_dir, schema_name)
 }
 
+/// Give a schema that declares no `$id` its own file as its identity, so a
+/// `$ref` to a sibling file — `"$ref": "other.schema.json"` — resolves to the
+/// file beside it. A schema that declares an `$id` keeps it.
+fn located_at_its_file(mut schema: Value, schema_path: &str) -> Value {
+    if let Some(fields) = schema.as_object_mut() {
+        if !fields.contains_key("$id") {
+            let file_uri = format!("file://{}", schema_path.replace(' ', "%20"));
+            fields.insert("$id".to_string(), Value::String(file_uri));
+        }
+    }
+    schema
+}
+
 fn compile_and_cache_schema(
     cache: &mut HashMap<String, Validator>,
     schema_path: &str,
@@ -154,10 +167,11 @@ fn compile_and_cache_schema(
         message: io_err.to_string(),
     })?;
 
-    let schema_value: Value = serde_json::from_str(&schema_str).map_err(|json_err| ReaderError::SchemaNotJson {
+    let parsed_schema: Value = serde_json::from_str(&schema_str).map_err(|json_err| ReaderError::SchemaNotJson {
         path: schema_path.to_string(),
         message: json_err.to_string(),
     })?;
+    let schema_value = located_at_its_file(parsed_schema, schema_path);
 
     let validator = Validator::new(&schema_value).map_err(|schema_err| ReaderError::SchemaCompileFailed {
         path: schema_path.to_string(),
@@ -416,6 +430,35 @@ mod tests {
             }
             other => panic!("Expected ValidationFailed, got: {:?}", other),
         }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn schema_may_refer_to_a_sibling_schema_file() {
+        let dir = temp_dir("sibling_ref");
+        write_schema(&dir, "sibling_part", r#"{"type": "object", "required": ["x"], "properties": {"x": {"type": "integer"}}}"#);
+        let whole = r#"{"type": "object", "required": ["part"],
+            "properties": {"part": {"$ref": "sibling_part.schema.json"}}}"#;
+        write_schema(&dir, "sibling_whole", whole);
+
+        let good = write_data(&dir, "good.json", r#"{"part": {"x": 3}}"#);
+        let json = read_validate_json(SourceFormat::Json, &good, "sibling_whole", dir_str(&dir)).unwrap();
+        assert!(json.contains("\"x\""));
+
+        let bad = write_data(&dir, "bad.json", r#"{"part": {"x": "three"}}"#);
+        let err = read_validate_json(SourceFormat::Json, &bad, "sibling_whole", dir_str(&dir)).unwrap_err();
+        assert_eq!(err.error_type(), "validation_error");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reference_to_a_missing_sibling_schema_is_a_schema_error() {
+        let dir = temp_dir("sibling_missing");
+        let whole = r#"{"type": "object", "properties": {"part": {"$ref": "not_there.schema.json"}}}"#;
+        write_schema(&dir, "sibling_missing", whole);
+        let file = write_data(&dir, "data.json", r#"{"part": {"x": 3}}"#);
+        let err = read_validate_json(SourceFormat::Json, &file, "sibling_missing", dir_str(&dir)).unwrap_err();
+        assert_eq!(err.error_type(), "schema_error");
         fs::remove_dir_all(&dir).ok();
     }
 
