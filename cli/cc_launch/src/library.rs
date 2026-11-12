@@ -3,13 +3,16 @@ use std::path::Path;
 
 use regex::Regex;
 
-use crate::model::{Descriptor, DescriptorKind, Fragment, FragmentCategory, Library, LoadPolicy};
+use crate::model::{
+    Descriptor, DescriptorKind, Fragment, FragmentCategory, Language, Library, LoadPolicy,
+};
 
 pub fn scan_library(base: &Path) -> Result<Library, String> {
     let mut foundation: Option<Fragment> = None;
     let mut personas = Vec::new();
     let mut always = Vec::new();
     let mut coding = Vec::new();
+    let mut languages = Vec::new();
     let mut expertise = Vec::new();
     let mut descriptors = Vec::new();
 
@@ -48,10 +51,12 @@ pub fn scan_library(base: &Path) -> Result<Library, String> {
         }
     }
 
-    // Scan coding/*.xml
+    // Scan coding/*.xml — the general coding rules — and coding/<language>/*.xml,
+    // the rules that apply to one language only.
     let coding_dir = base.join("coding");
     if coding_dir.is_dir() {
         coding = scan_xml_dir(&coding_dir, FragmentCategory::Coding)?;
+        languages = scan_language_dirs(&coding_dir)?;
     }
 
     // Scan expertise/*.xml
@@ -82,16 +87,6 @@ pub fn scan_library(base: &Path) -> Result<Library, String> {
     coding.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
     expertise.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     descriptors.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-
-    // Build language universe from all descriptors, python always first
-    let mut languages = vec!["python".to_string()];
-    for desc in &descriptors {
-        for lang in &desc.languages {
-            if !languages.contains(lang) {
-                languages.push(lang.clone());
-            }
-        }
-    }
 
     Ok(Library {
         foundation,
@@ -151,6 +146,42 @@ fn scan_xml_dir(
     }
 
     Ok(fragments)
+}
+
+/// Each directory under `coding/` that holds fragments is a language: the
+/// directory name is the language name, and its fragments are the rules loaded
+/// when that language is selected. A language exists exactly when it has
+/// fragments, so every entry offered adds something to the prompt.
+fn scan_language_dirs(coding_dir: &Path) -> Result<Vec<Language>, String> {
+    let mut languages = Vec::new();
+
+    let entries = fs::read_dir(coding_dir)
+        .map_err(|e| format!("read dir {}: {e}", coding_dir.display()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        let mut fragments = scan_xml_dir(&path, FragmentCategory::Coding)?;
+        if fragments.is_empty() {
+            continue;
+        }
+        fragments.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
+
+        languages.push(Language { name, fragments });
+    }
+
+    languages.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(languages)
 }
 
 fn scan_descriptor_dir(

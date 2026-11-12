@@ -22,6 +22,15 @@ pub struct Descriptor {
     pub kind: DescriptorKind,
 }
 
+/// A language is the set of coding fragments that apply to that language only.
+/// It is loaded on top of the general coding rules when selected, and its name
+/// is the name of its directory under `coding/`.
+#[derive(Debug, Clone)]
+pub struct Language {
+    pub name: String,
+    pub fragments: Vec<Fragment>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DescriptorKind {
     System,
@@ -55,7 +64,7 @@ pub struct Library {
     pub coding: Vec<Fragment>,
     pub expertise: Vec<Fragment>,
     pub descriptors: Vec<Descriptor>,
-    pub languages: Vec<String>,
+    pub languages: Vec<Language>,
 }
 
 #[derive(Debug, Clone)]
@@ -195,11 +204,9 @@ impl AppState {
         let expertise_count = library.expertise.len();
         let descriptor_count = library.descriptors.len();
 
-        // Coding on by default, python always selected (index 0)
-        let mut selected_languages = vec![false; library.languages.len()];
-        if !selected_languages.is_empty() {
-            selected_languages[0] = true;
-        }
+        // Coding on by default: the general coding rules. Languages start
+        // unselected; each one adds its own fragments when chosen.
+        let selected_languages = vec![false; library.languages.len()];
 
         let initial_persona = library.default_persona_index();
 
@@ -227,12 +234,26 @@ impl AppState {
             .iter()
             .enumerate()
             .filter(|(index, _)| self.selected_languages.get(*index).copied().unwrap_or(false))
-            .map(|(_, language)| language.as_str())
+            .map(|(_, language)| language.name.as_str())
+            .collect()
+    }
+
+    /// The fragments of every selected language, in language order. Empty when
+    /// coding is disabled — language rules sit on top of the general coding set.
+    pub fn selected_language_fragments(&self) -> Vec<&Fragment> {
+        if !self.coding_enabled {
+            return Vec::new();
+        }
+        self.library
+            .languages
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.selected_languages.get(*index).copied().unwrap_or(false))
+            .flat_map(|(_, language)| language.fragments.iter())
             .collect()
     }
 
     /// Recompute language selections from the union of all selected descriptors.
-    /// Python is always included when coding is enabled.
     pub fn sync_languages_from_descriptors(&mut self) {
         for lang in &mut self.selected_languages {
             *lang = false;
@@ -258,16 +279,14 @@ impl AppState {
                 None => continue,
             };
             for lang in &langs {
-                let pos = match self.library.languages.iter().position(|l| l == lang) {
+                let pos = match self.library.languages.iter().position(|l| &l.name == lang) {
                     Some(p) => p,
                     None => continue,
                 };
-                self.selected_languages[pos] = true;
+                if let Some(selected) = self.selected_languages.get_mut(pos) {
+                    *selected = true;
+                }
             }
-        }
-
-        if self.coding_enabled {
-            self.selected_languages[0] = true; // python always on
         }
     }
 
@@ -471,8 +490,8 @@ impl AppState {
             self.selected_persona = self.library.default_persona_index();
         }
         self.coding_enabled = true;
-        for (index, _) in self.library.languages.iter().enumerate() {
-            self.selected_languages[index] = index == 0;
+        for selected in &mut self.selected_languages {
+            *selected = false;
         }
         for selected in &mut self.selected_expertise {
             *selected = false;

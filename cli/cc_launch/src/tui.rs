@@ -167,9 +167,6 @@ fn handle_coding_space(state: &mut AppState) {
         return; // languages locked when coding disabled
     }
     let lang_index = state.section_cursor - 1;
-    if lang_index == 0 || lang_index >= state.library.languages.len() {
-        return; // python always on, bounds check
-    }
     if let Some(selected) = state.selected_languages.get_mut(lang_index) {
         *selected = !*selected;
     }
@@ -421,16 +418,15 @@ fn draw_coding_section(frame: &mut ratatui::Frame, area: Rect, state: &AppState)
         let selected = state.selected_languages.get(index).copied().unwrap_or(false);
 
         if state.coding_enabled {
-            let suffix = if index == 0 { Some("(always)") } else { None };
             lines.push(check_line(
-                language,
+                &language.name,
                 selected,
                 active,
                 state.section_cursor == index + 1,
-                suffix,
+                None,
             ));
         } else {
-            lines.push(check_line_dim(language, selected));
+            lines.push(check_line_dim(&language.name, selected));
         }
     }
 

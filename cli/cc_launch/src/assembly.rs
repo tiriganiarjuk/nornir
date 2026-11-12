@@ -46,6 +46,11 @@ pub fn estimate_tokens(state: &AppState) -> usize {
         }
     }
 
+    // Fragments of each selected language
+    for fragment in state.selected_language_fragments() {
+        total_bytes += fragment.byte_size;
+    }
+
     // Selected expertise
     for (index, selected) in state.selected_expertise.iter().enumerate() {
         if *selected {
@@ -115,24 +120,17 @@ fn assemble_prompt(state: &AppState) -> Result<String, String> {
 
     // === MODE LAYER (how you work this session) ===
 
-    // 5. Coding fragments (if enabled)
+    // 5. General coding fragments (if enabled)
     if state.coding_enabled {
         for fragment in &state.library.coding {
             parts.push(read_fragment(&fragment.path)?);
         }
     }
 
-    // 6. Language context (only when coding enabled)
-    let languages = state.selected_language_names();
-    if state.coding_enabled && !languages.is_empty() {
-        let lang_tags: Vec<String> = languages
-            .iter()
-            .map(|language| format!("  <language>{language}</language>"))
-            .collect();
-        parts.push(format!(
-            "<context>\n{}\n</context>",
-            lang_tags.join("\n")
-        ));
+    // 6. Language fragments — each selected language adds the rules that
+    //    apply to that language only, on top of the general set.
+    for fragment in state.selected_language_fragments() {
+        parts.push(read_fragment(&fragment.path)?);
     }
 
     // 7. Selected expertise
