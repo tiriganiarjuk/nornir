@@ -3884,6 +3884,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "read_tomlx_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "reader_io",
+]
+
+[[package]]
 name = "read_toon_validate_json"
 version = "0.1.0"
 dependencies = [

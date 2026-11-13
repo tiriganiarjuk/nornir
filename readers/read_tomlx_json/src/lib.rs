@@ -1,7 +1,7 @@
 //! Reader: read_tomlx_json
 //! Reads a `.tomlx` file (TOML with semantic annotations), applies its unit, path and
-//! type annotations, and converts the data to JSON. A tomlx file carries its own
-//! schema, so no schema parameter is taken. Environment references resolve live;
+//! type annotations, and converts the data to JSON. It returns the converted data;
+//! `read_tomlx_validate_json` also validates it against a named schema. Environment references resolve live;
 //! `base=config` references resolve against the file's directory.
 //! Returns the gate contract: `{"ok": bool, "data": str | None, "error": {"type": str, "message": str} | None}`.
 //! `error.type` is one of `ReaderError::error_type()`; it never raises for a failed read.

@@ -7,8 +7,12 @@
 //! its schemas. Each `readers/read_{format}_validate_json` crate is a thin PyO3
 //! wrapper over `read_validate_json` with its format fixed.
 //!
-//! Also home to the tomlx readers: a `.tomlx` file carries its own schema (derived
-//! from its annotations by `format_core::tomlx`), so those take no schema parameter.
+//! Also home to the tomlx readers. A `.tomlx` file's annotations type its values —
+//! units converted, paths resolved — through `format_core::tomlx`.
+//! `read_tomlx_validate_json` then validates the converted data against a named
+//! schema, exactly as `read_validate_json` does for the other formats;
+//! `read_tomlx_json` returns the converted data, and `read_tomlx_json_schema` adds
+//! the schema derived from the annotations, which describes the file's own contents.
 //!
 //! Flow: read file → format→JSON → load+compile schema (cached per process) →
 //! validate → JSON string, or a typed `ReaderError` with an educational message.
@@ -248,7 +252,7 @@ pub fn validate_against_named_schema(data: &Value, schema_name: &str, schema_dir
 }
 
 // =============================================================================
-// tomlx (schema carried in the file)
+// tomlx (typed by its annotations)
 // =============================================================================
 
 /// Read and parse a `.tomlx` file with live environment resolution. The file's
@@ -275,6 +279,16 @@ fn serialize_value(value: &Value) -> Result<String, ReaderError> {
 /// only — the derived schema is not merged in.
 pub fn read_tomlx_json(file_path: &str) -> Result<String, ReaderError> {
     let output = read_tomlx(file_path)?;
+    serialize_value(&output.data)
+}
+
+/// Read a `.tomlx` file, apply its annotations, validate the converted data against
+/// `{schema_dir}/{schema_name}.schema.json`, and return it as a JSON string. The
+/// schema describes the data after conversion: a value annotated in minutes is
+/// validated in its target unit.
+pub fn read_tomlx_validate_json(file_path: &str, schema_name: &str, schema_dir: &str) -> Result<String, ReaderError> {
+    let output = read_tomlx(file_path)?;
+    validate_against_named_schema(&output.data, schema_name, schema_dir)?;
     serialize_value(&output.data)
 }
 
@@ -573,6 +587,32 @@ mod tests {
         let file = write_data(&dir, "plain.tomlx", "\n[metadata]\nname = \"test\"\n");
         let err = read_tomlx_json_schema(&file).unwrap_err();
         assert!(matches!(err, ReaderError::TomlxNoSchema { .. }), "{:?}", err);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tomlx_validate_json_validates_converted_values() {
+        // The schema sees seconds: 15 minutes arrives as 900, which a 600-second
+        // minimum accepts and the raw 15 would not.
+        let dir = temp_dir("tomlx_validate_valid");
+        let schema = r#"{"type": "object", "required": ["ttl"],
+            "properties": {"ttl": {"type": "object", "required": ["session"],
+                "properties": {"session": {"type": "integer", "minimum": 600}}}}}"#;
+        write_schema(&dir, "tomlx_validate_valid", schema);
+        let file = write_data(&dir, "config.tomlx", "\n[ttl]  # target=seconds\nsession = 15  # unit=minutes\n");
+        let json = read_tomlx_validate_json(&file, "tomlx_validate_valid", dir_str(&dir)).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["ttl"]["session"], 900);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tomlx_validate_json_missing_required_field_is_validation_error() {
+        let dir = temp_dir("tomlx_validate_missing");
+        write_schema(&dir, "tomlx_validate_missing", NAME_AGE_SCHEMA);
+        let file = write_data(&dir, "config.tomlx", "age = 3\n");
+        let err = read_tomlx_validate_json(&file, "tomlx_validate_missing", dir_str(&dir)).unwrap_err();
+        assert_eq!(err.error_type(), "validation_error");
         fs::remove_dir_all(&dir).ok();
     }
 

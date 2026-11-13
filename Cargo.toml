@@ -60,6 +60,7 @@ members = [
     "readers/read_markdown_validate_json",
     "readers/read_tomlx_json",
     "readers/read_tomlx_json_schema",
+    "readers/read_tomlx_validate_json",
     "readers/read_directory_json",
     "core/binary_format_core",
     "capability/binary_writer_io",
