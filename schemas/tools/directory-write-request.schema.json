@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "zone-request",
-  "description": "What write_json_validate_zone is handed: every file the zone is to hold, by its path relative to the zone root. A text entry is validated against its named schema and written in its format; a copy entry is the bytes of an existing file, as they are. Every file not listed is gone after the write.",
+  "title": "directory-write-request",
+  "description": "What write_json_validate_directory is handed: every file the generated directory is to hold, by its path relative to the directory root. A text entry is validated against its named schema and written in its format; a copy entry is the bytes of an existing file, as they are. Every file not listed is gone after the write. The writer also places its marker, .generated_directory.json, holding {\"written_by\": \"write_json_validate_directory\"}: the writer's proof of ownership. An existing folder without the marker is never replaced, and no request path may name it.",
   "type": "object",
   "required": ["files"],
   "additionalProperties": false,

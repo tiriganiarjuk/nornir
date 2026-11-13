@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "zone-report",
-  "description": "What write_json_validate_zone did: files written fresh, files whose bytes were already there and were kept in place with their modification time, and files the previous zone held that the new one does not.",
+  "title": "directory-write-report",
+  "description": "What write_json_validate_directory did: files written fresh, files whose bytes were already there and were kept in place with their modification time, and files the previous directory held that the new one does not.",
   "type": "object",
   "required": ["written", "unchanged", "removed"],
   "additionalProperties": false,

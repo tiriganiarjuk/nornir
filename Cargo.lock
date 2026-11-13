@@ -1140,6 +1140,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "directory_write_io"
+version = "0.1.0"
+dependencies = [
+ "directory_read_io",
+ "path_core",
+ "schemas_embedded",
+ "serde",
+ "serde_json",
+ "text_writer_io",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6289,6 +6302,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "write_json_validate_directory"
+version = "0.1.0"
+dependencies = [
+ "directory_write_io",
+ "pyo3",
+]
+
+[[package]]
 name = "write_json_validate_json"
 version = "0.1.0"
 dependencies = [
@@ -6334,14 +6355,6 @@ version = "0.1.0"
 dependencies = [
  "pyo3",
  "text_writer_io",
-]
-
-[[package]]
-name = "write_json_validate_zone"
-version = "0.1.0"
-dependencies = [
- "pyo3",
- "zone_write_io",
 ]
 
 [[package]]
@@ -6509,19 +6522,6 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[package]]
-name = "zone_write_io"
-version = "0.1.0"
-dependencies = [
- "directory_read_io",
- "path_core",
- "schemas_embedded",
- "serde",
- "serde_json",
- "text_writer_io",
- "thiserror 2.0.18",
-]
 
 [[package]]
 name = "zune-core"

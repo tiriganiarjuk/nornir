@@ -185,15 +185,15 @@ static DIRECTORY_LISTING_JSON: &str =
 pub static DIRECTORY_LISTING: EmbeddedValidator =
     EmbeddedValidator::new(DIRECTORY_LISTING_JSON, "directory-listing");
 
-static ZONE_REQUEST_JSON: &str =
-    include_str!("../../../schemas/tools/zone-request.schema.json");
-pub static ZONE_REQUEST: EmbeddedValidator =
-    EmbeddedValidator::new(ZONE_REQUEST_JSON, "zone-request");
+static DIRECTORY_WRITE_REQUEST_JSON: &str =
+    include_str!("../../../schemas/tools/directory-write-request.schema.json");
+pub static DIRECTORY_WRITE_REQUEST: EmbeddedValidator =
+    EmbeddedValidator::new(DIRECTORY_WRITE_REQUEST_JSON, "directory-write-request");
 
-static ZONE_REPORT_JSON: &str =
-    include_str!("../../../schemas/tools/zone-report.schema.json");
-pub static ZONE_REPORT: EmbeddedValidator =
-    EmbeddedValidator::new(ZONE_REPORT_JSON, "zone-report");
+static DIRECTORY_WRITE_REPORT_JSON: &str =
+    include_str!("../../../schemas/tools/directory-write-report.schema.json");
+pub static DIRECTORY_WRITE_REPORT: EmbeddedValidator =
+    EmbeddedValidator::new(DIRECTORY_WRITE_REPORT_JSON, "directory-write-report");
 
 #[cfg(test)]
 mod tests {
@@ -423,21 +423,21 @@ mod tests {
     }
 
     #[test]
-    fn test_zone_request_shape() {
+    fn test_directory_write_request_shape() {
         let request = r#"{"files":[{"path":"a.md","format":"markdown","schema_name":"page","data":{"frontmatter":{},"body":"x"}},{"path":"b.jpg","from":"/src/b.jpg"}]}"#;
-        assert!(ZONE_REQUEST.is_valid(request).unwrap());
+        assert!(DIRECTORY_WRITE_REQUEST.is_valid(request).unwrap());
 
         let unknown_format = r#"{"files":[{"path":"a","format":"csv","schema_name":"s","data":{}}]}"#;
-        assert!(!ZONE_REQUEST.is_valid(unknown_format).unwrap());
+        assert!(!DIRECTORY_WRITE_REQUEST.is_valid(unknown_format).unwrap());
 
         let both_kinds = r#"{"files":[{"path":"a","from":"/x","format":"json","schema_name":"s","data":{}}]}"#;
-        assert!(!ZONE_REQUEST.is_valid(both_kinds).unwrap());
+        assert!(!DIRECTORY_WRITE_REQUEST.is_valid(both_kinds).unwrap());
     }
 
     #[test]
-    fn test_zone_report_shape() {
-        assert!(ZONE_REPORT.is_valid(r#"{"written":1,"unchanged":2,"removed":0}"#).unwrap());
-        assert!(!ZONE_REPORT.is_valid(r#"{"written":-1,"unchanged":0,"removed":0}"#).unwrap());
+    fn test_directory_write_report_shape() {
+        assert!(DIRECTORY_WRITE_REPORT.is_valid(r#"{"written":1,"unchanged":2,"removed":0}"#).unwrap());
+        assert!(!DIRECTORY_WRITE_REPORT.is_valid(r#"{"written":-1,"unchanged":0,"removed":0}"#).unwrap());
     }
 
 }

@@ -197,7 +197,7 @@ pyo3_crates = [
     "write_json_validate_toon",
     "write_json_validate_xml",
     "write_json_validate_markdown",
-    "write_json_validate_zone",
+    "write_json_validate_directory",
 ]
 pyo3_verify = "python_import"
 
