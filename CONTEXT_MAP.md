@@ -60,3 +60,4 @@ A Rust monorepo of compiled validators, tools and hooks for the `ai` ecosystem �
 | what crates exist right now | read live — `ls gates/ writers/ capability/ core/`. Inventories are not stored here; a stored one is wrong by the next commit |
 | the full forward cascade after a schema change | `context/AGENT_BUILD_SYSTEM.md` § The forward cascade |
 | current state / what's left to build | read live — the code and `git log`. Nothing is stored |
+| a tool owed a move onto a newer, better tool — or a new tool built that others should now use | `REQUIRED_UPGRADES.md` — forward-only; add the entry when the newer tool lands |
