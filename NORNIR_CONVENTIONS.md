@@ -35,7 +35,7 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 | `check_` | `cli/` | Validates a file against a schema, exits 0/1/2 |
 | `convert_` | `converters/` | Reads one format on stdin, writes another on stdout |
 | `gate_` | `gates/` | PyO3 module: validates at a pipeline stage boundary |
-| `read_` | `readers/` | PyO3 module: reads one file format, validates against a schema named at call time, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
+| `read_` | `readers/` | PyO3 module: reads one file format, or one directory tree, validates against a schema — named at call time, or the reader's own where its source carries its shape — and returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
 | `write_json_validate_` | `text_writers/` | PyO3 module: takes JSON text, validates it against a schema named at call time, writes one file format atomically, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
 | `read_{format}_verify_` | `binary_readers/` | PyO3 module: reads one binary file format, verifies it against the format and the shape the caller states, returns the binary reader contract — decoded content as `payload`, its description as `data` (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
 | `write_bytes_verify_` | `binary_writers/` | PyO3 module: takes bytes, verifies them against one binary format and the shape the caller states, writes the file atomically, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
@@ -59,7 +59,7 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 
 **Gates:** `gate_{stage}_{direction}` — stage matches schema name with underscores, direction is `input` or `output`. A gate is custom: it embeds one schema at compile time, so it carries that schema's name.
 
-**Readers:** `read_{format}_validate_json` — four slots: `read` is the direction, `{format}` the input format, `validate` says a schema is a parameter (`read(file_path, schema_name, schema_dir)`), `json` the output format. A reader is general: any schema, any caller. Self-describing formats drop the `validate` slot (`read_tomlx_json`, `read_tomlx_json_schema`). Thin wrappers over `reader_io`.
+**Readers:** `read_{format}_validate_json` — four slots: `read` is the direction, `{format}` the input format, `validate` says a schema is a parameter (`read(file_path, schema_name, schema_dir)`), `json` the output format. A reader is general: any schema, any caller. Self-describing formats drop the `validate` slot (`read_tomlx_json`, `read_tomlx_json_schema`). Thin wrappers over `reader_io`. `read_directory_json` reads a directory tree the same way — its listing's shape is its own, `schemas/tools/directory-listing.schema.json` — and is a thin wrapper over `directory_read_io`, the one directory walker.
 
 **Text writers:** `write_json_validate_{format}` — the readers' four slots in the other direction: `write` is the direction, `json` what the caller hands over, `validate` says a schema is a parameter (`write(json_data, file_path, schema_name, schema_dir)`), `{format}` the file format written. A text writer is general: any schema, any caller — and it writes nothing without one. The JSON it takes is the JSON the matching reader returns, so a written file reads back as the same data: the markdown writer takes `{"frontmatter": {...}, "body": "..."}`, the XML writer one root key in the `@attr` / `#text` convention. Thin wrappers over `text_writer_io`, which validates through `reader_io`, so a schema is loaded and reported the same way in both directions.
 
@@ -208,7 +208,7 @@ Before writing logic, check if it already exists:
 | Datagram emission to Hlidskjalf | `datagram_io` |
 | Schema constants | `schemas_embedded` |
 | File-arg diagnostic CLI contract | `io_check` |
-| Directory walking with skip logic | `saga_runner::walk_files` |
+| Directory listing: every entry, its kind, size and sha256, unreadable paths reported | `directory_read_io` |
 | Path traversal / filename validation | `path_core::validate_path_segment` |
 | Runtime $HOME/ai resolution | `write_engine::ai_home` |
 

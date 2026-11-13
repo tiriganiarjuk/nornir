@@ -1129,6 +1129,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "directory_read_io"
+version = "0.1.0"
+dependencies = [
+ "schemas_embedded",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3814,6 +3825,14 @@ dependencies = [
  "time",
  "unicode-segmentation",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "read_directory_json"
+version = "0.1.0"
+dependencies = [
+ "directory_read_io",
+ "pyo3",
 ]
 
 [[package]]

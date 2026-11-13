@@ -183,6 +183,7 @@ pyo3_crates = [
     "read_markdown_validate_json",
     "read_tomlx_json",
     "read_tomlx_json_schema",
+    "read_directory_json",
 ]
 pyo3_verify = "python_import"
 

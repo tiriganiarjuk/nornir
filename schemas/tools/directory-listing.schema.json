@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "directory-listing",
+  "description": "What read_directory_json returns: every entry under a root directory, by its path relative to the root, sorted by path. A symlink is listed as a link and never followed. size is a file's length in bytes; sha256 is present only when hashes were asked for.",
+  "type": "object",
+  "required": ["root", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "root": {"type": "string", "minLength": 1},
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["file", "directory", "symlink"]},
+          "size": {"type": "integer", "minimum": 0},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

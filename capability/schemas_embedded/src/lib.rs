@@ -180,6 +180,11 @@ static INTERVIEW_SESSION_JSON: &str =
 pub static INTERVIEW_SESSION: EmbeddedValidator =
     EmbeddedValidator::new(INTERVIEW_SESSION_JSON, "interview-session");
 
+static DIRECTORY_LISTING_JSON: &str =
+    include_str!("../../../schemas/tools/directory-listing.schema.json");
+pub static DIRECTORY_LISTING: EmbeddedValidator =
+    EmbeddedValidator::new(DIRECTORY_LISTING_JSON, "directory-listing");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,6 +398,18 @@ mod tests {
 
         let counted = r#"{"id":"20261110T045515Z","opened":"2026-11-10T04:55:15Z","closed":"2026-11-10T11:25:09Z","about":"setup","exchanges":50}"#;
         assert!(!INTERVIEW_SESSION.is_valid(counted).unwrap());
+    }
+
+    #[test]
+    fn test_directory_listing_shape() {
+        let listing = r#"{"root":"/r","entries":[{"path":"a","kind":"directory"},{"path":"a/b.md","kind":"file","size":3}]}"#;
+        assert!(DIRECTORY_LISTING.is_valid(listing).unwrap());
+
+        let unknown_kind = r#"{"root":"/r","entries":[{"path":"a","kind":"socket"}]}"#;
+        assert!(!DIRECTORY_LISTING.is_valid(unknown_kind).unwrap());
+
+        let short_hash = r#"{"root":"/r","entries":[{"path":"a","kind":"file","size":0,"sha256":"abc"}]}"#;
+        assert!(!DIRECTORY_LISTING.is_valid(short_hash).unwrap());
     }
 
 }
