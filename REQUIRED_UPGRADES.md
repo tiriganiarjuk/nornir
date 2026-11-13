@@ -20,10 +20,16 @@ upgrade is done; the record of it is git.
 
 Expect saga to report directories it could not read on its first run after the upgrade.
 
+**Waits on:** a descent-pruning option in `directory_read_io` — directory names the caller says
+not to enter — approved by the author as an added parameter of `read_directory_json`. Saga keeps
+hidden *files* (the `.qa` sidecars) and never enters hidden or junk *directories*; listing with
+hidden entries included and filtering afterwards would walk `.git`, `.venv` and `node_modules`
+whole, and fail on anything unreadable inside them.
+
 ## `saga_runner` file hashing → `directory_read_io`
 
-`hash_file` gives no hash for a file it cannot read, and the caller cannot tell why. A
-listing with `with_hashes` hashes every file it lists and names each one it could not read.
+`hash_file` gives no hash for a file it cannot read. `directory_read_io::file_sha256` hashes one
+file and names the file it could not read; saga records that failure in the report.
 
 ## `saga_runner` orphan sidecar sweep → `directory_read_io`
 

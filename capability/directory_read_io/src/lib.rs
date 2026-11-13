@@ -66,6 +66,9 @@ pub enum DirectoryReadError {
     #[error("Cannot list '{path}': {message}")]
     RootUnreadable { path: String, message: String },
 
+    #[error("Cannot read '{path}': {message}")]
+    FileUnreadable { path: String, message: String },
+
     /// Every path the walk could not read, at once.
     #[error("Cannot list '{root}' whole — {count} path(s) could not be read:\n  {}", .failures.join("\n  "), count = .failures.len())]
     EntriesUnreadable { root: String, failures: Vec<String> },
@@ -79,7 +82,9 @@ impl DirectoryReadError {
     /// The failure class a caller branches on — the `error.type` of the reader result.
     pub fn error_type(&self) -> &'static str {
         match self {
-            DirectoryReadError::RootUnreadable { .. } | DirectoryReadError::EntriesUnreadable { .. } => "read_error",
+            DirectoryReadError::RootUnreadable { .. }
+            | DirectoryReadError::FileUnreadable { .. }
+            | DirectoryReadError::EntriesUnreadable { .. } => "read_error",
             DirectoryReadError::ListingInvalid { .. } => "validation_error",
         }
     }
@@ -177,6 +182,12 @@ fn file_hash(walk: &mut Walk<'_>, path: &Path) -> Option<String> {
             None
         }
     }
+}
+
+/// One file's sha256 — the same hash a listing gives — or why the file could not be read.
+pub fn file_sha256(path: &str) -> Result<String, DirectoryReadError> {
+    sha256_of(Path::new(path))
+        .map_err(|io_err| DirectoryReadError::FileUnreadable { path: path.to_string(), message: io_err.to_string() })
 }
 
 fn sha256_of(path: &Path) -> std::io::Result<String> {
