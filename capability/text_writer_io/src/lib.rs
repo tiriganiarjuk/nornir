@@ -36,6 +36,21 @@ pub enum TextFormat {
     Markdown,
 }
 
+impl TextFormat {
+    /// The format a name denotes — the `{format}` slot of `write_json_validate_{format}`.
+    pub fn from_name(name: &str) -> Option<TextFormat> {
+        match name {
+            "json" => Some(TextFormat::Json),
+            "toml" => Some(TextFormat::Toml),
+            "yaml" => Some(TextFormat::Yaml),
+            "toon" => Some(TextFormat::Toon),
+            "xml" => Some(TextFormat::Xml),
+            "markdown" => Some(TextFormat::Markdown),
+            _ => None,
+        }
+    }
+}
+
 /// Every failure a text writer can produce. `error_type()` is the `error.type`
 /// a writer returns to Python; the Display string is the `error.message`.
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +114,27 @@ fn write_validated_text(file_path: &str, text: &str) -> Result<(), TextWriteErro
     write_engine::write_file_atomic(path, &with_final_newline(text)).map_err(write_failed)
 }
 
+/// Validate `json_data` against `{schema_dir}/{schema_name}.schema.json` and convert
+/// it to `format`: the exact text a write of it puts on disk, final newline included.
+/// `file_path` names the file in the errors; nothing is written.
+pub fn validate_render(
+    format: TextFormat,
+    json_data: &str,
+    file_path: &str,
+    schema_name: &str,
+    schema_dir: &str,
+) -> Result<String, TextWriteError> {
+    let data: Value = serde_json::from_str(json_data).map_err(|json_err| TextWriteError::NotJson {
+        path: file_path.to_string(),
+        message: json_err.to_string(),
+    })?;
+    validate_against_named_schema(&data, schema_name, schema_dir)
+        .map_err(|source| TextWriteError::SchemaRefused { path: file_path.to_string(), source })?;
+    let text = rendered(format, json_data, &data)
+        .map_err(|message| TextWriteError::NotExpressible { path: file_path.to_string(), message })?;
+    Ok(with_final_newline(&text))
+}
+
 /// Validate `json_data` against `{schema_dir}/{schema_name}.schema.json`, convert
 /// it to `format`, then write it to `file_path`, with a final newline.
 pub fn validate_write(
@@ -108,14 +144,7 @@ pub fn validate_write(
     schema_name: &str,
     schema_dir: &str,
 ) -> Result<(), TextWriteError> {
-    let data: Value = serde_json::from_str(json_data).map_err(|json_err| TextWriteError::NotJson {
-        path: file_path.to_string(),
-        message: json_err.to_string(),
-    })?;
-    validate_against_named_schema(&data, schema_name, schema_dir)
-        .map_err(|source| TextWriteError::SchemaRefused { path: file_path.to_string(), source })?;
-    let text = rendered(format, json_data, &data)
-        .map_err(|message| TextWriteError::NotExpressible { path: file_path.to_string(), message })?;
+    let text = validate_render(format, json_data, file_path, schema_name, schema_dir)?;
     write_validated_text(file_path, &text)
 }
 

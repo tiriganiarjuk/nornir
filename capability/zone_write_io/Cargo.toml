@@ -1,0 +1,16 @@
+[package]
+name = "zone_write_io"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+directory_read_io = { path = "../directory_read_io" }
+path_core = { path = "../../core/path_core" }
+schemas_embedded = { path = "../schemas_embedded" }
+text_writer_io = { path = "../text_writer_io" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
