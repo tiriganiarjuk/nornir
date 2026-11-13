@@ -40,7 +40,7 @@ first produces it.
 |---|---|---|
 | `read_error` | the file could not be read | gates, readers, binary readers |
 | `parse_error` | the file, or the text or bytes handed to a writer, is not valid in its own format | gates, readers, binary readers, text writers, binary writers |
-| `conversion_error` | the format→JSON conversion produced invalid JSON — an engine fault | gates, readers |
+| `conversion_error` | the data and the file's format do not convert: reading, the format→JSON conversion produced invalid JSON — an engine fault; writing, the data holds what the format cannot express — a null in TOML, an XML document without its one root key, a markdown envelope without its parts | gates, readers, text writers |
 | `schema_error` | the schema could not be loaded or compiled, or a tomlx file has no annotations to derive one | gates, readers, text writers |
 | `validation_error` | the data does not match the schema | gates, readers, text writers |
 | `cache_error` | the validator cache failed — an engine fault | readers, text writers |

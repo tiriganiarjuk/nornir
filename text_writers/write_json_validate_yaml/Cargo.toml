@@ -1,0 +1,12 @@
+[package]
+name = "write_json_validate_yaml"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "write_json_validate_yaml"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { workspace = true }
+text_writer_io = { path = "../../capability/text_writer_io" }

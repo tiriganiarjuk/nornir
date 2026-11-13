@@ -190,6 +190,11 @@ pyo3_verify = "python_import"
 python_version = "python3.13"
 pyo3_crates = [
     "write_json_validate_json",
+    "write_json_validate_toml",
+    "write_json_validate_yaml",
+    "write_json_validate_toon",
+    "write_json_validate_xml",
+    "write_json_validate_markdown",
 ]
 pyo3_verify = "python_import"
 

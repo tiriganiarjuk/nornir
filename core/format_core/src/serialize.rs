@@ -28,6 +28,35 @@ pub fn to_toml(value: &Value) -> Result<String, FormatError> {
         .map_err(|e| FormatError::Conversion(format!("TOML serialization failed: {}", e)))
 }
 
+/// Serialize the envelope `{"frontmatter": {...}, "body": "..."}` to a Markdown
+/// document — the inverse of `parse::markdown`. Empty frontmatter writes the body
+/// alone, unless the body itself opens with a fence; then an empty frontmatter
+/// block is written, so the document reads back as the same envelope.
+pub fn to_markdown_document(value: &Value) -> Result<String, FormatError> {
+    let (frontmatter, body) = envelope_parts(value)?;
+    if frontmatter.is_empty() && !body.starts_with("---\n") {
+        return Ok(body.to_string());
+    }
+    if frontmatter.is_empty() {
+        return Ok(format!("---\n---\n{body}"));
+    }
+    let yaml = serde_yaml::to_string(frontmatter)
+        .map_err(|e| FormatError::Conversion(format!("YAML frontmatter serialization failed: {}", e)))?;
+    Ok(format!("---\n{yaml}---\n{body}"))
+}
+
+/// The envelope's two parts: an object `frontmatter` and a string `body`.
+fn envelope_parts(value: &Value) -> Result<(&serde_json::Map<String, Value>, &str), FormatError> {
+    let frontmatter = value.get("frontmatter").and_then(Value::as_object).ok_or_else(|| {
+        FormatError::Conversion("a Markdown document needs an object 'frontmatter'".to_string())
+    })?;
+    let body = value
+        .get("body")
+        .and_then(Value::as_str)
+        .ok_or_else(|| FormatError::Conversion("a Markdown document needs a string 'body'".to_string()))?;
+    Ok((frontmatter, body))
+}
+
 /// Serialize Value to TOON.
 pub fn to_toon(value: &Value) -> Result<String, FormatError> {
     toon_format::encode_default(value)

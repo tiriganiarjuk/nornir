@@ -4867,6 +4867,7 @@ dependencies = [
 name = "text_writer_io"
 version = "0.1.0"
 dependencies = [
+ "format_core",
  "reader_io",
  "serde_json",
  "thiserror 2.0.18",
@@ -6262,6 +6263,46 @@ dependencies = [
 
 [[package]]
 name = "write_json_validate_json"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "text_writer_io",
+]
+
+[[package]]
+name = "write_json_validate_markdown"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "text_writer_io",
+]
+
+[[package]]
+name = "write_json_validate_toml"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "text_writer_io",
+]
+
+[[package]]
+name = "write_json_validate_toon"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "text_writer_io",
+]
+
+[[package]]
+name = "write_json_validate_xml"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "text_writer_io",
+]
+
+[[package]]
+name = "write_json_validate_yaml"
 version = "0.1.0"
 dependencies = [
  "pyo3",
