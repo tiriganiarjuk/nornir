@@ -20,29 +20,26 @@ upgrade is done; the record of it is git.
 
 Expect saga to report directories it could not read on its first run after the upgrade.
 
-**Waits on:** a descent-pruning option in `directory_read_io`, approved by the author as an
-added parameter of `read_directory_json`. Saga keeps hidden *files* (the `.qa` sidecars) and never
-enters hidden or junk *directories*; listing with hidden entries included and filtering afterwards
-would walk `.git`, `.venv` and `node_modules` whole, and fail on anything unreadable inside them.
+**Waits on:** descent pruning in the engine, `directory_read_io`. Saga keeps hidden *files* (the
+`.qa` sidecars) and never enters hidden or junk *directories*; listing with hidden entries
+included and filtering afterwards would walk `.git`, `.venv` and `node_modules` whole, and fail on
+anything unreadable inside them.
 
-**Proposed shape**, for the author's approval before it is built:
+**The shape, approved by the author:**
 
 - `ListOptions` gains two fields, both defaulting to "enter everything":
   - `prune_directories: Vec<String>` — directory names the walk neither lists nor enters, at any
     depth;
   - `prune_hidden_directories: bool` — the walk neither lists nor enters a directory whose name
     starts with `.`, while `include_hidden` still governs hidden *files*.
-- `read_directory_json` gains them as optional keyword parameters,
-  `read(root, max_depth=None, include_hidden=False, with_hashes=False, prune_directories=None,
-  prune_hidden_directories=False)`; the listing's shape is unchanged.
 - The walk still applies no policy of its own: what to prune is always the caller's, named in
   the call.
-- Saga then lists with `include_hidden = true`, `prune_hidden_directories = true` and
-  `prune_directories` = its skip list plus the caller's extra names — the old walk's behaviour,
-  with every unreadable path reported instead of dropped.
-
-When built: its row in `MUST_READ_BEFORE_BUILDING.md` and `NORNIR_CONVENTIONS.md` name the two
-parameters.
+- Saga, a Rust caller, calls the engine directly, with `include_hidden = true`,
+  `prune_hidden_directories = true` and `prune_directories` = its skip list plus the caller's
+  extra names — the old walk's behaviour, with every unreadable path reported instead of dropped.
+- `read_directory_json`, the tool, is unchanged. An engine carries every choice its operation
+  has; a tool fixes them. A shell or Python caller that needs pruning is given a named generated
+  variant when it appears.
 
 ## `saga_runner` file hashing → `directory_read_io`
 
