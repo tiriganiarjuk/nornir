@@ -232,7 +232,9 @@ pub fn markdown(content: &str) -> Result<Value, FormatError> {
 
 /// Split a document into (frontmatter YAML text, body). `None` frontmatter
 /// means no opening fence. The fences are `---` lines: the opening one at
-/// byte 0, the closing one the first subsequent line equal to `---`.
+/// byte 0, the closing one the first subsequent line equal to `---`. The YAML
+/// text is every line between them, each with its line break: a block scalar
+/// that closes the frontmatter keeps the trailing line breaks it was written with.
 fn split_frontmatter(content: &str) -> Result<(Option<&str>, &str), FormatError> {
     let Some(after_open) = content.strip_prefix("---\n") else {
         return Ok((None, content));
@@ -241,10 +243,10 @@ fn split_frontmatter(content: &str) -> Result<(Option<&str>, &str), FormatError>
         return Ok((Some(""), body));
     }
     if let Some(close_at) = after_open.find("\n---\n") {
-        return Ok((Some(&after_open[..close_at]), &after_open[close_at + 5..]));
+        return Ok((Some(&after_open[..close_at + 1]), &after_open[close_at + 5..]));
     }
-    if let Some(yaml_text) = after_open.strip_suffix("\n---") {
-        return Ok((Some(yaml_text), ""));
+    if after_open.ends_with("\n---") {
+        return Ok((Some(&after_open[..after_open.len() - 3]), ""));
     }
     Err(FormatError::MarkdownParse(
         "opening frontmatter fence without a closing fence".to_string(),
@@ -380,6 +382,17 @@ mod tests {
     fn test_parse_markdown_date_stays_string() {
         let result = markdown("---\noccurrence/effective: 1999-04-01\n---\n").unwrap();
         assert_eq!(result["frontmatter"]["occurrence/effective"], "1999-04-01");
+    }
+
+    #[test]
+    fn test_markdown_block_scalar_closing_the_frontmatter_keeps_its_line_breaks() {
+        for text in ["l1\n", "l1\n\n", "\n", "l1\nl2"] {
+            let envelope = serde_json::json!({"frontmatter": {"title": "x", "note": text}, "body": "The body.\n"});
+            let document = crate::serialize::to_markdown_document(&envelope).unwrap();
+            assert_eq!(markdown(&document).unwrap(), envelope, "{document}");
+        }
+        let at_end_of_file = markdown("---\nnote: |\n  l1\n---").unwrap();
+        assert_eq!(at_end_of_file["frontmatter"]["note"], "l1\n");
     }
 
     #[test]

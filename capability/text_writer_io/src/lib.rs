@@ -63,7 +63,8 @@ pub enum TextWriteError {
     /// readers' error, so both directions report these failures alike.
     SchemaRefused { path: String, source: ReaderError },
     /// Valid, schema-conforming data the file's format cannot express — a null in TOML,
-    /// an XML document without its one root key, a markdown envelope without its parts.
+    /// an XML document without its one root key, a markdown envelope without its parts,
+    /// an integer beyond ±2^53 in YAML.
     NotExpressible { path: String, message: String },
     WriteFailed { path: String, message: String },
 }
@@ -422,6 +423,38 @@ mod tests {
             assert_eq!(error.error_type(), "conversion_error", "{file_name}");
             assert!(!file.exists(), "{file_name}");
         }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn yaml_and_frontmatter_quote_what_another_reader_would_mistype_and_refuse_what_it_would_round() {
+        let dir = temp_dir("faithful_yaml");
+        write_schema(&dir, "faithful_yaml", r#"{"type": "object"}"#);
+        let schema_dir = dir_str(&dir);
+
+        let yaml_file = dir.join("out.yaml");
+        let data = r#"{"date": "1999-04-01", "answer": "yes", "ratio": 1e-7}"#;
+        validate_write(TextFormat::Yaml, data, yaml_file.to_str().unwrap(), "faithful_yaml", schema_dir).unwrap();
+        let written = fs::read_to_string(&yaml_file).unwrap();
+        assert_eq!(written, "date: \"1999-04-01\"\nanswer: \"yes\"\nratio: 1.0e-7\n");
+        let expected: Value = serde_json::from_str(data).unwrap();
+        assert_eq!(read_back(SourceFormat::Yaml, &yaml_file, "faithful_yaml", &dir), expected);
+
+        let page = dir.join("page.md");
+        let envelope = r#"{"frontmatter": {"occurrence/effective": "1971-12-18", "note": "l1\n"}, "body": "Body.\n"}"#;
+        validate_write(TextFormat::Markdown, envelope, page.to_str().unwrap(), "faithful_yaml", schema_dir).unwrap();
+        let page_text = fs::read_to_string(&page).unwrap();
+        assert_eq!(page_text, "---\noccurrence/effective: \"1971-12-18\"\nnote: |\n  l1\n---\nBody.\n");
+        let read = read_back(SourceFormat::Markdown, &page, "faithful_yaml", &dir);
+        assert_eq!(read, serde_json::from_str::<Value>(envelope).unwrap());
+        let rewritten = validate_render(TextFormat::Markdown, &read.to_string(), "page.md", "faithful_yaml", schema_dir);
+        assert_eq!(rewritten.unwrap(), page_text);
+
+        let big = dir.join("big.yaml");
+        let error = validate_write(TextFormat::Yaml, r#"{"id": 9007199254740993}"#, big.to_str().unwrap(), "faithful_yaml", schema_dir)
+            .unwrap_err();
+        assert_eq!(error.error_type(), "conversion_error");
+        assert!(!big.exists());
         fs::remove_dir_all(&dir).ok();
     }
 

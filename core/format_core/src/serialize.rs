@@ -12,10 +12,10 @@ pub fn to_json(value: &Value) -> Result<String, FormatError> {
         .map_err(|e| FormatError::Conversion(format!("JSON serialization failed: {}", e)))
 }
 
-/// Serialize Value to YAML.
+/// Serialize Value to YAML, in nornir's one fixed style (`yaml_emit`): every scalar is
+/// written so that every mainstream YAML reader types it the same way.
 pub fn to_yaml(value: &Value) -> Result<String, FormatError> {
-    serde_yaml::to_string(value)
-        .map_err(|e| FormatError::Conversion(format!("YAML serialization failed: {}", e)))
+    crate::yaml_emit::emit(value)
 }
 
 /// Serialize Value to TOML (raw — no educational diagnostics).
@@ -40,8 +40,7 @@ pub fn to_markdown_document(value: &Value) -> Result<String, FormatError> {
     if frontmatter.is_empty() {
         return Ok(format!("---\n---\n{body}"));
     }
-    let yaml = serde_yaml::to_string(frontmatter)
-        .map_err(|e| FormatError::Conversion(format!("YAML frontmatter serialization failed: {}", e)))?;
+    let yaml = crate::yaml_emit::emit_mapping(frontmatter)?;
     Ok(format!("---\n{yaml}---\n{body}"))
 }
 

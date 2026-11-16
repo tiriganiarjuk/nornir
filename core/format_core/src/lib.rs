@@ -8,6 +8,7 @@
 //! - [`parse`] - Format string → serde_json::Value
 //! - [`serialize`] - serde_json::Value → format string
 //! - [`convert`] - Full conversions with educational error diagnostics
+//! - [`yaml_emit`] - The YAML document nornir writes: one fixed style every reader types alike
 //!
 //! # Legacy interface
 //!
@@ -18,6 +19,8 @@ pub mod convert;
 pub mod parse;
 pub mod serialize;
 pub mod tomlx;
+pub mod yaml_emit;
+mod yaml_scalar;
 
 // Re-export legacy interface for backward compatibility
 pub use convert::{json_to_toml, toml_to_json};
