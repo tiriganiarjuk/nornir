@@ -1,29 +1,23 @@
-//! TOON and XML written only when what is written reads back as the data handed over.
+//! The check behind the TOON and XML serializers: what is written is handed over only
+//! when it reads back as the data it was written from.
 //!
 //! Neither format carries every JSON value: TOON has no integers beyond 64 signed bits and
 //! writes large floats as other things; XML has no types, drops surrounding whitespace and
-//! cannot tell an empty element from an empty string. Each function here serializes the
-//! data, parses its own output, and refuses with the path of the first value that came
-//! back different. The raw serializers stay in [`crate::serialize`] for presentation.
+//! cannot tell an empty element from an empty string. `serialize::to_toon` and
+//! `serialize::to_xml` parse their own output and pass it through [`verified`], which
+//! refuses with the path of the first value that came back different.
 
 use error_core::FormatError;
 use serde_json::{Number, Value};
 
-use crate::{parse, serialize};
-
-/// TOON for `value`, refused when TOON would hand back different data.
-pub fn to_toon_verified(value: &Value) -> Result<String, FormatError> {
-    let text = serialize::to_toon(value)?;
-    verify("TOON", value, parse::toon(&text), text)
-}
-
-/// XML for `value`, refused when XML would hand back different data.
-pub fn to_xml_verified(value: &Value) -> Result<String, FormatError> {
-    let text = serialize::to_xml(value)?;
-    verify("XML", value, parse::xml(&text), text)
-}
-
-fn verify(format: &str, value: &Value, read: Result<Value, FormatError>, text: String) -> Result<String, FormatError> {
+/// `text` — `value` written in `format` — when `read`, the parse of that text, is the same
+/// data; otherwise the refusal, naming where the data changed.
+pub(crate) fn verified(
+    format: &str,
+    value: &Value,
+    read: Result<Value, FormatError>,
+    text: String,
+) -> Result<String, FormatError> {
     let read = read.map_err(|error| {
         FormatError::Conversion(format!("{format} cannot carry this data: what it writes does not read back ({error})"))
     })?;
@@ -92,12 +86,14 @@ fn exact_integer(number: &Number) -> Option<i128> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse;
+    use crate::serialize::{to_toon, to_xml};
     use serde_json::json;
 
     #[test]
     fn toon_writes_data_it_hands_back() {
         let value = json!({"name": "x", "count": 3, "ratio": 0.5, "items": [{"a": 1, "b": "y"}, {"a": 2, "b": "z"}]});
-        let text = to_toon_verified(&value).unwrap();
+        let text = to_toon(&value).unwrap();
         assert_eq!(parse::toon(&text).unwrap(), value);
     }
 
@@ -111,7 +107,7 @@ mod tests {
             json!({"v": 1e21}),
             json!({"v": [{}]}),
         ] {
-            let error = to_toon_verified(&value).unwrap_err();
+            let error = to_toon(&value).unwrap_err();
             assert!(matches!(error, FormatError::Conversion(_)), "{value}");
             assert!(error.to_string().contains("TOON cannot carry"), "{error}");
         }
@@ -120,7 +116,7 @@ mod tests {
     #[test]
     fn xml_writes_data_it_hands_back() {
         let value = json!({"root": {"@id": "7", "name": "x", "item": ["a", "b"], "empty": {}, "deep": {"#text": "t", "@k": "v"}}});
-        let text = to_xml_verified(&value).unwrap();
+        let text = to_xml(&value).unwrap();
         assert_eq!(parse::xml(&text).unwrap(), value);
     }
 
@@ -138,14 +134,14 @@ mod tests {
             json!({"root": {"@id": 7}}),
             json!({"root": {"#text": 5, "a": "x"}}),
         ] {
-            let error = to_xml_verified(&value).unwrap_err();
+            let error = to_xml(&value).unwrap_err();
             assert!(error.to_string().contains("XML cannot carry"), "{value}: {error}");
         }
     }
 
     #[test]
     fn the_refusal_names_where_the_data_changed() {
-        let error = to_xml_verified(&json!({"root": {"ok": "x", "bad": {"n": 1}}})).unwrap_err();
+        let error = to_xml(&json!({"root": {"ok": "x", "bad": {"n": 1}}})).unwrap_err();
         assert!(error.to_string().contains("root.bad.n"), "{error}");
     }
 

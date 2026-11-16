@@ -1,7 +1,7 @@
 //! Format serializers — convert serde_json::Value to format strings.
 //!
-//! These are raw serializers without educational diagnostics.
-//! For conversions with diagnostics, use the convert module.
+//! Each serializer hands over text that reads back as the data it was given, or refuses.
+//! For conversions with educational diagnostics, use the convert module.
 
 use error_core::FormatError;
 use serde_json::Value;
@@ -57,10 +57,14 @@ fn envelope_parts(value: &Value) -> Result<(&serde_json::Map<String, Value>, &st
     Ok((frontmatter, body))
 }
 
-/// Serialize Value to TOON.
+/// Serialize Value to TOON. The text is handed over only when it reads back as `value`:
+/// data TOON would alter — an integer beyond 64 signed bits, a float it writes as
+/// something else — is refused, with the path of the first value that changed.
 pub fn to_toon(value: &Value) -> Result<String, FormatError> {
-    toon_format::encode_default(value)
-        .map_err(|e| FormatError::Conversion(format!("TOON serialization failed: {}", e)))
+    let text = toon_format::encode_default(value)
+        .map_err(|e| FormatError::Conversion(format!("TOON serialization failed: {}", e)))?;
+    let read = crate::parse::toon(&text);
+    crate::write_verify::verified("TOON", value, read, text)
 }
 
 /// Serialize Value to XML using @attr/#text convention.
@@ -71,6 +75,10 @@ pub fn to_toon(value: &Value) -> Result<String, FormatError> {
 /// - Arrays become repeated sibling elements
 /// - Objects become nested elements
 /// - Strings become text-only elements
+///
+/// The text is handed over only when it reads back as `value`: XML has no types and
+/// trims text, so a number, a boolean, a null, an empty or padded string is refused,
+/// with the path of the first value that changed.
 pub fn to_xml(value: &Value) -> Result<String, FormatError> {
     let obj = value.as_object().ok_or_else(|| {
         FormatError::Conversion("XML requires a root object".to_string())
@@ -99,7 +107,8 @@ pub fn to_xml(value: &Value) -> Result<String, FormatError> {
     check_xml_element(root_name, root_value)?;
     let mut output = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     write_xml_element(&mut output, root_name, root_value, 0)?;
-    Ok(output)
+    let read = crate::parse::xml(&output);
+    crate::write_verify::verified("XML", value, read, output)
 }
 
 /// Every element name, attribute name and character below `value` is one XML 1.0 allows;

@@ -19,7 +19,7 @@ pub mod convert;
 pub mod parse;
 pub mod serialize;
 pub mod tomlx;
-pub mod write_verify;
+mod write_verify;
 pub mod yaml_emit;
 mod yaml_scalar;
 

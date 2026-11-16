@@ -20,8 +20,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use format_core::convert::json_to_toml;
-use format_core::serialize::{to_markdown_document, to_yaml};
-use format_core::write_verify::{to_toon_verified, to_xml_verified};
+use format_core::serialize::{to_markdown_document, to_toon, to_xml, to_yaml};
 use failure_mode_core::Failure;
 use reader_io::{validate_against, ReaderError, SchemaSource};
 
@@ -101,15 +100,14 @@ impl std::fmt::Display for TextWriteError {
 impl std::error::Error for TextWriteError {}
 
 /// The text to write: the JSON exactly as given, or the data in the file's format.
-/// TOON and XML are written only when they read back as the data handed over.
 fn rendered(format: TextFormat, json_data: &str, data: &Value) -> Result<String, String> {
     let converted = match format {
         TextFormat::Json => return Ok(json_data.to_string()),
         // json_to_toml names every null and its fix when the data cannot be TOML.
         TextFormat::Toml => json_to_toml(json_data),
         TextFormat::Yaml => to_yaml(data),
-        TextFormat::Toon => to_toon_verified(data),
-        TextFormat::Xml => to_xml_verified(data),
+        TextFormat::Toon => to_toon(data),
+        TextFormat::Xml => to_xml(data),
         TextFormat::Markdown => to_markdown_document(data),
     };
     converted.map_err(|format_err| format_err.to_string())
