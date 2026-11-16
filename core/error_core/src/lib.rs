@@ -231,7 +231,7 @@ fn categorize_additional_property() -> (String, String, String) {
     (
         "additional_property".into(),
         "No additional properties allowed".into(),
-        "Remove the unexpected property, or update the schema to allow it".into(),
+        "Remove the property; the schema allows only the properties it names".into(),
     )
 }
 
@@ -423,7 +423,7 @@ pub fn format_path_errors(missing: &[PathField]) -> String {
     for (i, field) in missing.iter().enumerate() {
         lines.push(format!("  {}. Field: {}", i + 1, field.json_pointer));
         lines.push(format!("     Path: {}", field.value));
-        lines.push("     Fix: Create the file or correct the path".to_string());
+        lines.push("     Fix: Correct the path if it is wrong; if it is right, report it to the user".to_string());
         lines.push(String::new());
     }
 
