@@ -1872,6 +1872,8 @@ dependencies = [
 name = "hook_post_llm_tool"
 version = "0.1.0"
 dependencies = [
+ "datagram_io",
+ "failure_mode_core",
  "hook_io",
  "serde_json",
  "write_engine",
@@ -4246,6 +4248,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "datagram_io",
+ "failure_mode_core",
  "report_render_core",
  "saga_runner",
  "schemas_embedded",

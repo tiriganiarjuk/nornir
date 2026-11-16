@@ -19,6 +19,7 @@
 //!   .syn/deny.toml   — enforcement threshold (what blocks)
 
 use clap::{Parser, ValueEnum};
+use failure_mode_core::Failure;
 use std::io::{self, Read as IoRead};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -37,22 +38,32 @@ struct SynFilterToml {
     filter: Option<String>,
 }
 
+/// What a refusal prints: the failure class on the first line, then the message.
+fn refusal(failure: Failure) -> String {
+    format!("{}\n{failure}", failure.class)
+}
+
+/// The filter a policy file states. A file that is there but cannot be read, is
+/// not TOML, or states no filter is refused: the default never stands in for it.
+fn stated_filter(config_path: &Path) -> Result<String, Failure> {
+    let shown = config_path.to_string_lossy();
+    let content =
+        std::fs::read_to_string(config_path).map_err(|io_err| failure_mode_core::file_unreadable(&shown, io_err))?;
+    let config: SynFilterToml = toml::from_str(&content)
+        .map_err(|toml_err| failure_mode_core::file_not_in_format(&shown, "TOML", toml_err.message()))?;
+    config.filter.ok_or_else(|| failure_mode_core::policy_filter_missing(&shown))
+}
+
+/// The filter for one policy file: the one it states, or the default when the
+/// file is absent.
 fn load_filter_config(config_path: &Path, default_expr: &str) -> Result<(String, syn_core::CompiledFilter), String> {
-    let expr = if config_path.exists() {
-        std::fs::read_to_string(config_path)
-            .ok()
-            .and_then(|content| {
-                let config: SynFilterToml = toml::from_str(&content).ok()?;
-                config.filter
-            })
-            .unwrap_or_else(|| default_expr.to_string())
-    } else {
-        default_expr.to_string()
-    };
-
+    if !config_path.exists() {
+        let filter = syn_core::compile_filter(default_expr)?;
+        return Ok((default_expr.to_string(), filter));
+    }
+    let expr = stated_filter(config_path).map_err(refusal)?;
     let filter = syn_core::compile_filter(&expr)
-        .map_err(|e| format!("[syn] fatal: bad jq filter in {}: {}", config_path.display(), e))?;
-
+        .map_err(|reason| refusal(failure_mode_core::policy_filter_invalid(config_path.display(), reason)))?;
     Ok((expr, filter))
 }
 
@@ -460,17 +471,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn load_filter_config_toml_missing_filter_key_uses_default() {
-        let dir = std::env::temp_dir().join(format!("syn_test_nokey_{}", std::process::id()));
+    /// What loading a policy file holding `content` refuses with.
+    fn refusal_for(test_name: &str, content: &[u8]) -> String {
+        let dir = std::env::temp_dir().join(format!("syn_test_{test_name}_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let config_path = dir.join("warn.toml");
-        std::fs::write(&config_path, "something_else = 42\n").unwrap();
-
-        let (expr, _filter) = load_filter_config(&config_path, syn_core::DEFAULT_WARN_FILTER).unwrap();
-        assert_eq!(expr, syn_core::DEFAULT_WARN_FILTER);
-
+        std::fs::write(&config_path, content).unwrap();
+        let refused = load_filter_config(&config_path, syn_core::DEFAULT_WARN_FILTER);
         let _ = std::fs::remove_dir_all(&dir);
+        match refused {
+            Ok((expr, _filter)) => panic!("the file was accepted with the filter {expr}"),
+            Err(message) => message,
+        }
+    }
+
+    #[test]
+    fn a_policy_file_that_states_no_filter_is_refused_not_replaced_by_the_default() {
+        let message = refusal_for("nokey", b"something_else = 42\n");
+        assert!(message.starts_with("validation_error\n"), "{message}");
+        assert!(message.contains("states no filter"), "{message}");
+    }
+
+    #[test]
+    fn a_policy_file_that_is_not_toml_is_refused_not_replaced_by_the_default() {
+        let message = refusal_for("nottoml", b"filter = = =\n");
+        assert!(message.starts_with("parse_error\n"), "{message}");
+    }
+
+    #[test]
+    fn a_policy_file_that_cannot_be_read_is_refused_not_replaced_by_the_default() {
+        let message = refusal_for("unreadable", &[0xff, 0xfe, 0xfd]);
+        assert!(message.starts_with("read_error\n"), "{message}");
     }
 
     // =========================================================================

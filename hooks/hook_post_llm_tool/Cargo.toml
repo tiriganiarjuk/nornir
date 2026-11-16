@@ -10,4 +10,6 @@ path = "src/main.rs"
 [dependencies]
 hook_io = { path = "../../capability/hook_io" }
 write_engine = { path = "../../capability/write_engine" }
+failure_mode_core = { path = "../../core/failure_mode_core" }
+datagram_io = { path = "../../capability/datagram_io" }
 serde_json = { workspace = true }

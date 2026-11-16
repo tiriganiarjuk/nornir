@@ -16,6 +16,7 @@ syn_core = { path = "../../core/syn_core" }
 saga_runner = { path = "../../capability/saga_runner" }
 report_render_core = { path = "../../core/report_render_core" }
 datagram_io = { path = "../../capability/datagram_io" }
+failure_mode_core = { path = "../../core/failure_mode_core" }
 
 [dev-dependencies]
 schemas_embedded = { path = "../../capability/schemas_embedded" }

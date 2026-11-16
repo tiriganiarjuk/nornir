@@ -63,14 +63,14 @@ the registry.
 | `cache_error` | `validator_cache_poisoned` |
 | `compression_error` | `compression_failed` |
 | `conversion_error` | `conversion_produced_invalid_json`, `data_not_expressible` |
-| `instrument_error` | `instrument_not_runnable`, `instrument_output_unusable`, `source_not_examinable` |
+| `instrument_error` | `instrument_not_runnable`, `instrument_output_unusable`, `source_not_examinable`, `quality_check_not_run` |
 | `parse_error` | `text_not_json`, `file_not_in_format`, `directory_request_not_json`, `record_not_json`, `png_signature_missing`, `png_chunk_truncated`, `png_chunk_corrupt`, `png_chunks_out_of_order`, `png_header_invalid`, `png_pixel_data_invalid`, `png_undecodable`, `mesh_truncated`, `mesh_header_invalid`, `mesh_vertex_data_invalid`, `mesh_indices_invalid`, `mesh_edges_invalid` |
 | `path_error` | `paths_missing` |
 | `read_error` | `file_unreadable`, `directory_unlistable`, `directory_partly_unreadable`, `record_absent`, `store_open_file_missing` |
 | `repair_error` | `heights_unrepairable` |
 | `rules_error` | `height_rules_invalid`, `height_grid_size_mismatch`, `height_encoding_unknown`, `shape_not_terrarium` |
 | `schema_error` | `schema_unreadable`, `schema_not_json`, `schema_not_compilable`, `tomlx_without_annotations`, `embedded_schema_unusable` |
-| `validation_error` | `data_not_matching_schema`, `directory_request_invalid`, `directory_paths_refused`, `directory_files_refused`, `directory_listing_invalid`, `directory_report_invalid`, `record_name_not_plain`, `batch_too_large`, `stamped_field_supplied`, `store_open_file_empty`, `store_first_record_unstamped`, `store_index_record_invalid`, `sanity_report_invalid`, `sidecar_not_matching` |
+| `validation_error` | `data_not_matching_schema`, `directory_request_invalid`, `directory_paths_refused`, `directory_files_refused`, `directory_listing_invalid`, `directory_report_invalid`, `record_name_not_plain`, `batch_too_large`, `stamped_field_supplied`, `store_open_file_empty`, `store_first_record_unstamped`, `store_index_record_invalid`, `sanity_report_invalid`, `sidecar_not_matching`, `policy_filter_missing`, `policy_filter_invalid` |
 | `verification_error` | `png_chunk_not_accepted`, `png_chunk_too_large`, `png_trailing_data`, `png_shape_mismatch`, `png_pixel_data_excess`, `mesh_extension_not_accepted` |
 | `write_error` | `file_unwritable`, `directory_not_generated`, `directory_unwritable`, `output_exists`, `output_not_prepared`, `output_directory_absent`, `writer_io_failed`, `store_sessions_directory_absent`, `store_session_already_stored`, `store_copy_mismatch`, `writer_engine_fault` |
 <!-- /error-type-table -->

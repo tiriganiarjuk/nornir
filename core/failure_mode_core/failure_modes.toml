@@ -445,3 +445,22 @@ class       = "validation_error"
 standard    = "The sidecar '{path}' does not match sanity-report: {reason}."
 route       = "The sidecar was written by an older saga, or changed after saga wrote it. Report this message to the user; the sidecars are regenerated with saga --force."
 adversarial = "stop"
+
+[policy_filter_missing]
+class       = "validation_error"
+standard    = "The policy file '{path}' states no filter."
+route       = "A syn policy file states one jq expression under the key filter. Syn applies no policy from a file it cannot use, and no default in its place. Report this message to the user."
+adversarial = "stop"
+
+[policy_filter_invalid]
+class       = "validation_error"
+standard    = "The filter in the policy file '{path}' is not a usable jq expression: {reason}."
+route       = "Syn applies no policy from a file it cannot use, and no default in its place. Report this message to the user."
+adversarial = "stop"
+
+[quality_check_not_run]
+class       = "instrument_error"
+standard    = "The quality check did not run on '{path}': {instrument} failed — {reason}."
+route       = "The file was not examined, so it is not known to be clean. Report this message to the user before relying on the file."
+adversarial = "stop"
+alert       = "high"

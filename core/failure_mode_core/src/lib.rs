@@ -92,9 +92,9 @@ mod tests {
     #[test]
     fn the_documented_error_types_are_the_registry_s() {
         let document = include_str!("../../../MUST_READ_BEFORE_BUILDING.md");
-        assert_eq!(
-            with_error_type_table(document).as_deref(),
-            Ok(document),
+        let current = with_error_type_table(document).expect("the document holds the table's two marker lines");
+        assert!(
+            current == document,
             "MUST_READ_BEFORE_BUILDING.md is behind the registry — run: \
              cargo run -p failure_mode_core --example write_error_type_table"
         );
