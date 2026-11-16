@@ -118,23 +118,24 @@ fn main() {
 
 ## Tool Structure — one tool, two faces
 
-A built tool is one crate. The tool is a function in the crate's library, defined once; each face is a thin adapter that calls it and nothing else. The worked example is `readers/read_toml_validate_json/`.
+A built tool is one crate. The tool is a function in the crate's library, defined once, returning `Result<Option<String>, E>` — `Some(data)` for a tool that hands data back, `None` for one whose effect is the write. Each face hands that result, with the engine's `error_type`, to the adapters in `tool_face_io`, which present it under the contracts; a face holds no logic of its own. The worked example is `readers/read_toml_validate_json/`.
 
 ```
 readers/read_toml_validate_json/
-  Cargo.toml              [lib] cdylib + rlib; [[bin]]; feature "python" = ["dep:pyo3"]
-  src/lib.rs              pub fn read(...) -> Result<String, ReaderError>   — the tool
-                          #[cfg(feature = "python")] the PyO3 face           — calls read()
-  src/main.rs             the CLI face, under the Binary Structure above     — calls read()
+  Cargo.toml              [lib] cdylib + rlib; [[bin]]; feature "python"
+  src/lib.rs              pub fn read(...) -> Result<Option<String>, ReaderError>   — the tool
+                          #[cfg(feature = "python")] the PyO3 face: tool_face_io::py_contract
+  src/main.rs             the CLI face: tool_face_io::positional_args, cli_report, cli_usage
   tests/cli_contract.rs   the CLI face through the three outcomes of the CLI contract
 ```
 
 ```toml
 [features]
-python = ["dep:pyo3"]
+python = ["dep:pyo3", "tool_face_io/python"]
 
 [dependencies]
 pyo3 = { workspace = true, optional = true }
+tool_face_io = { path = "../../capability/tool_face_io" }
 ```
 
 The PyO3 face sits behind the `python` feature because the workspace builds PyO3 as an extension module: its Python symbols are supplied by the interpreter that loads it, so a program containing PyO3 code cannot link on its own. With the feature off, the crate is an ordinary Rust crate — the CLI binary links, and `cargo test` runs. `nornir_deploy` builds the PyO3 face with the feature on and the CLI face without it, reading which faces a crate has from its own `Cargo.toml`.
@@ -231,6 +232,7 @@ Before writing logic, check if it already exists:
 | Jq filter compilation + evaluation | `syn_core` |
 | AST guardrails | `gleipnir_core` |
 | Line-level diffing | `diff_core` |
+| A tool's CLI face and PyO3 face: arguments, outcome presentation under both contracts | `tool_face_io` |
 | Hook stdin/stdout/decision contract | `hook_io` |
 | Hook rule parsing from TOML | `hook_io::rules` |
 | Gate I/O orchestration (compile-time schema) | `gate_io` |
