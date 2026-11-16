@@ -58,6 +58,7 @@ A Rust monorepo of compiled validators, tools and hooks for the `ai` ecosystem �
 | the output tool builder — registry, generator, write engine | `~/ai/smidja/galdr/context/NORNIR_GATES_ELEMENT.md` § The output tool builder, then `tool_registry.toml` and `generate_writer.py` |
 | which schema a gate embeds | the gate's `src/lib.rs` — one `include_str!` through a symlink into Verdandi's output |
 | what a schema allows | `~/ai/smidja/verdandi/{project}/output/*.schema.json` |
+| the tomlx format — annotations, unit and path conversion, derived schemas | `core/format_core/TOMLX_SPEC.md` |
 | what calls the gates | `~/ai/smidja/galdr/context/REGIN_ELEMENT.md`, `~/ai/smidja/galdr/context/GALDR_ELEMENT.md` |
 | what crates exist right now | read live — `ls gates/ writers/ capability/ core/`. Inventories are not stored here; a stored one is wrong by the next commit |
 | the full forward cascade after a schema change | `~/ai/smidja/galdr/context/AGENT_BUILD_SYSTEM.md` § The forward cascade |

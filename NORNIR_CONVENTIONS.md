@@ -220,6 +220,7 @@ Before writing logic, check if it already exists:
 | Need | Use |
 |------|-----|
 | JSON/YAML/TOML/TOON conversion | `format_core` |
+| tomlx annotation processing: units, paths, a schema derived from the annotations | `format_core::tomlx` — the format is `core/format_core/TOMLX_SPEC.md` |
 | Schema validation | `schema_core` + `schemas_embedded` |
 | A failure mode — its class, message and route, from the error registry | `failure_mode_core` (`failure_modes.toml`) |
 | Error types with educational formatting | `error_core` |
