@@ -34,15 +34,16 @@ A Rust monorepo of compiled validators, tools and hooks for the `ai` ecosystem �
 > gates are one tenant among many.
 
 1. `NORNIR_CONVENTIONS.md` — the crate layout, tier rules, and naming law. Before writing any code.
-2. `MUST_READ_BEFORE_BUILDING.md` — the build and deploy rules. A bare `cargo build` leaves the artifact where nothing looks for it; gates additionally need the maturin path, `.so` extraction and code signing, without which macOS kills the process on import.
+2. `HOW_A_NORNIR_TOOL_IS_MADE.md` — the method every tool is built under: engine, built tool, generated variant, the three lenses that set a tool's constraints, refusals and their routes, the error registry, and the checklists every build goes through. Every tool builder reads it.
+3. `MUST_READ_BEFORE_BUILDING.md` — the build and deploy rules, and the approved interfaces every tool exposes. A bare `cargo build` leaves the artifact where nothing looks for it; gates additionally need the maturin path, `.so` extraction and code signing, without which macOS kills the process on import.
 
 > The next two apply if your work touches the agent pipeline's gates or writers. Skip them
 > if you are here for something else in the monorepo.
 
-3. `~/ai/smidja/galdr/context/AGENT_BUILD_SYSTEM.md` — why the pipeline exists, and the double gate that makes an LLM-written transform safe.
-4. `~/ai/smidja/galdr/context/NORNIR_GATES_ELEMENT.md` — what a gate is concretely, the four call patterns, entry-point gates versus stage-boundary pairs, the three kinds of checking a gate does, and the output tool builder.
+4. `~/ai/smidja/galdr/context/AGENT_BUILD_SYSTEM.md` — why the pipeline exists, and the double gate that makes an LLM-written transform safe.
+5. `~/ai/smidja/galdr/context/NORNIR_GATES_ELEMENT.md` — what a gate is concretely, the four call patterns, entry-point gates versus stage-boundary pairs, the three kinds of checking a gate does, and the output tool builder.
 
-**Proof:** before writing anything, state (a) why the wall is a separate language and what that argument does *not* claim, (b) what happens to a changed schema before the gate is rebuilt, and (c) one thing you would have done that the build rules forbid.
+**Proof:** before writing anything, state (a) why the wall is a separate language and what that argument does *not* claim, (b) what happens to a changed schema before the gate is rebuilt, (c) one thing you would have done that the build rules forbid, and (d) what a subagent with wide room to work is given to write with, and what that tool's refusal tells it to do next.
 
 ---
 
@@ -52,12 +53,13 @@ A Rust monorepo of compiled validators, tools and hooks for the `ai` ecosystem �
 |------|------|
 | crate layout, tiers, naming | `NORNIR_CONVENTIONS.md` |
 | how to build or deploy anything | `MUST_READ_BEFORE_BUILDING.md` — never bare `cargo build` or `maturin build` |
-| what a gate is / the call patterns / what it checks | `context/NORNIR_GATES_ELEMENT.md` |
-| the output tool builder — registry, generator, write engine | `context/NORNIR_GATES_ELEMENT.md` § The output tool builder, then `tool_registry.toml` and `generate_writer.py` |
+| how a tool is made, and the checklists before and after a build | `HOW_A_NORNIR_TOOL_IS_MADE.md` |
+| what a gate is / the call patterns / what it checks | `~/ai/smidja/galdr/context/NORNIR_GATES_ELEMENT.md` |
+| the output tool builder — registry, generator, write engine | `~/ai/smidja/galdr/context/NORNIR_GATES_ELEMENT.md` § The output tool builder, then `tool_registry.toml` and `generate_writer.py` |
 | which schema a gate embeds | the gate's `src/lib.rs` — one `include_str!` through a symlink into Verdandi's output |
 | what a schema allows | `~/ai/smidja/verdandi/{project}/output/*.schema.json` |
-| what calls the gates | `context/REGIN_ELEMENT.md`, `context/GALDR_ELEMENT.md` |
+| what calls the gates | `~/ai/smidja/galdr/context/REGIN_ELEMENT.md`, `~/ai/smidja/galdr/context/GALDR_ELEMENT.md` |
 | what crates exist right now | read live — `ls gates/ writers/ capability/ core/`. Inventories are not stored here; a stored one is wrong by the next commit |
-| the full forward cascade after a schema change | `context/AGENT_BUILD_SYSTEM.md` § The forward cascade |
+| the full forward cascade after a schema change | `~/ai/smidja/galdr/context/AGENT_BUILD_SYSTEM.md` § The forward cascade |
 | current state / what's left to build | read live — the code and `git log`. Nothing is stored |
 | a tool owed a move onto a newer, better tool — or a new tool built that others should now use | `REQUIRED_UPGRADES.md` — forward-only; add the entry when the newer tool lands |

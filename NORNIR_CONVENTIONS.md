@@ -51,6 +51,8 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 
 **Name structure:** `{verb}_{domain}_{specifics}` — e.g., `append_truth_qc_report_record`, `hook_pre_llm_bash`, `check_universal_render`.
 
+**A generated variant's name grows with its constraints:** the longer the name, the more is fixed in. `append_embedding_normalize_batch_20` fixes its schema and its destination, and the batch size besides (`HOW_A_NORNIR_TOOL_IS_MADE.md` § A generated variant adds constraints, never logic).
+
 ### Crate Names
 
 **Core:** `{domain}_core` — signals "pure library, safe to depend on from anywhere."
@@ -83,21 +85,22 @@ Hyphens in crate/binary names. Generic words (`utils`, `helpers`, `common`). Ver
 
 ## Binary Structure
 
-Every Tier 3 binary follows this pattern:
+Every Tier 3 binary follows this pattern, which is the CLI contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces):
 
 ```rust
 fn parse_args() -> Result<Config, String> { ... }
 
-fn run(config: &Config) -> Result<String, String> { ... }
+// The engine's typed error: error_type() names the failure class.
+fn run(config: &Config) -> Result<String, EngineError> { ... }
 
 fn main() {
     let config = match parse_args() {
         Ok(c) => c,
-        Err(e) => { eprintln!("{e}"); process::exit(2); }
+        Err(usage) => { eprintln!("{usage}"); process::exit(2); }
     };
     match run(&config) {
-        Ok(msg) => println!("{msg}"),
-        Err(e) => { eprintln!("{e}"); process::exit(1); }
+        Ok(data) => print!("{data}"),
+        Err(e) => { eprintln!("{}\n{e}", e.error_type()); process::exit(1); }
     }
 }
 ```
@@ -105,7 +108,7 @@ fn main() {
 **Rules:**
 
 1. `process::exit()` appears ONLY in `main()`. Helpers return `Result`.
-2. Exit codes: 0 = success, 1 = operational failure, 2 = usage error.
+2. Exit codes: 0 = success, 1 = refusal or failure, 2 = wrong arguments.
 3. Complex binaries (4+ flags) use clap derive. Simple ones stay manual.
 4. `.unwrap()` and `.expect()` are prohibited in production code (gleipnir enforces). Exemptions: `static`/`LazyLock` initializers, `const` contexts, test code.
 

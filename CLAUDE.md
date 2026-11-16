@@ -26,6 +26,7 @@ always tells you where things live.
 - Do not hand-write validation logic in Python. Import the gate module and call `validate()`.
 - Do not bypass the gate API. Every gate returns `{"ok": bool, "data": ..., "error": ...}`. Check `ok` before using `data`.
 - Run `cargo test` before committing. All tests must pass.
+- Every tool is built through the before- and after-build checklists in `HOW_A_NORNIR_TOOL_IS_MADE.md`.
 
 ---
 
