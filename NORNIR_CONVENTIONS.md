@@ -263,7 +263,7 @@ Before writing logic, check if it already exists:
 
 ## Deploying
 
-Do NOT use bare `cargo build --release` — it skips symlinks, verification, and dependency coherence. Use `nornir_deploy` (available in `$PATH` via `~/ai/tools/scripts/`). See `MUST_READ_BEFORE_BUILDING.md` for rationale.
+Do NOT use bare `cargo build --release` — it skips the copy into `~/ai/tools/bin/`, verification, and dependency coherence. Use `nornir_deploy` (available in `$PATH` via `~/ai/tools/scripts/`). See `MUST_READ_BEFORE_BUILDING.md` for rationale.
 
 ```bash
 nornir_deploy --all                  # rebuild + deploy everything

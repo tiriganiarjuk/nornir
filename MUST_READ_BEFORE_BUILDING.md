@@ -129,8 +129,9 @@ Categories are defined in `deploy_categories.toml`.
 
 ## Adding a new crate
 
-1. Add the crate to `deploy_categories.toml` under the appropriate category.
-2. Run `nornir_deploy --build <category>`.
+The steps are in `NORNIR_CONVENTIONS.md` § Adding a New Crate. `nornir_deploy` finds a crate's
+directory through the workspace `Cargo.toml` members, so a crate listed in
+`deploy_categories.toml` but not in the workspace cannot be built.
 
 ## What is safe to run directly
 
@@ -143,18 +144,32 @@ A hook intercepts `cargo build --release` and `maturin build` to remind you.
 
 ## deploy_categories.toml Reference
 
-Each category in `deploy_categories.toml` specifies a `verify` method that nornir_deploy runs after building to confirm the binary works.
+Each table in `deploy_categories.toml` is a category. These are the fields `nornir_deploy` reads:
+
+| Field | Meaning |
+|-------|---------|
+| `crates` | cargo binaries: built, copied to `~/ai/tools/bin/`, verified with `verify` |
+| `verify` | how a `crates` binary is checked — a method from the table below (default `help`) |
+| `verify_input` | JSON piped to stdin when `verify = "stdin"` |
+| `valid_exit_codes` | accepted exit codes when `verify = "exit_codes"` |
+| `binary_names` | crate name → binary name, where they differ (`saga_cli = "saga"`) |
+| `cli_crates` | cargo binaries verified with `cli_verify` instead of `verify` |
+| `cli_verify` | how a `cli_crates` binary is checked (default `help`) |
+| `pyo3_crates` (or `gate_crates`) | PyO3 modules: built with maturin, `.so` extracted and codesigned into `~/ai/tools/lib/`, verified by `python_import` |
+| `python_version` | the interpreter maturin builds for and imports with (default `python3.13`) |
 
 | Method | What it does | When to use |
 |--------|-------------|-------------|
-| `help` | Runs `binary --help`, expects exit 0 | Binaries with clap or manual `--help` |
-| `stdin` | Pipes `verify_input` JSON to stdin, expects exit 0 | Binaries that read JSON from stdin (hooks, converters, rewriters) |
-| `exit_codes` | Runs binary with no args, accepts any code in `valid_exit_codes` | Binaries that exit non-zero on missing args but prove they load |
-| `python_import` | Runs `python -c "import <module>"`, expects exit 0 | PyO3 `.so` modules (gates, interceptors) |
+| `help` | Runs `binary --help`, accepts exit 0 or 1 | Binaries with clap or manual `--help` |
+| `stdin` | Pipes `verify_input` to stdin, expects exit 0 | Binaries that read JSON from stdin (hooks, converters, rewriters) |
+| `exit_codes` | Runs the binary with no arguments, accepts any code in `valid_exit_codes` | Binaries that exit non-zero on missing arguments but prove they load |
+| `python_import` | Runs `python -c "import <module>"`, expects exit 0 | Every PyO3 module |
 
-Additional fields:
-- `verify_input` — JSON string piped to stdin (required when `verify = "stdin"`)
-- `valid_exit_codes` — list of accepted exit codes (required when `verify = "exit_codes"`)
-- `binary_names` — optional table mapping crate name to binary name when they differ (e.g., `saga_cli = "saga"`)
-- `pyo3_crates` — crates built with maturin instead of cargo
-- `python_version` — Python version for maturin builds (e.g., `"python3.13"`)
+**Two-faced crates need no entry for their CLI face.** A PyO3 crate whose `Cargo.toml` declares a
+`python` feature is built by maturin with that feature on. If it also declares a `[[bin]]`, its
+CLI face is built by cargo without the feature, copied to `~/ai/tools/bin/`, and verified to exit 2
+with no arguments — the CLI contract's wrong-arguments outcome. Which faces a crate has is read
+from its own manifest, never listed here.
+
+**`nornir_deploy --bootstrap`** creates the `nornir_deploy` symlink in `~/ai/tools/scripts/`, which
+is how it is on `PATH`.

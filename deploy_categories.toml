@@ -1,14 +1,7 @@
 # Crate-to-category mapping for nornir_deploy.
 #
-# Each table is a deploy category. Fields:
-#   crates         — list of cargo package names to build
-#   verify         — verification method: "help", "stdin", "exit_codes", "python_import"
-#   verify_input   — JSON string piped to stdin (for verify = "stdin")
-#   valid_exit_codes — accepted exit codes (for verify = "exit_codes")
-#   binary_names   — optional: map crate name -> binary name when they differ
-#
-# Gates are special: separate cli_crates (cargo) and gate_crates (maturin).
-# Default build method is "cargo". Gates override gate_crates to "maturin".
+# Each table is a deploy category. The fields nornir_deploy reads, and what each
+# means, are in MUST_READ_BEFORE_BUILDING.md § deploy_categories.toml Reference.
 
 [hooks]
 crates = [
