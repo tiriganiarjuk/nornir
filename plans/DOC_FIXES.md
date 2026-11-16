@@ -51,7 +51,6 @@ mitmproxy or nginx process). Which design the document describes — the PyO3 pa
   **decide** `[A+B]`
 - "never a flag", the exit-code contract, typed errors, pure `decide` — most hand-written tools
   break them; nothing states whether they are exempt. **decide** `[A+B]`
-- the `hook_` row says "intercepts a tool call" — seven hooks fire on session events. `[B]`
 - Binary Structure template (`Result<String, EngineError>`) vs Tool Structure
   (`Result<Option<String>, E>`). `[B]`
 
@@ -78,12 +77,8 @@ live); prompt re-injection mechanism; breaks HOW_TO_WRITE_EXPLAINERS headings an
 - `README.md` — lists Bifrost among the Python projects; `~/ai/smidja/bifrost` is Python, and
   `daemons/bifrost_proxy` is Rust. **decide** `[A+B]` It advertises gaming detection, whose rules
   are empty — follows Tyr's fix. `[A+B]`
-- `NORNIR_CONVENTIONS.md` — the "Current:" dependency list omits 11 (derive it, or remove it). `[A+B]`
 - `REFRESH.md` — unfilled template, routed from nothing. Fill or delete. `[A+B]`
 - `KFM.md` — entries name files and functions, against its own prelude. `[A]`
-- `tool_registry.toml:5` — "appended by generate_writer.py"; it prints the entry. `[A]`
-- `STRUCTURAL_AUDIT_GUIDE.md` P9 known-areas list — the `no_println` exemptions are built; the
-  Rust check list omits `param_count_rs`. `[A+B]`
 
 ## 4. Missing — subsystems with no design document
 
