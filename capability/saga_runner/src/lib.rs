@@ -153,12 +153,29 @@ fn fault(tool: &str, failure: Failure) -> Fault {
 /// One of gleipnir's entry points: a path and its source in, violations out.
 type GleipnirChecks = fn(&str, &[u8]) -> Result<Vec<gleipnir_core::Violation>, String>;
 
-fn examine_with_gleipnir(file_path: &Path, checks: GleipnirChecks) -> Result<Vec<Issue>, Fault> {
-    let path_str = file_path.to_string_lossy();
-    let source = std::fs::read(file_path)
-        .map_err(|io_err| fault("gleipnir", failure_mode_core::file_unreadable(&path_str, io_err)))?;
-    let violations = checks(&path_str, &source)
-        .map_err(|reason| fault("gleipnir", failure_mode_core::source_not_examinable("gleipnir", &path_str, reason)))?;
+/// A file to examine: the path it is known by, and where its content is read from.
+/// The two differ only when the content arrived on stdin and sits in a temporary
+/// file. Gleipnir applies its rules by the path the file is known by.
+#[derive(Debug, Clone, Copy)]
+pub struct Source<'a> {
+    pub known_as: &'a Path,
+    pub content_at: &'a Path,
+}
+
+impl<'a> Source<'a> {
+    /// A file examined where it lives.
+    pub fn in_place(file_path: &'a Path) -> Self {
+        Source { known_as: file_path, content_at: file_path }
+    }
+}
+
+fn examine_with_gleipnir(source: Source, checks: GleipnirChecks) -> Result<Vec<Issue>, Fault> {
+    let known_as = source.known_as.to_string_lossy();
+    let content = std::fs::read(source.content_at).map_err(|io_err| {
+        fault("gleipnir", failure_mode_core::file_unreadable(source.content_at.to_string_lossy(), io_err))
+    })?;
+    let violations = checks(&known_as, &content)
+        .map_err(|reason| fault("gleipnir", failure_mode_core::source_not_examinable("gleipnir", &known_as, reason)))?;
     Ok(violations.into_iter().map(violation_to_issue).collect())
 }
 
@@ -166,20 +183,20 @@ fn examine_with_gleipnir(file_path: &Path, checks: GleipnirChecks) -> Result<Vec
 ///
 /// Routes to v2 zone checks by default; projects on the v1 legacy
 /// whitelist (v1_legacy_projects.toml) use v1 rules instead.
-pub fn run_gleipnir(file_path: &Path) -> Result<Vec<Issue>, Fault> {
+pub fn run_gleipnir(source: Source) -> Result<Vec<Issue>, Fault> {
     let checks: GleipnirChecks =
-        if use_v2(file_path) { gleipnir_core::run_checks_v2 } else { gleipnir_core::run_checks };
-    examine_with_gleipnir(file_path, checks)
+        if use_v2(source.known_as) { gleipnir_core::run_checks_v2 } else { gleipnir_core::run_checks };
+    examine_with_gleipnir(source, checks)
 }
 
 /// Run gleipnir Rust checks on a file.
-pub fn run_gleipnir_rust(file_path: &Path) -> Result<Vec<Issue>, Fault> {
-    examine_with_gleipnir(file_path, gleipnir_core::run_checks_rust)
+pub fn run_gleipnir_rust(source: Source) -> Result<Vec<Issue>, Fault> {
+    examine_with_gleipnir(source, gleipnir_core::run_checks_rust)
 }
 
 /// Run gleipnir Svelte/TypeScript checks on a file.
-pub fn run_gleipnir_svelte(file_path: &Path) -> Result<Vec<Issue>, Fault> {
-    examine_with_gleipnir(file_path, gleipnir_core::run_checks_svelte)
+pub fn run_gleipnir_svelte(source: Source) -> Result<Vec<Issue>, Fault> {
+    examine_with_gleipnir(source, gleipnir_core::run_checks_svelte)
 }
 
 /// Why an instrument's output could not be used: what it said on stderr, or
@@ -287,11 +304,11 @@ pub fn run_basedpyright(file_path: &Path) -> Result<Vec<Issue>, Fault> {
 
 /// Run every instrument for the file's kind: what they found, and which of them
 /// could not do their work.
-fn examine(file_path: &Path) -> (Vec<Issue>, Vec<Fault>) {
-    let outcomes = match file_path.extension().and_then(|e| e.to_str()) {
-        Some("rs") => vec![run_gleipnir_rust(file_path)],
-        Some("svelte") => vec![run_gleipnir_svelte(file_path)],
-        _ => vec![run_gleipnir(file_path), run_ruff(file_path), run_basedpyright(file_path)],
+fn examine(source: Source) -> (Vec<Issue>, Vec<Fault>) {
+    let outcomes = match source.known_as.extension().and_then(|e| e.to_str()) {
+        Some("rs") => vec![run_gleipnir_rust(source)],
+        Some("svelte") => vec![run_gleipnir_svelte(source)],
+        _ => vec![run_gleipnir(source), run_ruff(source.content_at), run_basedpyright(source.content_at)],
     };
     let mut issues = Vec::new();
     let mut faults = Vec::new();
@@ -345,7 +362,7 @@ pub fn generate_report(file_path: &Path, project_root: Option<&Path>) -> SanityR
         .unwrap_or_else(|_| file_path.to_path_buf());
 
     let start = Instant::now();
-    let (issues, mut faults) = examine(&file_path);
+    let (issues, mut faults) = examine(Source::in_place(&file_path));
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
     let content_hash = match hash_file(&file_path) {
@@ -381,7 +398,7 @@ pub fn generate_report_from_content(
     }
 
     let start = Instant::now();
-    let findings = examine(&tmp_file);
+    let findings = examine(Source { known_as: file_path, content_at: &tmp_file });
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
     let _ = std::fs::remove_file(&tmp_file);
@@ -625,4 +642,93 @@ fn categorize_ruff(code: &str) -> &'static str {
         }
     }
     "lint"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(test_name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("saga_runner_{test_name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn content_held_in_a_temporary_file_is_examined_under_the_path_it_is_known_by() {
+        let dir = temp_dir("known_as");
+        let held = dir.join("simple.py");
+        std::fs::write(&held, "import tomllib\n").unwrap();
+        let known_as = Path::new("/project/src/pkg/logic/impure/registry/simple.py");
+
+        let issues = run_gleipnir(Source { known_as, content_at: &held }).unwrap();
+        let codes: Vec<&str> = issues.iter().map(|issue| issue.code.as_str()).collect();
+        assert!(codes.contains(&"no_direct_file_io"), "{codes:?}");
+        assert!(!codes.contains(&"unknown_file_in_zone"), "{codes:?}");
+        assert!(issues.iter().all(|issue| !issue.message.contains("outside v2 zone layout")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gleipnir_issue_carries_its_check_s_detail() {
+        let dir = temp_dir("detail");
+        let held = dir.join("simple.py");
+        std::fs::write(&held, "import tomllib\n").unwrap();
+        let known_as = Path::new("/project/src/pkg/logic/impure/registry/simple.py");
+
+        let issues = run_gleipnir(Source { known_as, content_at: &held }).unwrap();
+        let hit = issues.iter().find(|issue| issue.code == "no_direct_file_io").unwrap();
+        assert_eq!(hit.detail, gleipnir_core::messages::NO_DIRECT_FILE_IO.detail);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_source_that_cannot_be_read_is_a_fault_not_an_empty_result() {
+        let missing = Path::new("/nonexistent/saga_runner/missing.rs");
+        let not_examined = run_gleipnir_rust(Source::in_place(missing)).unwrap_err();
+        assert_eq!(not_examined.tool, "gleipnir");
+        assert_eq!(not_examined.mode, "file_unreadable");
+        assert_eq!(not_examined.class, "read_error");
+    }
+
+    #[test]
+    fn a_report_of_an_unreadable_file_carries_its_faults_and_no_hash() {
+        let missing = Path::new("/nonexistent/saga_runner/missing.rs");
+        let report = generate_report(missing, None);
+        assert!(report.issues.is_empty());
+        assert_eq!(report.faults.len(), 2, "{:?}", report.faults);
+        assert!(report.content_hash.is_empty());
+    }
+
+    #[test]
+    fn a_saved_sidecar_loads_back_and_matches_the_schema() {
+        let dir = temp_dir("roundtrip");
+        let source = dir.join("lib.rs");
+        std::fs::write(&source, "fn main() { let x = Some(1).unwrap(); }\n").unwrap();
+
+        let report = generate_report(&source, None);
+        let sidecar = save_sidecar(&report).unwrap();
+        let loaded = load_qa_file(&sidecar).unwrap();
+        assert_eq!(loaded.total, report.total);
+        assert!(loaded.faults.is_empty());
+        assert_eq!(loaded.content_hash.len(), 64);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_without_faults_is_refused_as_not_matching() {
+        let dir = temp_dir("old_format");
+        let sidecar = dir.join(".a.py.qa");
+        let old_format = r#"{"file":"/p/a.py","relative_path":"a.py","content_hash":"","generated_at":"1Z","elapsed_ms":1,"issues":[],"total":0,"by_tool":{},"by_severity":{},"by_category":{}}"#;
+        std::fs::write(&sidecar, old_format).unwrap();
+
+        let failure = load_qa_file(&sidecar).unwrap_err();
+        assert_eq!(failure.mode, "sidecar_not_matching");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
