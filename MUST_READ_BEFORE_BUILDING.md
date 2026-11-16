@@ -78,24 +78,42 @@ the registry.
 
 ### Calling one from Python
 
-The wrapper is the project's `ffi.py`; it types the result at once, so no dict travels past it:
+The wrapper is the project's `ffi.py`; it types the result at once, so no dict travels past it.
+The contract has two outcomes and no others, so each is its own model, and a result that is
+neither fails validation where it arrives:
 
 ```python
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field, RootModel
+
 class ToolError(BaseModel, frozen=True):
     type: str
     message: str
 
-class ToolResult(BaseModel, frozen=True):
-    ok: bool
-    data: str | None
-    error: ToolError | None
+class ToolSuccess(BaseModel, frozen=True):   # a tool that hands data back: readers, input gates
+    ok: Literal[True]
+    data: str
+    error: None
 
-result = ToolResult.model_validate(read_toml_validate_json.read(path, schema_name, schema_dir))
+class ToolRefusal(BaseModel, frozen=True):
+    ok: Literal[False]
+    data: None
+    error: ToolError
+
+class ToolResult(RootModel[Annotated[ToolSuccess | ToolRefusal, Field(discriminator="ok")]]):
+    pass
+
+outcome = ToolResult.model_validate(read_toml_validate_json.read(path, schema_name, schema_dir)).root
 ```
 
-The caller matches on `result.ok` and then on `result.error.type`, and each project decides
-what a class means at that call site: a hard failure, a held-back item, a report line. On
-success, `Model.model_validate_json(result.data)`.
+The caller matches on the outcome's type. A `ToolRefusal` carries `error.type` to branch on,
+and each project decides what a class means at that call site: a hard failure, a held-back
+item, a report line. A `ToolSuccess` carries `data` for `Model.model_validate_json(outcome.data)`.
+
+For the kinds whose effect is the write — output and passthrough gates, text writers, binary
+writers, presence tools — success carries no data: its model is `ok: Literal[True]`,
+`data: None`, `error: None`. The Approved interfaces table above says which kind returns which.
 
 ## Commands
 
