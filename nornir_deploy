@@ -21,6 +21,11 @@ Any category can declare:
   pyo3_crates  — maturin PyO3 modules (build + python_import verify)
   gate_crates  — same as pyo3_crates, used by the gates category
 
+A PyO3 crate whose Cargo.toml declares a "python" feature is built by maturin
+with that feature on. If it also declares a [[bin]], its CLI face is built by
+cargo without the feature, copied to ~/ai/tools/bin, and verified to exit 2
+when run with no arguments (the CLI contract's wrong-arguments outcome).
+
 Usage:
     nornir_deploy --all                  # deploy everything
     nornir_deploy --non-pyo3             # all cargo crates, skip maturin PyO3 modules
@@ -83,6 +88,32 @@ def _pyo3_verify(config: dict) -> str:
     return config.get("pyo3_verify", config.get("gate_verify", "python_import"))
 
 
+# --- Two-faced tools ---
+#
+# A tool is one crate with two faces: its CLI binary, built by cargo with no
+# features, and its PyO3 module, built by maturin with the "python" feature.
+# Which faces a crate has is read from its own Cargo.toml, never listed here.
+
+PYTHON_FEATURE = "python"
+
+
+def read_crate_manifest(crate_dir: Path) -> dict:
+    import tomllib
+    with open(crate_dir / "Cargo.toml", "rb") as fh:
+        return tomllib.load(fh)
+
+
+def has_python_feature(crate_dir: Path) -> bool:
+    """True when the crate puts its PyO3 face behind the "python" feature."""
+    return PYTHON_FEATURE in read_crate_manifest(crate_dir).get("features", {})
+
+
+def has_cli_face(crate_dir: Path) -> bool:
+    """True when a PyO3 crate also declares a CLI binary."""
+    manifest = read_crate_manifest(crate_dir)
+    return has_python_feature(crate_dir) and bool(manifest.get("bin"))
+
+
 # --- Target dir ---
 
 def find_target_dir() -> Path:
@@ -135,8 +166,9 @@ def build_maturin(crates: list[str], python_version: str, crate_dirs: dict[str, 
             logger.error("crate directory not found for: {}", crate)
             sys.exit(1)
         logger.info("  maturin: {}...", crate)
+        features = ["--features", PYTHON_FEATURE] if has_python_feature(crate_dir) else []
         result = subprocess.run(
-            ["uvx", "maturin", "build", "--release", "-i", python_version],
+            ["uvx", "maturin", "build", "--release", "-i", python_version, *features],
             cwd=crate_dir,
             capture_output=True,
             text=True,
@@ -317,11 +349,31 @@ def deploy_category(name: str, config: dict, crate_dirs: dict[str, Path], target
     elif pyo3 and skip_maturin:
         logger.info("{}: {} PyO3 modules skipped (--non-pyo3)", name, len(pyo3))
 
+    # CLI faces of two-faced tools — built without the python feature, and
+    # verified against the CLI contract: no arguments is wrong arguments, exit 2.
+    cli_faces = [crate for crate in pyo3 if crate in crate_dirs and has_cli_face(crate_dirs[crate])]
+    if cli_faces:
+        build_cargo(cli_faces)
+        copied = copy_binaries(cli_faces, {}, release_dir)
+        logger.info("{} CLI faces copied to {}", copied, TOOLS_BIN)
+        failures = []
+        for crate in cli_faces:
+            if verify_exit_codes(TOOLS_BIN / crate, [2]):
+                logger.info("  cli face: {}", crate)
+            else:
+                failures.append(crate)
+        if failures:
+            logger.error("{} CLI faces broken: {}", len(failures), ", ".join(failures))
+            sys.exit(1)
+
     total = len(crates) + len(cli_crates) + len(pyo3)
     if total == 0:
         logger.warning("no crates in category {}", name)
     else:
-        logger.info("{}: done ({} cargo, {} CLI, {} PyO3)", name, len(crates), len(cli_crates), len(pyo3))
+        logger.info(
+            "{}: done ({} cargo, {} CLI, {} PyO3, {} CLI faces)",
+            name, len(crates), len(cli_crates), len(pyo3), len(cli_faces),
+        )
 
 
 # --- Bootstrap ---

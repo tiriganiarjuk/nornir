@@ -53,11 +53,11 @@ When two documents describe the same thing differently, a session will follow wh
 
 ---
 
-## Priority 4: Stale Inventories — Crates That Are Invisible
+## Priority 4: Invisible Crates
 
-When a crate exists in the workspace but isn't listed in CONTEXT_MAP.md or NORNIR_CONVENTIONS.md, it's invisible to future sessions. Invisible crates get reimplemented.
+When a core or capability crate exists in the workspace but isn't listed in the dependency lookup table (NORNIR_CONVENTIONS.md § Dependency Lookup), it's invisible to future sessions. Invisible crates get reimplemented. What crates exist is read live from the tree; CONTEXT_MAP.md is a router and stores no inventory.
 
-**How to check:** Parse workspace Cargo.toml members. For every member, verify it appears in CONTEXT_MAP.md's crate inventory. For every crate in the dependency lookup table (NORNIR_CONVENTIONS.md), verify the description matches the current implementation.
+**How to check:** Parse workspace Cargo.toml members. For every core and capability crate, verify it appears in the dependency lookup table. For every crate in that table, verify the description matches the current implementation.
 
 **What to ignore:** Individual per-crate test counts. These change constantly and provide no actionable value. The existence and purpose of the crate is what matters, not how many tests it has.
 
@@ -67,6 +67,5 @@ When a crate exists in the workspace but isn't listed in CONTEXT_MAP.md or NORNI
 
 - Missing `//!` doc comments on simple binaries (writers, senders under 30 lines). The code is the documentation.
 - Cosmetic formatting issues in markdown files.
-- Superseded document entries in reference tables (they serve as historical markers).
 - Documentation for gate modules — they follow a uniform pattern and don't need individual docs.
 - Test counts anywhere. They change every session and provide no value in documentation.

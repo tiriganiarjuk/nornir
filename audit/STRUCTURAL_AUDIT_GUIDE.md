@@ -1,4 +1,4 @@
-# Nornir Audit Guide
+# Nornir Structural Audit Guide
 
 This document describes the architectural invariants of the nornir workspace and why they matter. It exists because LLM-generated code drifts from these invariants in ways that look correct but cause structural damage that compounds across sessions.
 
@@ -18,7 +18,7 @@ This is the single most damaging pattern in LLM-generated Rust code and the hard
 
 **What makes this hard to catch:** The binary compiles, passes tests, does the right thing. There is no error. The damage is architectural — it's a decision that forecloses future composition. An auditor has to read the code and ask: "could anything else ever need this logic?" If yes, it shouldn't be here.
 
-**What correct looks like:** Binary crates are thin. They handle CLI args, call into core/capability crates, and format output. The binary is orchestration; the logic is elsewhere. Writers are ~16 lines. Simple senders are ~25 lines. Even complex tools like saga keep their pure types in saga_core, their I/O in saga_runner, and their binary is orchestration.
+**What correct looks like:** Binary crates are thin. They handle CLI args, call into core/capability crates, and format output. The binary is orchestration; the logic is elsewhere. Writers are ~20 lines. Simple senders are ~25 lines. Even complex tools like saga keep their pure types in saga_core, their I/O in saga_runner, and their binary is orchestration.
 
 **Questions to ask while reading a binary:**
 - If I deleted this binary, would any reusable logic disappear with it?
@@ -39,7 +39,7 @@ This is the single most damaging pattern in LLM-generated Rust code and the hard
 
 - **Tier 1 (core/):** Pure library crates. Depend only on other core crates and external workspace dependencies. No I/O, no side effects. Names use `_core` suffix.
 - **Tier 2 (capability/):** Feature library crates that may perform I/O. Depend on core and other capability crates. Names do NOT use `_core` suffix.
-- **Tier 3 (binaries):** Executable crates in `cli/`, `hooks/`, `senders/`, `writers/`, `rewriters/`, `converters/`, `dispatchers/`, `watchers/`, `interceptors/`, `daemons/`. Depend on core and capability. **Never depend on other binary crates.**
+- **Tier 3 (binaries):** Executable crates and Python extension modules, in the category directories listed in `NORNIR_CONVENTIONS.md` § Architecture. Depend on core and capability. **Never depend on other binary crates.**
 
 **Why it matters:** Tier violations create invisible coupling. A binary importing from another binary means their build, test, and deploy lifecycles are entangled. Shared logic between binaries signals that a core crate is missing.
 
@@ -59,7 +59,7 @@ This is the single most damaging pattern in LLM-generated Rust code and the hard
 
 ## Priority 3: process::exit and Panic Discipline
 
-**The invariant:** `process::exit()` appears ONLY in `main()`. Every other function returns `Result<T, String>` (or `Result<T, E>`). No exceptions. `.unwrap()` and `.expect()` are prohibited in production code (gleipnir enforces this), with specific exemptions for `static`/`LazyLock` initializers and `const` contexts.
+**The invariant:** `process::exit()` appears ONLY in `main()`. Every other function returns `Result`; an engine's error is typed and names its failure class through `error_type()` (`NORNIR_CONVENTIONS.md` § Binary Structure). No exceptions. `.unwrap()` and `.expect()` are prohibited in production code (gleipnir enforces this), with specific exemptions for `static`/`LazyLock` initializers and `const` contexts.
 
 **Why it matters:** `process::exit()` in a helper function makes that function untestable — it kills the test harness. `.unwrap()` and `.expect()` are soft `process::exit` — they panic, which in a binary is an uncontrolled exit. In pure logic that should be testable, panics are just as bad.
 
@@ -78,21 +78,12 @@ This is the single most damaging pattern in LLM-generated Rust code and the hard
 
 **Why it matters:** Reimplemented logic diverges. Two directory walkers skip different directories. Two schema validators handle errors differently. Two path traversal checks reject different characters. The bugs are subtle and the divergence is invisible until someone compares the implementations.
 
-**Key crates to know about:**
-- `write_engine` handles all atomic file writes with schema validation
-- `saga_runner` handles QA report generation and directory walking
-- `report_render_core` handles QA report grouping, formatting, and rendering
-- `hook_io` handles the hook stdin/stdout/decision contract
-- `hook_io::rules` handles TOML-based rule parsing for hooks
-- `datagram_io` handles datagram emission (owns the socket path)
-- `format_core` handles JSON/YAML/TOML/TOON conversion
-- `schema_core` + `schemas_embedded` handle schema validation
-- `path_core::validate_path_segment` handles filename/directory name security validation (path traversal, flag injection, hidden files)
+**Key crates to know about:** the table in `NORNIR_CONVENTIONS.md` § Dependency Lookup names the one crate for each need.
 
-If you see logic in a binary that overlaps with any of these crates, that's a violation.
+If you see logic in a binary that overlaps with any crate in that table, that's a violation.
 
 **Questions to ask:**
-- Is this binary doing its own file writing instead of using write_engine? Its own directory walking instead of saga_runner? Its own path traversal checks instead of path_core?
+- Is this binary doing its own file writing instead of using write_engine? Its own directory walking instead of directory_read_io? Its own path traversal checks instead of path_core?
 - Does this binary contain a function that looks like it belongs in one of the crates listed above? Even if the implementation differs slightly, the intent may overlap.
 - Are two binaries doing similar things in different ways? That usually means both should be using a shared core function that doesn't exist yet.
 
@@ -102,7 +93,7 @@ If you see logic in a binary that overlaps with any of these crates, that's a vi
 
 **The invariant:** Names in nornir carry architectural meaning. They are not labels — they are contracts.
 
-- Binary names use verb prefixes that encode their category: `check_`, `gate_`, `hook_`, `send_`, `append_`, `write_`, `convert_`, `rewrite_`, `split_`, `watch_`, `intercept_`, `record_`
+- Binary names use verb prefixes that encode their category, as tabled in `NORNIR_CONVENTIONS.md` § Naming
 - Core crate names use `_core` suffix. Capability crates do NOT use `_core` suffix.
 - Directory name = package name = binary name. Always. No aliases, no mismatches. (Exception: `saga_cli` → binary `saga`, `syn_cli` → binary `syn` for specialist tools.)
 - The crate's category directory tells you its tier and deploy script.
@@ -245,7 +236,7 @@ Gleipnir runs automatically as a post-edit hook via `syn`. Every check is a sign
 ## Reference Documents
 
 - **NORNIR_CONVENTIONS.md** — single source of truth for naming, organization, composition, building, deploying, testing
-- **CONTEXT_MAP.md** — current crate inventory, doc freshness flags, known issues
+- **CONTEXT_MAP.md** — the router: which document answers which need. It stores no inventory; what crates exist is read live from the tree
 
 **This guide is the "why" and "what to look for." NORNIR_CONVENTIONS.md is the "how to do it right."**
 

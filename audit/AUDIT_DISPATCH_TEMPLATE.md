@@ -9,6 +9,7 @@ Exact instructions for dispatching audit agents. Follow these precisely. Do not 
 - **Two agents, A and B.** Independent. Results to `audit/strict_audit_A.md` and `audit/strict_audit_B.md` (structural) or `audit/docs_audit_A.md` and `audit/docs_audit_B.md` (documentation).
 - **Model: opus.** General-purpose agent type. Run in foreground.
 - **Response: SUCCESS or FAILURE only.** Based on whether the agent completed the task, not whether the codebase passed.
+- **Auditors read only their guide in `audit/`.** The directory may hold reports from earlier runs, kept for comparison, and the other auditor's report. Both prompts below scope the auditor away from it, so each run is independent of every other.
 - **Intersection is truth.** After both complete, only findings that appear in both reports become actionable items. Single-auditor findings are noted but not prioritized.
 
 ---
@@ -25,6 +26,9 @@ codebase at /Users/johnny/ai/smidja/nornir/.
 
 Read audit/STRUCTURAL_AUDIT_GUIDE.md first. This is your primary
 reference — it defines every invariant you are checking (P1-P10).
+
+In audit/, read only that guide. Every other file in audit/ is
+outside the audit.
 
 Then audit the IMPLEMENTATION — read Cargo.toml files, read src/main.rs
 and src/lib.rs files, read actual function signatures. Check every crate
@@ -57,7 +61,11 @@ of the nornir codebase at /Users/johnny/ai/smidja/nornir/.
 Read audit/DOCUMENTATION_AUDIT_GUIDE.md first. This is your primary
 reference — it defines the priorities and methodology.
 
-YOUR METHOD: For every document in the workspace, verify its claims
+In audit/, read only that guide. Every other file in audit/ is
+outside the audit.
+
+YOUR METHOD: For every document in the workspace outside audit/,
+verify its claims
 against the ACTUAL IMPLEMENTATION. Read the code. Check file paths
 exist. Check function names match. Check enum variants match. Check
 CLI flags match --help output. Check crate inventories against
