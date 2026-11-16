@@ -33,11 +33,7 @@ The guardrails are failure detectors, not success metrics. Passing all checks me
 
 When the LLM defaults to knee-jerk OOP and hits a guardrail, the violation doesn't just say "NO." It says "No, that isn't the right way... if you do it this way instead I think you will succeed."
 
-Every violation carries four fields:
-- **signal** — what was detected and why it matters
-- **detail** — the architectural principle being violated
-- **direction** — how to fix it, with concrete guidance toward the right pattern
-- **canary** — how to detect if the LLM is gaming the check instead of learning from it
+Every violation carries the check's own message for the line it fired on, and four fields from `gleipnir_messages.toml`: detail, signal, direction and canary. The header of that file defines them.
 
 The direction is the critical field. It must be written from the perspective of an OOP-trained LLM that keeps hitting walls and is getting frustrated. Give it exactly one clear path forward. Don't give multiple options — the LLM will pick the easiest one, which is usually wrong. Tell it what to do, not what it could do.
 

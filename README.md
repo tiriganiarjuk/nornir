@@ -48,11 +48,7 @@ Lower levels cannot import higher levels. The dependency graph is a strict DAG e
 
 Tree-sitter-based AST analysis engine. Pure computation — receives source bytes, returns typed Violation structs. Supports Python, Rust, TypeScript, and Svelte.
 
-Every check exists because a specific LLM failure mode was observed repeatedly across independent projects. Each produces educational messages with three fields:
-
-- **Signal** — what was detected and why it matters structurally (not "line too long" but "accumulated responsibilities that should be decomposed")
-- **Direction** — deliberately vague guidance pointing toward the solution without giving enough information to game it
-- **Canary** — what a superficial fix looks like, so downstream consumers can detect when a metric was silenced rather than a problem solved
+Every check exists because a specific LLM failure mode was observed repeatedly across independent projects. Each produces an educational message: what was found, and the check's detail, signal, direction and canary. The header of `core/gleipnir_core/gleipnir_messages.toml` defines the fields.
 
 Key architectural checks: no methods on classes (kills OOP at the root), no classes outside structure zone, no functions inside structure zone, no constants in logic zones, no inline dispatch tables, no re-export shims, import count limits (high fan-in = coordination smell), zone boundary enforcement (structure can't import logic), unknown filename detection (files outside the level naming convention), and dispatch-file-only-tables enforcement.
 
