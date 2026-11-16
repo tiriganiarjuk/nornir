@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "syn-policy",
+  "description": "What one syn policy file states — `.syn/warn.toml` or `.syn/deny.toml` in the policy directory: one jq expression, evaluated against each issue of a sanity report. In warn.toml the issues it is true for are the ones syn shows; in deny.toml they are the ones a gate denies. A file that is absent leaves syn's built-in default for it in force; a file that is present states its filter and nothing else.",
+  "type": "object",
+  "required": ["filter"],
+  "additionalProperties": false,
+  "properties": {
+    "filter": {"type": "string", "minLength": 1, "description": "A jq expression over one issue, true for the issues the policy selects."}
+  }
+}

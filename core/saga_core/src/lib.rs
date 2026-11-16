@@ -110,9 +110,91 @@ pub fn source_path_from_qa(qa_path: &Path) -> Option<PathBuf> {
     )
 }
 
+// =============================================================================
+// Source kinds — which language a file is, by its name
+// =============================================================================
+
+/// The languages saga examines. A file is of a kind by the extension its name
+/// ends in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Python,
+    Rust,
+    Svelte,
+}
+
+impl SourceKind {
+    /// Every kind.
+    pub const ALL: [SourceKind; 3] = [SourceKind::Python, SourceKind::Rust, SourceKind::Svelte];
+
+    /// The extension a file of this kind ends in, without its dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            SourceKind::Python => "py",
+            SourceKind::Rust => "rs",
+            SourceKind::Svelte => "svelte",
+        }
+    }
+
+    /// The kind of a file, by the extension after the last dot of its name.
+    /// `None` for a name without an extension, a name that is only an
+    /// extension (`.py`), and every other extension.
+    pub fn of_file_name(file_name: &str) -> Option<SourceKind> {
+        let (stem, extension) = file_name.rsplit_once('.')?;
+        if stem.is_empty() {
+            return None;
+        }
+        SourceKind::ALL.into_iter().find(|kind| kind.extension() == extension)
+    }
+
+    /// The kind of the source a sidecar belongs to, by the sidecar's name
+    /// (`.{source file name}.qa`). `None` for a name that is not a sidecar's.
+    pub fn of_sidecar_name(sidecar_name: &str) -> Option<SourceKind> {
+        let source = source_path_from_qa(Path::new(sidecar_name))?;
+        SourceKind::of_file_name(source.file_name()?.to_str()?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_is_of_the_kind_its_extension_names() {
+        assert_eq!(SourceKind::of_file_name("lib.rs"), Some(SourceKind::Rust));
+        assert_eq!(SourceKind::of_file_name("test.spec.py"), Some(SourceKind::Python));
+        assert_eq!(SourceKind::of_file_name("App.svelte"), Some(SourceKind::Svelte));
+    }
+
+    #[test]
+    fn a_name_without_a_known_extension_is_of_no_kind() {
+        for file_name in ["Makefile", "notes.txt", "test.pyw", "test.js", ".py", "py", ""] {
+            assert_eq!(SourceKind::of_file_name(file_name), None, "{file_name}");
+        }
+    }
+
+    #[test]
+    fn every_kind_is_found_by_its_own_extension() {
+        for kind in SourceKind::ALL {
+            assert_eq!(SourceKind::of_file_name(&format!("name.{}", kind.extension())), Some(kind));
+        }
+    }
+
+    #[test]
+    fn a_sidecar_is_of_the_kind_of_its_source() {
+        assert_eq!(SourceKind::of_sidecar_name(".lib.rs.qa"), Some(SourceKind::Rust));
+        assert_eq!(SourceKind::of_sidecar_name(".a.py.qa"), Some(SourceKind::Python));
+        let sidecar = qa_path(Path::new("/dir/App.svelte"));
+        let sidecar_name = sidecar.file_name().unwrap().to_str().unwrap();
+        assert_eq!(SourceKind::of_sidecar_name(sidecar_name), Some(SourceKind::Svelte));
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_sidecar_s_is_of_no_kind() {
+        for sidecar_name in ["lib.rs", "lib.rs.qa", ".notes.txt.qa", ".Makefile.qa", ".qa", "..py.qa"] {
+            assert_eq!(SourceKind::of_sidecar_name(sidecar_name), None, "{sidecar_name}");
+        }
+    }
 
     #[test]
     fn source_path_roundtrip() {

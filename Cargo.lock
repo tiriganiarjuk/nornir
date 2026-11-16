@@ -1895,7 +1895,7 @@ dependencies = [
  "failure_mode_core",
  "hook_io",
  "serde_json",
- "write_engine",
+ "syn_runner",
 ]
 
 [[package]]
@@ -4297,15 +4297,10 @@ name = "syn_cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "datagram_io",
  "failure_mode_core",
  "report_render_core",
- "saga_runner",
- "schemas_embedded",
- "serde",
- "serde_json",
  "syn_core",
- "toml",
+ "syn_runner",
 ]
 
 [[package]]
@@ -4318,6 +4313,21 @@ dependencies = [
  "saga_core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "syn_runner"
+version = "0.1.0"
+dependencies = [
+ "datagram_io",
+ "failure_mode_core",
+ "reader_io",
+ "report_render_core",
+ "saga_runner",
+ "schemas_embedded",
+ "serde",
+ "serde_json",
+ "syn_core",
 ]
 
 [[package]]

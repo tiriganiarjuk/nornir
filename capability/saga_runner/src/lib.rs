@@ -3,7 +3,7 @@
 //! Capability crate — performs I/O (subprocess execution, filesystem, clock).
 //! Pure types live in `saga_core`.
 
-pub use saga_core::{Fault, Issue, SanityReport, qa_path, source_path_from_qa};
+pub use saga_core::{Fault, Issue, SanityReport, SourceKind, qa_path, source_path_from_qa};
 
 use directory_read_io::{list_directory, DirectoryListing, EntryKind, ListOptions};
 use failure_mode_core::Failure;
@@ -40,27 +40,22 @@ static V1_LEGACY_PATHS: LazyLock<Vec<String>> = LazyLock::new(|| {
     parsed.projects.into_iter().map(|entry| entry.path).collect()
 });
 
-/// Strip the AI root prefix, yielding the portion of the path relative to it.
-///
-/// Recognises both `~/ai/` and `~/.ai/` so that a single table stays correct
-/// across a root rename, and while the tree is split with some sections
-/// migrated and others not.
-fn strip_ai_root(path: &str) -> Option<&str> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let roots = [format!("{home}/ai/"), format!("{home}/.ai/")];
-    roots.iter().find_map(|root| path.strip_prefix(root.as_str()))
+/// The AI root, `$HOME/ai/`, with its closing slash.
+fn ai_root() -> String {
+    format!("{}/ai/", std::env::var("HOME").unwrap_or_default())
+}
+
+/// Whether a path lies in one of the listed projects. The listed paths are
+/// relative to the root, so the root is stripped from the path before
+/// matching; a path outside the root lies in none of them.
+fn is_in_listed_project(path: &str, root: &str, listed_projects: &[String]) -> bool {
+    path.strip_prefix(root)
+        .is_some_and(|relative| listed_projects.iter().any(|project| relative.starts_with(project.as_str())))
 }
 
 /// Check if a file belongs to a project on the V1 legacy whitelist.
-///
-/// Whitelist entries are relative to the AI root, so the root is stripped
-/// from the file path before matching. Files outside the AI root are never
-/// legacy.
 fn is_v1_legacy(file_path: &Path) -> bool {
-    let path_str = file_path.to_string_lossy();
-    strip_ai_root(&path_str).is_some_and(|relative| {
-        V1_LEGACY_PATHS.iter().any(|prefix| relative.starts_with(prefix.as_str()))
-    })
+    is_in_listed_project(&file_path.to_string_lossy(), &ai_root(), &V1_LEGACY_PATHS)
 }
 
 /// Version override for `--test v1` / `--test v2`.
@@ -303,13 +298,29 @@ pub fn run_basedpyright(file_path: &Path) -> Result<Vec<Issue>, Fault> {
         .collect())
 }
 
+/// The kind of a file, by the name it is known by.
+fn kind_of(known_as: &Path) -> Option<SourceKind> {
+    known_as.file_name().and_then(|file_name| file_name.to_str()).and_then(SourceKind::of_file_name)
+}
+
+/// The fault of a file of no kind saga examines: no instrument ran on it.
+fn not_examinable(known_as: &Path) -> Fault {
+    let extensions: Vec<&str> = SourceKind::ALL.iter().map(|kind| kind.extension()).collect();
+    let reason = format!("its name ends in none of the extensions saga examines ({})", extensions.join(", "));
+    fault("saga", failure_mode_core::source_not_examinable("saga", known_as.to_string_lossy(), reason))
+}
+
 /// Run every instrument for the file's kind: what they found, and which of them
-/// could not do their work.
+/// could not do their work. On a file of no kind no instrument runs, and that is
+/// a fault.
 fn examine(source: Source) -> (Vec<Issue>, Vec<Fault>) {
-    let outcomes = match source.known_as.extension().and_then(|e| e.to_str()) {
-        Some("rs") => vec![run_gleipnir_rust(source)],
-        Some("svelte") => vec![run_gleipnir_svelte(source)],
-        _ => vec![run_gleipnir(source), run_ruff(source.content_at), run_basedpyright(source.content_at)],
+    let outcomes = match kind_of(source.known_as) {
+        Some(SourceKind::Rust) => vec![run_gleipnir_rust(source)],
+        Some(SourceKind::Svelte) => vec![run_gleipnir_svelte(source)],
+        Some(SourceKind::Python) => {
+            vec![run_gleipnir(source), run_ruff(source.content_at), run_basedpyright(source.content_at)]
+        }
+        None => vec![Err(not_examinable(source.known_as))],
     };
     let mut issues = Vec::new();
     let mut faults = Vec::new();
@@ -440,6 +451,55 @@ pub fn load_qa_file(qa_file: &Path) -> Result<SanityReport, Failure> {
         .map_err(|io_err| failure_mode_core::file_unreadable(&shown, io_err))?;
     check_against_schema(&content).map_err(|reason| failure_mode_core::sidecar_not_matching(&shown, reason))?;
     serde_json::from_str(&content).map_err(|json_err| failure_mode_core::sidecar_not_matching(&shown, json_err))
+}
+
+/// How a source file's sidecar stands to the source as it is now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidecarState {
+    /// The source has no sidecar.
+    Missing,
+    /// The sidecar records the source as it is now.
+    Current,
+    /// The sidecar records other content than the source holds now, or records
+    /// no hash, or the source cannot be hashed.
+    Stale,
+    /// The sidecar is there and does not load.
+    Unreadable,
+}
+
+impl SidecarState {
+    /// The state's name in lowercase, as saga prints it.
+    pub fn label(self) -> &'static str {
+        match self {
+            SidecarState::Missing => "missing",
+            SidecarState::Current => "current",
+            SidecarState::Stale => "stale",
+            SidecarState::Unreadable => "unreadable",
+        }
+    }
+}
+
+/// The state of a sidecar that loaded: current when the hash it recorded is the
+/// source's hash now, stale otherwise.
+fn state_of_loaded(recorded_hash: &str, source_hash_now: Option<&str>) -> SidecarState {
+    match source_hash_now {
+        Some(hash_now) if !recorded_hash.is_empty() && hash_now == recorded_hash => SidecarState::Current,
+        _ => SidecarState::Stale,
+    }
+}
+
+/// The state of a source file's sidecar: the one definition of whether a sidecar
+/// is current.
+pub fn sidecar_state(source_file: &Path) -> SidecarState {
+    let sidecar = qa_path(source_file);
+    if !sidecar.exists() {
+        return SidecarState::Missing;
+    }
+    let Ok(report) = load_qa_file(&sidecar) else {
+        return SidecarState::Unreadable;
+    };
+    let source_hash_now = directory_read_io::file_sha256(&source_file.to_string_lossy()).ok();
+    state_of_loaded(&report.content_hash, source_hash_now.as_deref())
 }
 
 /// What the orphan sweep did: the sidecars it removed, and those it could not.
@@ -708,6 +768,105 @@ mod tests {
         assert_eq!(loaded.content_hash.len(), 64);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_of_no_known_kind_is_not_examined_and_carries_the_fault() {
+        let dir = temp_dir("no_kind");
+        let notes = dir.join("notes.txt");
+        std::fs::write(&notes, "import tomllib\n").unwrap();
+
+        let report = generate_report(&notes, None);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(report.faults.len(), 1, "{:?}", report.faults);
+        assert_eq!(report.faults[0].tool, "saga");
+        assert_eq!(report.faults[0].mode, "source_not_examinable");
+        assert!(report.faults[0].message.contains("py, rs, svelte"), "{}", report.faults[0].message);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_of_a_known_kind_carries_no_fault_for_its_kind() {
+        let dir = temp_dir("known_kind");
+        let source = dir.join("lib.rs");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+
+        let report = generate_report(&source, None);
+        assert!(report.faults.iter().all(|found| found.mode != "source_not_examinable"), "{:?}", report.faults);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_path_under_the_root_in_a_listed_project_is_in_it() {
+        let listed = vec!["smidja/bifrost/".to_string()];
+        assert!(is_in_listed_project("/home/u/ai/smidja/bifrost/src/a.py", "/home/u/ai/", &listed));
+    }
+
+    #[test]
+    fn a_path_outside_the_root_or_outside_every_listed_project_is_in_none() {
+        let listed = vec!["smidja/bifrost/".to_string()];
+        assert!(!is_in_listed_project("/home/u/ai/smidja/nornir/src/a.py", "/home/u/ai/", &listed));
+        assert!(!is_in_listed_project("/home/u/.ai/smidja/bifrost/src/a.py", "/home/u/ai/", &listed));
+        assert!(!is_in_listed_project("/elsewhere/smidja/bifrost/src/a.py", "/home/u/ai/", &listed));
+    }
+
+    /// A source in a fresh directory with the sidecar saga writes for it.
+    fn source_with_sidecar(test_name: &str) -> (PathBuf, PathBuf) {
+        let dir = temp_dir(test_name);
+        let source = dir.join("lib.rs");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+        save_sidecar(&generate_report(&source, None)).unwrap();
+        (dir, source)
+    }
+
+    #[test]
+    fn a_source_without_a_sidecar_is_missing_one() {
+        let dir = temp_dir("state_missing");
+        let source = dir.join("lib.rs");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+        assert_eq!(sidecar_state(&source), SidecarState::Missing);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_written_for_the_source_as_it_is_now_is_current() {
+        let (dir, source) = source_with_sidecar("state_current");
+        assert_eq!(sidecar_state(&source), SidecarState::Current);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_whose_source_changed_after_it_was_written_is_stale() {
+        let (dir, source) = source_with_sidecar("state_stale");
+        std::fs::write(&source, "fn main() { let changed = 1; }\n").unwrap();
+        assert_eq!(sidecar_state(&source), SidecarState::Stale);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_whose_source_is_gone_is_stale() {
+        let (dir, source) = source_with_sidecar("state_gone");
+        std::fs::remove_file(&source).unwrap();
+        assert_eq!(sidecar_state(&source), SidecarState::Stale);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_that_does_not_load_is_unreadable() {
+        let (dir, source) = source_with_sidecar("state_unreadable");
+        std::fs::write(qa_path(&source), "not a report").unwrap();
+        assert_eq!(sidecar_state(&source), SidecarState::Unreadable);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loaded_sidecar_is_current_only_with_the_hash_the_source_has_now() {
+        assert_eq!(state_of_loaded("abc", Some("abc")), SidecarState::Current);
+        assert_eq!(state_of_loaded("abc", Some("def")), SidecarState::Stale);
+        assert_eq!(state_of_loaded("", Some("")), SidecarState::Stale);
+        assert_eq!(state_of_loaded("abc", None), SidecarState::Stale);
     }
 
     /// A tree with a source and its sidecar, an orphaned sidecar, and files in

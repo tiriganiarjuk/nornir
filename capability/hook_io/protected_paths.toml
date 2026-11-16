@@ -92,6 +92,10 @@ pattern = "/syn_core/"
 description = "Quality policy source code"
 
 [[probing]]
+pattern = "/syn_runner/"
+description = "Quality policy loading and assessment source code"
+
+[[probing]]
 pattern = "/syn_cli/"
 description = "Quality policy gate source code"
 

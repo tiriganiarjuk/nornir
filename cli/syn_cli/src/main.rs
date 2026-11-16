@@ -2,77 +2,35 @@
 //!
 //! Named after Old Norse "syn" — denial, refusal. The gatekeeper.
 //!
-//! Reads .qa sidecars (Saga's truth), filters via jq expressions (jaq-interpret),
-//! returns decision (allow/warn/deny) + formatted output.
+//! Reads .qa sidecars (Saga's truth), filters their issues via jq expressions,
+//! and returns a decision (allow/warn/deny) with the formatted report. This
+//! binary is the argument parsing: the I/O is `syn_runner`, the filter engine
+//! `syn_core`, the rendering `report_render_core`.
 //!
 //! Modes:
 //!   syn --mode report <path>   — filter + format issues (informational)
-//!   syn --mode gate <path>     — enforce policy, exit 0/1 (deterministic)
+//!   syn --mode gate <path>     — enforce the policy (deterministic)
 //!
 //! Output:
-//!   (default)   TOON when piped, --colored when tty
-//!   --colored   ANSI terminal output
-//!   --json      Machine-readable JSON
+//!   --output colored|json|toon   — colored on a tty and toon on a pipe when not given
 //!
-//! Config:
+//! Policy, read from `.syn/` in `--project-dir` (the current directory when not given):
 //!   .syn/warn.toml   — noise filter (what's visible)
-//!   .syn/deny.toml   — enforcement threshold (what blocks)
+//!   .syn/deny.toml   — enforcement threshold (what a gate denies)
+//!
+//! Exit codes:
+//!   0 — the report was made; in gate mode, nothing is denied
+//!   1 — gate mode denies; or a refusal or failure, its class on the first stderr line
+//!   2 — wrong arguments
 
 use clap::{Parser, ValueEnum};
 use failure_mode_core::Failure;
-use std::io::{self, Read as IoRead};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use saga_runner::SanityReport;
-use syn_core::{FilterOverrides, PolicyMode, SynConfig};
-
-use report_render_core::{LocatedFault, OutputMode, total_issues, report_to_json, format_output};
-
-// =============================================================================
-// Config loading (.syn/warn.toml, .syn/deny.toml)
-// =============================================================================
-
-#[derive(serde::Deserialize)]
-struct SynFilterToml {
-    filter: Option<String>,
-}
-
-/// What a refusal prints: the failure class on the first line, then the message.
-fn refusal(failure: Failure) -> String {
-    format!("{}\n{failure}", failure.class)
-}
-
-/// The filter a policy file states. A file that is there but cannot be read, is
-/// not TOML, or states no filter is refused: the default never stands in for it.
-fn stated_filter(config_path: &Path) -> Result<String, Failure> {
-    let shown = config_path.to_string_lossy();
-    let content =
-        std::fs::read_to_string(config_path).map_err(|io_err| failure_mode_core::file_unreadable(&shown, io_err))?;
-    let config: SynFilterToml = toml::from_str(&content)
-        .map_err(|toml_err| failure_mode_core::file_not_in_format(&shown, "TOML", toml_err.message()))?;
-    config.filter.ok_or_else(|| failure_mode_core::policy_filter_missing(&shown))
-}
-
-/// The filter for one policy file: the one it states, or the default when the
-/// file is absent.
-fn load_filter_config(config_path: &Path, default_expr: &str) -> Result<(String, syn_core::CompiledFilter), String> {
-    if !config_path.exists() {
-        let filter = syn_core::compile_filter(default_expr)?;
-        return Ok((default_expr.to_string(), filter));
-    }
-    let expr = stated_filter(config_path).map_err(refusal)?;
-    let filter = syn_core::compile_filter(&expr)
-        .map_err(|reason| refusal(failure_mode_core::policy_filter_invalid(config_path.display(), reason)))?;
-    Ok((expr, filter))
-}
-
-fn load_config(project_dir: &Path) -> Result<SynConfig, String> {
-    let syn_dir = project_dir.join(".syn");
-    let (_warn_expr, warn_filter) = load_filter_config(&syn_dir.join("warn.toml"), syn_core::DEFAULT_WARN_FILTER)?;
-    let (_deny_expr, deny_filter) = load_filter_config(&syn_dir.join("deny.toml"), syn_core::DEFAULT_DENY_FILTER)?;
-    Ok(SynConfig { warn_filter, deny_filter })
-}
+use report_render_core::{LocatedFault, OutputMode, format_output, total_issues};
+use syn_core::{FilterOverrides, PolicyMode};
+use syn_runner::SourceKind;
 
 // =============================================================================
 // CLI args
@@ -100,12 +58,32 @@ enum Target {
     All,
 }
 
+impl From<Target> for syn_runner::Target {
+    fn from(target: Target) -> Self {
+        match target {
+            Target::Src => syn_runner::Target::Src,
+            Target::Tests => syn_runner::Target::Tests,
+            Target::All => syn_runner::Target::All,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 enum Kind {
     Py,
     Rs,
     Svelte,
     All,
+}
+
+/// The one source kind a `--kind` value names; `None` when it names all of them.
+fn wanted_kind(kind: Kind) -> Option<SourceKind> {
+    match kind {
+        Kind::Py => Some(SourceKind::Python),
+        Kind::Rs => Some(SourceKind::Rust),
+        Kind::Svelte => Some(SourceKind::Svelte),
+        Kind::All => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -144,15 +122,15 @@ struct CliArgs {
     #[arg(long)]
     output: Option<Output>,
 
-    /// Suppress Hlidskjalf broadcast
+    /// Do not broadcast the result to Hlidskjalf
     #[arg(long)]
-    silent: bool,
+    no_broadcast: bool,
 
     /// Read .qa JSON from stdin
     #[arg(long)]
     stdin: bool,
 
-    /// Project root for relative paths
+    /// The directory whose .syn/ policy is read (default: the current directory)
     #[arg(long)]
     project_dir: Option<PathBuf>,
 
@@ -184,7 +162,7 @@ struct CliArgs {
 struct Args {
     mode: Mode,
     output: OutputMode,
-    silent: bool,
+    no_broadcast: bool,
     stdin: bool,
     project_dir: Option<PathBuf>,
     target: Target,
@@ -210,7 +188,7 @@ fn resolve_args(parsed: CliArgs) -> Result<Args, String> {
     Ok(Args {
         mode: parsed.mode,
         output,
-        silent: parsed.silent,
+        no_broadcast: parsed.no_broadcast,
         stdin: parsed.stdin,
         project_dir: parsed.project_dir,
         target: parsed.target,
@@ -224,179 +202,52 @@ fn resolve_args(parsed: CliArgs) -> Result<Args, String> {
 }
 
 // =============================================================================
-// Input discovery
-// =============================================================================
-
-fn matches_kind(qa_name: &str, kind: Kind) -> bool {
-    match kind {
-        Kind::All => true,
-        Kind::Py => qa_name.ends_with(".py.qa"),
-        Kind::Rs => qa_name.ends_with(".rs.qa"),
-        Kind::Svelte => qa_name.ends_with(".svelte.qa"),
-    }
-}
-
-fn find_qa_files(path: &Path, target: Target, kind: Kind) -> Result<Vec<PathBuf>, Failure> {
-    if path.is_file() && path.extension().map_or(false, |e| e == "qa") {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if matches_kind(&name, kind) {
-            return Ok(vec![path.to_path_buf()]);
-        }
-        return Ok(Vec::new());
-    }
-
-    if path.is_file() {
-        let sidecar = saga_runner::qa_path(path);
-        if sidecar.exists() {
-            return Ok(vec![sidecar]);
-        }
-        return Ok(Vec::new());
-    }
-
-    let skip = match target {
-        Target::Src => Some("tests"),
-        Target::Tests => Some("src"),
-        Target::All => None,
-    };
-    let extra_skip: Vec<&str> = skip.into_iter().collect();
-    saga_runner::find_files(path, &extra_skip, &|name| {
-        name.ends_with(".qa") && name.starts_with('.') && matches_kind(name, kind)
-    })
-}
-
-/// The sidecars under a path and their reports. A tree that cannot be listed whole
-/// is a fault naming what could not be read: its files are not known to be clean.
-fn discover_and_load(path: &Path, target: Target, kind: Kind) -> (Vec<SanityReport>, Vec<LocatedFault>) {
-    match find_qa_files(path, target, kind) {
-        Ok(qa_files) => load_sidecars(&qa_files),
-        Err(failure) => {
-            let unlisted = LocatedFault {
-                file: path.display().to_string(),
-                tool: "syn".to_string(),
-                mode: failure.mode.to_string(),
-                class: failure.class.to_string(),
-                message: failure.standard_message(),
-            };
-            (Vec::new(), vec![unlisted])
-        }
-    }
-}
-
-/// The reports of the sidecars that load, and a fault for each one that does not:
-/// a sidecar syn cannot read says nothing about its file.
-fn load_sidecars(qa_files: &[PathBuf]) -> (Vec<SanityReport>, Vec<LocatedFault>) {
-    let mut reports = Vec::new();
-    let mut unloaded = Vec::new();
-    for qa_file in qa_files {
-        match saga_runner::load_qa_file(qa_file) {
-            Ok(report) => reports.push(report),
-            Err(failure) => unloaded.push(LocatedFault {
-                file: qa_file.display().to_string(),
-                tool: "syn".to_string(),
-                mode: failure.mode.to_string(),
-                class: failure.class.to_string(),
-                message: failure.standard_message(),
-            }),
-        }
-    }
-    (reports, unloaded)
-}
-
-fn load_reports_from_stdin() -> Result<Vec<SanityReport>, String> {
-    let mut buf = String::new();
-    io::stdin().read_to_string(&mut buf)
-        .map_err(|_| "[syn] failed to read stdin".to_string())?;
-
-    if let Ok(report) = serde_json::from_str::<SanityReport>(&buf) {
-        return Ok(vec![report]);
-    }
-    if let Ok(reports) = serde_json::from_str::<Vec<SanityReport>>(&buf) {
-        return Ok(reports);
-    }
-
-    Err("[syn] stdin is not valid .qa JSON".to_string())
-}
-
-// =============================================================================
-// Hlidskjalf broadcast
-// =============================================================================
-
-/// What syn found, as it is broadcast.
-struct Outcome<'a> {
-    groups: &'a [report_render_core::CheckGroup],
-    faults: &'a [LocatedFault],
-    decision: &'a str,
-    deny_count: usize,
-}
-
-/// The quality datagram for one run. A fault is high priority: a file that was
-/// not examined is not known to be clean.
-fn quality_datagram(outcome: &Outcome, workspace: String, classifier: &str) -> datagram_io::Datagram {
-    let priority = if outcome.decision == "deny" || !outcome.faults.is_empty() {
-        datagram_io::Priority::High
-    } else if outcome.decision == "warn" {
-        datagram_io::Priority::Normal
-    } else {
-        datagram_io::Priority::Low
-    };
-    datagram_io::Datagram {
-        timestamp: datagram_io::now(),
-        source: "syn".to_string(),
-        kind: datagram_io::DatagramKind::Quality,
-        classifier: Some(classifier.into()),
-        priority,
-        workspace,
-        detail: Some(format!(
-            "{} issues, {} deny, {} faults, decision: {}",
-            total_issues(outcome.groups), outcome.deny_count, outcome.faults.len(), outcome.decision
-        )),
-        speech: None,
-        payload: Some(report_to_json(outcome.groups, outcome.faults)),
-    }
-}
-
-fn broadcast(outcome: &Outcome, workspace: String, scan_path: &Path) {
-    let classifier = if scan_path.is_file() { "file" } else { "directory" };
-    datagram_io::emit_validated_or_alert(&quality_datagram(outcome, workspace, classifier), "syn");
-}
-
-// =============================================================================
 // Main
 // =============================================================================
 
-fn build_overrides(args: &Args) -> FilterOverrides {
-    let custom_compiled = args.custom_filter
-        .as_ref()
-        .and_then(|expr| syn_core::compile_filter(expr).ok());
+/// The overrides the command line states. A `--filter` expression that does not
+/// compile is refused.
+fn build_overrides(args: &Args) -> Result<FilterOverrides, Failure> {
+    let custom_filter = match &args.custom_filter {
+        Some(expression) => Some(
+            syn_core::compile_filter(expression)
+                .map_err(|reason| failure_mode_core::policy_filter_invalid("--filter", reason))?,
+        ),
+        None => None,
+    };
 
-    FilterOverrides {
+    Ok(FilterOverrides {
         tool: args.tool_filter.clone(),
         level: args.level_filter.clone(),
-        custom_filter: custom_compiled,
+        custom_filter,
         narrow: args.narrow_filter.clone(),
+    })
+}
+
+/// The exit code of a run that was not refused: a deny is 1, every other decision 0.
+fn exit_code_of(decision: &str) -> i32 {
+    match decision {
+        "deny" => 1,
+        _ => 0,
     }
 }
 
-fn run(args: &Args) -> Result<i32, String> {
-    let default_dir;
-    let project_dir = match &args.project_dir {
-        Some(dir) => dir.as_path(),
-        None => {
-            default_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            default_dir.as_path()
-        }
+fn run(args: &Args) -> Result<i32, Failure> {
+    let policy_directory = match &args.project_dir {
+        Some(stated) => stated.clone(),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
 
-    let config = load_config(project_dir)?;
+    let config = syn_runner::load_config(&policy_directory)?;
+    let overrides = build_overrides(args)?;
 
     let (reports, unloaded) = if args.stdin {
-        (load_reports_from_stdin()?, Vec::new())
+        (syn_runner::reports_from_stdin()?, Vec::new())
     } else {
         let path = args.path.as_deref().unwrap_or_else(|| Path::new("."));
-        discover_and_load(path, args.target, args.kind)
+        syn_runner::discover_and_load(path, args.target.into(), wanted_kind(args.kind))
     };
 
-    let overrides = build_overrides(args);
     let result = syn_core::apply_filters(reports, &config, args.mode.into(), &overrides);
     let faults: Vec<LocatedFault> = unloaded.into_iter().chain(result.faults).collect();
 
@@ -413,22 +264,18 @@ fn run(args: &Args) -> Result<i32, String> {
         );
     }
 
-    if !args.silent && (!result.warn_groups.is_empty() || !faults.is_empty()) {
-        let scan_path = args.path.as_deref().unwrap_or(project_dir);
-        let workspace = datagram_io::workspace_from_path(project_dir);
-        let outcome = Outcome {
+    if !args.no_broadcast {
+        let scan_path = args.path.as_deref().unwrap_or(&policy_directory);
+        let outcome = syn_runner::Outcome {
             groups: &result.warn_groups,
             faults: &faults,
             decision: result.decision,
             deny_count: result.deny_issues,
         };
-        broadcast(&outcome, workspace, scan_path);
+        syn_runner::broadcast(&outcome, &policy_directory, scan_path);
     }
 
-    match result.decision {
-        "deny" => Ok(1),
-        _ => Ok(0),
-    }
+    Ok(exit_code_of(result.decision))
 }
 
 fn main() {
@@ -436,140 +283,77 @@ fn main() {
 
     let args = match resolve_args(cli_args) {
         Ok(resolved) => resolved,
-        Err(err) => {
-            eprintln!("{}", err);
+        Err(usage) => {
+            eprintln!("{}", usage);
             process::exit(2);
         }
     };
 
     match run(&args) {
         Ok(code) => process::exit(code),
-        Err(err) => {
-            eprintln!("{}", err);
-            process::exit(2);
+        Err(failure) => {
+            eprintln!("{}\n{failure}", failure.class);
+            process::exit(1);
         }
     }
 }
-
-// =============================================================================
-// Tests (I/O tests that stay in the binary)
-// =============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // =========================================================================
-    // load_filter_config
-    // =========================================================================
-
-    #[test]
-    fn load_filter_config_nonexistent_path_uses_default() {
-        let path = std::path::Path::new("/nonexistent/path/warn.toml");
-        let default_expr = r#".tool == "gleipnir""#;
-        let (expr, _filter) = load_filter_config(path, default_expr).unwrap();
-        assert_eq!(expr, default_expr);
+    fn args_from(command_line: &[&str]) -> Result<Args, String> {
+        let parsed = CliArgs::try_parse_from(command_line).map_err(|clap_error| clap_error.to_string())?;
+        resolve_args(parsed)
     }
 
     #[test]
-    fn load_filter_config_valid_toml_file() {
-        let dir = std::env::temp_dir().join(format!("syn_test_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("warn.toml");
-        std::fs::write(&config_path, r#"filter = '.tool == "ruff"'"#).unwrap();
-
-        let (expr, _filter) = load_filter_config(&config_path, syn_core::DEFAULT_WARN_FILTER).unwrap();
-        assert_eq!(expr, r#".tool == "ruff""#);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// What loading a policy file holding `content` refuses with.
-    fn refusal_for(test_name: &str, content: &[u8]) -> String {
-        let dir = std::env::temp_dir().join(format!("syn_test_{test_name}_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("warn.toml");
-        std::fs::write(&config_path, content).unwrap();
-        let refused = load_filter_config(&config_path, syn_core::DEFAULT_WARN_FILTER);
-        let _ = std::fs::remove_dir_all(&dir);
-        match refused {
-            Ok((expr, _filter)) => panic!("the file was accepted with the filter {expr}"),
-            Err(message) => message,
-        }
+    fn a_filter_that_compiles_becomes_an_override() {
+        let args = args_from(&["syn", "--filter", ".fixable"]).unwrap();
+        let overrides = build_overrides(&args).unwrap();
+        assert!(overrides.custom_filter.is_some());
     }
 
     #[test]
-    fn a_policy_file_that_states_no_filter_is_refused_not_replaced_by_the_default() {
-        let message = refusal_for("nokey", b"something_else = 42\n");
-        assert!(message.starts_with("validation_error\n"), "{message}");
-        assert!(message.contains("states no filter"), "{message}");
+    fn a_filter_that_does_not_compile_is_refused_not_dropped() {
+        let args = args_from(&["syn", "--filter", ".[[["]).unwrap();
+        let refused = build_overrides(&args).err().map(|failure| (failure.mode, failure.class));
+        assert_eq!(refused, Some(("policy_filter_invalid", "validation_error")));
     }
 
     #[test]
-    fn a_policy_file_that_is_not_toml_is_refused_not_replaced_by_the_default() {
-        let message = refusal_for("nottoml", b"filter = = =\n");
-        assert!(message.starts_with("parse_error\n"), "{message}");
+    fn no_filter_is_no_override() {
+        let args = args_from(&["syn"]).unwrap();
+        assert!(build_overrides(&args).unwrap().custom_filter.is_none());
     }
 
     #[test]
-    fn a_policy_file_that_cannot_be_read_is_refused_not_replaced_by_the_default() {
-        let message = refusal_for("unreadable", &[0xff, 0xfe, 0xfd]);
-        assert!(message.starts_with("read_error\n"), "{message}");
-    }
-
-    // =========================================================================
-    // the quality datagram
-    // =========================================================================
-
-    #[test]
-    fn a_quality_datagram_with_a_group_and_a_fault_matches_the_datagram_schema() {
-        let issue = saga_runner::Issue {
-            tool: "gleipnir".into(),
-            code: "no_print".into(),
-            severity: "error".into(),
-            line: 3,
-            column: None,
-            message: "print call".into(),
-            category: "structure".into(),
-            fixable: false,
-            detail: "the rule".into(),
-            signal: "why".into(),
-            direction: "the way forward".into(),
-            canary: "the gaming move".into(),
-        };
-        let report = SanityReport {
-            file: "/project/src/a.py".into(),
-            relative_path: "src/a.py".into(),
-            issues: vec![issue],
-            ..Default::default()
-        };
-        let groups = report_render_core::group_issues(&[report]);
-        let faults = vec![LocatedFault {
-            file: "src/b.py".into(),
-            tool: "ruff".into(),
-            mode: "instrument_not_runnable".into(),
-            class: "instrument_error".into(),
-            message: "ruff could not be run on 'src/b.py': not found.".into(),
-        }];
-        let outcome = Outcome { groups: &groups, faults: &faults, decision: "warn", deny_count: 0 };
-        let datagram = quality_datagram(&outcome, "@smidja:nornir".into(), "directory");
-
-        assert!(matches!(datagram.priority, datagram_io::Priority::High));
-        let json = serde_json::to_string(&datagram).unwrap();
-        let result = schemas_embedded::DATAGRAM.validate(&json).unwrap();
-        assert!(result.valid, "{}", result.message);
+    fn no_broadcast_is_a_flag() {
+        assert!(args_from(&["syn", "--no-broadcast"]).unwrap().no_broadcast);
+        assert!(!args_from(&["syn"]).unwrap().no_broadcast);
     }
 
     #[test]
-    fn load_filter_config_invalid_jq_in_file_returns_error() {
-        let dir = std::env::temp_dir().join(format!("syn_test_badjq_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("deny.toml");
-        std::fs::write(&config_path, r#"filter = '.[[['"#).unwrap();
+    fn a_flag_syn_does_not_have_is_wrong_arguments() {
+        assert!(args_from(&["syn", "--not-a-flag"]).is_err());
+    }
 
-        let result = load_filter_config(&config_path, syn_core::DEFAULT_DENY_FILTER);
-        assert!(result.is_err());
+    #[test]
+    fn gate_mode_takes_no_override() {
+        assert!(args_from(&["syn", "--mode", "gate", "--narrow", "no_print"]).is_err());
+        assert!(args_from(&["syn", "--mode", "gate"]).is_ok());
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn only_a_deny_exits_in_failure() {
+        assert_eq!(exit_code_of("deny"), 1);
+        assert_eq!(exit_code_of("warn"), 0);
+        assert_eq!(exit_code_of("allow"), 0);
+    }
+
+    #[test]
+    fn a_kind_names_its_source_kind_and_all_names_none() {
+        assert_eq!(wanted_kind(Kind::Rs), Some(SourceKind::Rust));
+        assert_eq!(wanted_kind(Kind::All), None);
     }
 }

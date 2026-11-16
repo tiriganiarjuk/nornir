@@ -482,6 +482,18 @@ standard    = "The sidecar '{path}' does not match sanity-report: {reason}."
 route       = "The sidecar was written by an older saga, or changed after saga wrote it. Report this message to the user; the sidecars are regenerated with saga --force."
 adversarial = "stop"
 
+[sidecar_stale]
+class       = "validation_error"
+standard    = "The sidecar '{path}' is older than its source: '{source}' holds other content than saga examined."
+route       = "What the sidecar records describes the source as it was. saga {source} --sidecar refreshes it."
+adversarial = "stop"
+
+[sidecar_source_absent]
+class       = "validation_error"
+standard    = "The sidecar '{path}' has no source: '{source}' is not there."
+route       = "What the sidecar records describes a file that is gone. saga on the directory removes the sidecar."
+adversarial = "stop"
+
 [policy_filter_missing]
 class       = "validation_error"
 standard    = "The policy file '{path}' states no filter."

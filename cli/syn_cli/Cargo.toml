@@ -8,15 +8,8 @@ name = "syn"
 path = "src/main.rs"
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
 clap = { workspace = true }
-toml = { workspace = true }
 syn_core = { path = "../../core/syn_core" }
-saga_runner = { path = "../../capability/saga_runner" }
+syn_runner = { path = "../../capability/syn_runner" }
 report_render_core = { path = "../../core/report_render_core" }
-datagram_io = { path = "../../capability/datagram_io" }
 failure_mode_core = { path = "../../core/failure_mode_core" }
-
-[dev-dependencies]
-schemas_embedded = { path = "../../capability/schemas_embedded" }

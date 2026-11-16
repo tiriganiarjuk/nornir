@@ -7,13 +7,12 @@
 # leave it by migrating (via the scaffolder) or by their scripts gaining
 # PEP 723 declarations. Nothing is ever added without a decision.
 #
-# Paths are RELATIVE TO THE AI ROOT, not absolute. is_v1_legacy strips the
-# root from the file path before matching, and recognises both `~/ai/` and
-# `~/.ai/` — so entries stay correct across a root rename and while the
-# tree is split with some sections migrated and others not.
+# Paths are RELATIVE TO THE AI ROOT, `$HOME/ai/`. is_v1_legacy strips that
+# root from the file path before matching; a file outside it takes V2 checks.
 #
 # Embedded at compile time (include_str!) — after editing:
 #     nornir_deploy --build tools
+#     nornir_deploy --build hooks
 #
 # Scripts (PEP 723 shebang) and test files always take V1 rules regardless
 # of this list; see run_checks_v2 in gleipnir_core.
@@ -39,25 +38,3 @@ path = "phoenix/re-rust/"
 
 [[projects]]
 path = "phoenix/utilities/"
-
-# ── Predecessor generation (superseded by phoenix, still present) ──
-
-[[projects]]
-path = "systools/sysutils/"
-
-[[projects]]
-path = "systools/toolcompose/"
-
-# ── Quiet projects, migrate-or-archive pending ─────────────────────
-
-[[projects]]
-path = "memtools/chatsearch/"
-
-[[projects]]
-path = "memtools/atomextract/"
-
-[[projects]]
-path = "doctools/docserve/"
-
-[[projects]]
-path = "doctools/docbuild/"

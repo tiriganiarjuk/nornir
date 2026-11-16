@@ -2,93 +2,119 @@
 
 **Named after Old Norse "syn" — denial, refusal. The gatekeeper.**
 
-Syn sits between Saga (truth recorder) and the consumer (LLM, human, CI).
-Saga records ALL issues. Syn applies policy — filtering, comparison, ratcheting.
-
----
-
-## Architecture
+Syn sits between saga (the truth recorder) and the reader of a quality report
+(a worker session, a person at a terminal, a program). Saga records every
+issue. Syn applies policy: which issues are shown, and which ones a gate denies.
 
 ```
-saga (truth)  →  .qa JSON  →  syn (policy)  →  filtered output + decision
+saga (truth)  →  .qa sidecars  →  syn (policy)  →  report + decision
 ```
 
-Syn has TWO fundamentally different modes:
+Syn reads reports. It runs no instrument and writes no sidecar.
 
-- **Report mode**: view into current quality state (informational)
-- **Gate mode**: per-file ratchet comparison (enforcement)
-
----
-
-## Core Concepts
-
-### Saga Produces Truth
-
-Saga runs quality tools (gleipnir, ruff, basedpyright) on Python files and
-writes `.qa` sidecar files. These contain every issue found — no filtering,
-no policy. Just raw truth.
-
-### Syn Applies Policy
-
-Syn reads .qa truth and makes decisions. In report mode, it filters and
-formats for human/LLM consumption. In gate mode, it compares the new state
-against the baseline and enforces the ratchet — quality never regresses.
-
-### The Ratchet (Per-File Baseline Comparison)
-
-The breakthrough insight: rather than enforcing project-wide quality settings,
-enforce **per-file** using the old file state as baseline. Each file has its
-own .qa sidecar representing its last accepted state. Every edit is judged
-relative to that file's own history.
-
-This works WITH LLM behavior instead of against it. LLMs handle local
-optimization well but struggle with global constraints. The ratchet gives
-them a local target: don't make THIS file worse.
+`syn --help` is the flag reference. This document is the model behind the flags.
 
 ---
 
-## Filter Layers
+## What syn reads
 
-Two filter layers define what matters. Both use jq expressions evaluated
-by jaq-interpret against each issue object.
+### Reports
 
-### `.syn/warn.toml` — Noise Filter
+Syn takes its reports from one of two places.
 
-Defines what issues are visible (worth showing). Everything that fails
-this filter is suppressed as noise — we don't even bother reporting it.
+**Sidecars on disk** — the positional path, the current directory when none is
+given:
+
+| The path is | Syn reads |
+|---|---|
+| a `.qa` file | that sidecar |
+| a source file | its sidecar, `.{file name}.qa` beside it, when there is one |
+| a directory | every sidecar in the tree, narrowed by `--target` and `--kind` |
+
+A directory is walked the way saga walks it: hidden directories and
+`__pycache__`, `node_modules`, `venv` and `target` are never entered.
+`--target src` (the default) also leaves out directories named `tests`,
+`--target tests` leaves out directories named `src`, and `--target all` reads
+the whole tree. `--kind` keeps the sidecars of one source kind — `py`, `rs` or
+`svelte` — by the name of the source the sidecar belongs to; `all` keeps every
+sidecar.
+
+**Standard input** — with `--stdin`, syn reads one report or a JSON array of
+reports. Each is validated against `schemas/tools/sanity-report.schema.json`.
+Text that is not JSON, or a report that does not match the schema, is a refusal.
+
+### Policy
+
+The policy is two jq expressions, each evaluated against one issue:
+
+| File | Selects | Default when the file is absent |
+|---|---|---|
+| `.syn/warn.toml` | the issues that are shown | `.tool == "gleipnir"` |
+| `.syn/deny.toml` | the issues a gate denies | `.severity == "blocked"` |
 
 ```toml
 filter = '.tool == "gleipnir"'
 ```
 
-Default (no file): `.tool == "gleipnir"`
+Syn reads `.syn/` in one directory: the one `--project-dir` names, or the
+current directory. `--project-dir` sets where the policy is read and the
+workspace a broadcast is filed under; which sidecars are read is decided by the
+positional path alone.
 
-### `.syn/deny.toml` — Quality Standard
+A policy file's shape is `schemas/tools/syn-policy.schema.json`: one key,
+`filter`, a non-empty string. An absent file leaves its default in force. A
+file that is present and cannot be read, is not TOML, does not match the
+schema, or states a filter that does not compile is a refusal — a default
+never stands in for a policy file that is there.
 
-Defines the final quality standard. Issues passing this filter represent
-the threshold where code has met or exceeded the standard.
+---
 
-```toml
-filter = '.severity == "blocked"'
-```
-
-Default (no file): `.severity == "blocked"`
-
-### How Filters Relate to Ratchets
-
-The ratchet operates on issues that pass the **warn** filter (visible issues).
-The **deny** filter defines the final standard — once a file has zero deny-level
-issues, it has met the standard.
+## Filtering
 
 ```
-all issues from .qa
+every issue of every report
   │
-  ├─ fails warn filter ──→ SUPPRESSED (noise, not counted)
+  ├─ not selected for showing ──→ left out
   │
-  └─ passes warn filter ──→ VISIBLE (counted for ratchet comparison)
+  └─ selected for showing ──→ VISIBLE, grouped by tool and check
        │
-       └─ also passes deny filter ──→ STANDARD (the bar to clear)
+       └─ also matches the deny filter ──→ counted as a deny issue
 ```
+
+What is shown is selected by the warn filter. In report mode the command line
+can select instead: when any of `--tool`, `--level`, `--filter` or `--narrow`
+is given, an issue is visible when it satisfies every one of those given, and
+the warn filter is set aside for that run. A `--filter` expression that does
+not compile is a refusal.
+
+The deny filter is evaluated on visible issues only.
+
+### Faults
+
+A fault says that part of the examination did not happen, so a file is not
+known to be clean. No filter hides a fault. Syn reports:
+
+- every fault a report carries — an instrument saga could not run, or whose
+  output it could not use;
+- a sidecar that does not load — unreadable, or not matching the sanity-report
+  schema; it contributes no report;
+- a sidecar that is **stale** — its source holds other content than saga
+  examined; its report is still used, and the fault names the command that
+  refreshes it;
+- a sidecar whose source file is gone; its report is still used;
+- a directory tree that could not be listed whole.
+
+Whether a sidecar is stale is decided by `saga_runner::sidecar_state`, the one
+definition of sidecar currency (see `cli/saga_cli/SAGA_DESIGN.md`). Reports
+handed over on stdin are taken as they are.
+
+### Decision
+
+| Decision | When |
+|---|---|
+| `deny` | gate mode, and at least one visible issue matches the deny filter |
+| `warn` | otherwise, when there is a visible issue or a fault |
+| `allow` | nothing visible and no fault |
 
 ---
 
@@ -96,249 +122,90 @@ all issues from .qa
 
 ### `--mode report` (default)
 
-Informational view into current quality state. No gate decision.
-CLI overrides allowed for exploration.
-
-1. Load .qa report(s) from path, directory, or `--project-dir`
-2. Apply warn filter (or CLI override via --tool/--level/--filter)
-3. Format output (TOON on pipe, colored on tty, or --output json)
-4. Broadcast to Hlidskjalf (default on, --silent to suppress)
-5. Exit 0 always
+The assessment itself. The command-line selectors are available for
+exploration. The exit code is 0 whatever was found.
 
 ### `--mode gate`
 
-Per-file ratchet enforcement. Deterministic. Locked to config.
-**Rejects --tool/--level/--filter flags with error.** Used by hooks.
+A reproducible accept/reject decision, locked to the policy files:
+`--tool`, `--level`, `--filter` and `--narrow` are wrong arguments here. Gate
+mode reads the same inputs as report mode — sidecars from the path, or reports
+with `--stdin` — prints the same report, adds a one-line summary on stderr, and
+exits 1 on a `deny`.
 
-Two inputs required:
-1. **Baseline .qa** — existing sidecar on disk (last accepted state)
-2. **New .qa** — from saga running on the proposed file content
+### Exit codes
 
-The comparison:
+| Code | Meaning |
+|---|---|
+| 0 | the report was made; in gate mode, nothing is denied |
+| 1 | gate mode denies — or a refusal or failure, with its failure class on the first stderr line and the message after it |
+| 2 | wrong arguments |
 
-```
-baseline .qa (old)  vs  new .qa (proposed)
-         │                    │
-         └── visible issues ──┘
-                   │
-                   ▼
-            ratchet check
-```
-
-### Ratchet Thresholds
-
-Configured in `.syn/ratchet.toml`:
-
-```toml
-mode = "no_regression"   # default
-```
-
-Three ratchet modes:
-
-| Mode | Rule | Meaning |
-|------|------|---------|
-| `no_regression` | new ≤ baseline | Don't make it worse |
-| `improvement` | new < baseline (while issues remain) | Every save must improve |
-| `meets_standard` | zero deny-level issues | Must meet or exceed the quality standard |
-
-- **no_regression**: The gentlest ratchet. You can't introduce new visible
-  issues, but you don't have to fix existing ones. Quality holds steady
-  or improves.
-
-- **improvement**: Every edit must reduce the visible issue count, as long
-  as there are still issues to fix. Once at zero, holds at zero.
-
-- **meets_standard**: The file must have zero issues that pass the deny
-  filter. Quality may still vary within the warn range, but never dips
-  under the deny standard.
-
-### Gate Decision
-
-- **Exit 0**: Accept — ratchet check passed
-- **Exit 1**: Reject — regression detected or standard not met
-- **Exit 2**: Usage error (bad flags, missing input)
-
-Output includes: all visible issues (warn-level), the ratchet comparison
-result, and the decision with reason.
-
----
-
-## Input Sources
-
-### Report Mode
-
-Reads existing .qa sidecars:
-
-1. **File path** — `syn structures.py` → finds `.structures.py.qa` sidecar
-2. **Directory** — `syn src/` → walks for all `.qa` files
-3. **`--project-dir`** — `syn --project-dir /path/to/bragi` → scan that project
-4. **No args** — cwd
-
-### Gate Mode
-
-Needs two things:
-
-1. **File path** (positional arg) — used to find the baseline .qa sidecar
-2. **New .qa on stdin** — fresh saga output for the proposed content
-
-```
-saga <file.py> --stdin | syn --mode gate <file.py>
-```
-
-Or in a hook context, the hook runs saga on the new content and pipes
-the .qa JSON to syn, while also passing the file path so syn can find
-the baseline sidecar.
-
-If no baseline exists (new file), the ratchet has nothing to compare
-against — the file starts with its first .qa as baseline.
-
----
-
-## Config Discovery
-
-Syn discovers its config by walking **up the directory tree** from the
-input path, looking for a `.syn/` directory. This is the same pattern
-gleipnir uses to find `.gleipnir/`.
-
-```
-given input: /Users/johnny/ai/bragi/src/bragi/structures.py
-walks up:
-  /Users/johnny/ai/bragi/src/bragi/.syn/  — no
-  /Users/johnny/ai/bragi/src/.syn/         — no
-  /Users/johnny/ai/bragi/.syn/             — YES → load config from here
-```
-
-The walk starts from:
-- The **positional path** if one is given (file or directory)
-- The **`--project-dir`** path if no positional path
-- **cwd** if neither
-
-Once `.syn/` is found, syn loads whatever config files exist there.
-Missing files use defaults. No `.syn/` directory at all = all defaults.
-
----
-
-## CLI Interface
-
-```
-syn [options] [path]
-
-Modes:
-  --mode report    Informational (default). CLI overrides allowed.
-  --mode gate      Ratchet enforcement. Locked to config. Needs stdin.
-
-Input:
-  <path>           File or directory (positional)
-  --project-dir    Project root for hook-triggered scans (see below)
-  --target         [src|tests|all] Subtree scope (default: src)
-
-Output:
-  --output         [colored|json|toon] (default: colored on tty, toon on pipe)
-  --silent         Suppress Hlidskjalf broadcast
-
-Filters (report mode only, rejected in gate mode):
-  --tool           [gleipnir|ruff|basedpyright|all]
-  --level          [info|warning|error|blocked] and above
-  --filter         '<jq expression>'
-```
-
-### `--project-dir` — Hook Scan Target
-
-`--project-dir` gives syn a project directory to scan when there is no
-positional path. This exists for **hook-triggered reports** where the
-hook has no file context — only a project directory extracted from
-Claude's JSON session data.
-
-Functionally, `syn --project-dir /path/to/bragi` and `syn /path/to/bragi`
-produce the same result. The explicit flag is a semantic distinction:
-it signals "I am a hook injecting context" rather than "I am a human
-pointing at a directory." This makes hook scripts self-documenting,
-which matters when LLMs are authoring those hooks.
-
----
-
-## Config Files
-
-Located in `.syn/` discovered by walking up the directory tree.
-
-| File | Purpose | Default |
-|------|---------|---------|
-| `warn.toml` | Noise filter — what's visible | `.tool == "gleipnir"` |
-| `deny.toml` | Quality standard — the bar | `.severity == "blocked"` |
-| `ratchet.toml` | Ratchet mode | `mode = "no_regression"` |
+The refusals are a policy file syn cannot use, a `--filter` that does not
+compile, and stdin that is not a valid report. The failure classes are listed
+in `MUST_READ_BEFORE_BUILDING.md`.
 
 ---
 
 ## Output
 
-**Stdout** (mutually exclusive):
-- **TOON** (default on pipe) — token-optimized for LLM context (~40% fewer tokens)
-- **Colored** (default on tty) — ANSI terminal output for humans
-- **JSON** (`--output json`) — machine-readable
+**Stdout**, one of:
 
-**Hlidskjalf broadcast** (independent side channel):
-- ON by default — emits JSON to Hlidskjalf unix socket via datagram
-- `--silent` to suppress
-- Fire-and-forget: no cost if Hlidskjalf isn't listening
-- Payload includes: issues, ratchet comparison, decision, workspace
+- **TOON** — what a worker session is shown; the default when stdout is a pipe
+- **Colored** — ANSI output for a terminal; the default on a tty
+- **JSON** — for a program
 
----
-
-## Integration Points
-
-### PostToolUse Hook (current)
-
-After every `.py`, `.rs`, or `.svelte` file write:
-1. Saga runs on the written file → produces fresh `.qa` sidecar
-2. Syn **report mode** (default): filters, groups, formats as TOON
-3. Assessment returned as `hookSpecificOutput.additionalContext`
-4. Broadcast to Hlidskjalf
-
-**Future:** Once the ratchet comparison engine is built, this hook will
-switch to gate mode for per-file regression enforcement.
-
-### PreToolUse Hook (future)
-
-Before a write is accepted:
-1. Hook receives proposed file content from tool_input
-2. Runs saga on proposed content → gets .qa JSON
-3. Pipes to syn gate mode with file path
-4. Syn compares against baseline, returns accept/reject
-5. Hook returns permissionDecision based on exit code
-
-### Session-Start Report (hook-triggered)
-
-On session initialization or other trigger events:
-1. Hook extracts project directory from Claude's session JSON
-2. Runs `syn --project-dir <dir> --target src --output toon`
-3. Full project quality report injected into LLM context
-4. No file path needed — `--project-dir` provides the scan root
+**Hlidskjalf broadcast** — a side channel beside stdout. When there is
+something to report — a visible group or a fault — syn sends one quality
+datagram: the grouped issues and faults, the counts, and the decision, filed
+under the workspace of the policy directory. A fault or a deny makes it high
+priority. A run with nothing to report sends nothing, and `--no-broadcast`
+sends nothing in any case. The datagram is fire-and-forget: it costs nothing
+when Hlidskjalf is not listening.
 
 ---
 
-## Dependencies
+## The write hook
 
-### Already Built
-- **syn_core** — jq filter compilation, three-tier filtering engine, SynConfig types
-- **format_core** — JSON, YAML, TOML, TOON parse/serialize/convert
-- **error_core** — educational error types
-- **saga_core** — canonical SanityReport/Issue pure types
-- **saga_runner** — generates .qa reports, directory walker, sidecar I/O
-- **report_render_core** — grouping, formatting, severity ordering for QA consumers
-- **datagram_io** — fire-and-forget Hlidskjalf broadcast
-- **jaq-interpret 1.5** — embedded jq filter evaluation (used by syn_core)
+`hooks/hook_post_llm_tool` runs after a tool writes a `.py`, `.rs` or `.svelte`
+file. It links `syn_runner` and makes one call,
+`syn_runner::assess_written_file(file, policy directory)`, with the hook's
+working directory as the policy directory. That call:
 
-### Current State (Phase 1 DONE)
-- Report mode: working (filter, format, broadcast)
-- Gate mode: filtering works, decision logic works, **ratchet comparison NOT YET IMPLEMENTED**
-- Deployed to `~/ai/tools/bin/syn`
-- Pure rendering logic in `core/report_render_core/` — shared with svalinn
-- Pure filter engine in `core/syn_core/` — extracted from syn_cli
-- syn_cli is thin orchestration (~457 lines); syn_core owns filter compilation + policy logic
-- hook_post_llm_tool wired: saga → syn pipeline operational
+1. has saga examine the file and write its sidecar;
+2. loads the policy;
+3. applies it in report mode, with no command-line selectors;
+4. broadcasts when there is something to report;
+5. returns an `Assessment`: `clean` — no visible group and no fault, computed
+   from the filtered result — and `report_text`, the TOON report.
 
-### Remaining
-- Ratchet comparison engine (baseline vs new)
-- Ratchet config loading (`.syn/ratchet.toml`)
-- Gate mode stdin input for new .qa baseline comparison
-- PreToolUse quality gate (future, needs ratchet)
+The hook says nothing for a clean assessment and hands the session the report
+text otherwise. An assessment that did not happen — the sidecar could not be
+written, the policy could not be used — is the failure `quality_check_not_run`:
+the session is told the file was not examined, and an alert goes to Hlidskjalf.
+The hook informs and directs; it never blocks the write.
+
+---
+
+## Crates
+
+| Crate | Tier | Holds |
+|---|---|---|
+| `core/syn_core` | core, pure | filter compilation and evaluation (jaq), the policy types, `apply_filters` and the decision |
+| `core/report_render_core` | core, pure | grouping, the TOON / colored / JSON renderers; shared with svalinn |
+| `capability/syn_runner` | capability, I/O | policy loading, sidecar discovery and loading with the currency faults, reports from stdin, the broadcast, `assess_written_file` |
+| `cli/syn_cli` | binary `syn` | argument parsing, and the calls into the three above |
+
+`syn_runner` reads sidecars and asks their state through `saga_runner`, reads
+policy files through `reader_io`, and takes its failures from the error
+registry, `core/failure_mode_core/failure_modes.toml`.
+
+## Rebuilding
+
+```
+nornir_deploy --build tools
+nornir_deploy --build hooks
+```
+
+`tools` rebuilds the `syn` binary. The write hook links `syn_runner`, so a
+change to syn's crates reaches it through `hooks`.

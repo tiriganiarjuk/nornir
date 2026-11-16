@@ -1,0 +1,18 @@
+[package]
+name = "syn_runner"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+syn_core = { path = "../../core/syn_core" }
+report_render_core = { path = "../../core/report_render_core" }
+failure_mode_core = { path = "../../core/failure_mode_core" }
+saga_runner = { path = "../saga_runner" }
+reader_io = { path = "../reader_io" }
+schemas_embedded = { path = "../schemas_embedded" }
+datagram_io = { path = "../datagram_io" }
