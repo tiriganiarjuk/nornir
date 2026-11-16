@@ -458,100 +458,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "check_anthropic_render"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "io_check",
- "path_verify_io",
- "schema_core",
- "schemas_embedded",
-]
-
-[[package]]
-name = "check_includes_merged"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "io_check",
- "path_verify_io",
- "schema_core",
- "schemas_embedded",
-]
-
-[[package]]
-name = "check_paths_resolved"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "io_check",
- "schema_core",
- "schemas_embedded",
-]
-
-[[package]]
-name = "check_paths_verified"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "io_check",
- "path_verify_io",
- "schema_core",
- "schemas_embedded",
-]
-
-[[package]]
-name = "check_permissions_resolved"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "io_check",
- "path_verify_io",
- "schema_core",
- "schemas_embedded",
-]
-
-[[package]]
-name = "check_raw_definition"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "io_check",
- "schema_core",
- "schemas_embedded",
-]
-
-[[package]]
-name = "check_universal_format"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "io_check",
- "path_verify_io",
- "schema_core",
- "schemas_embedded",
-]
-
-[[package]]
-name = "check_universal_render"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "format_core",
- "io_check",
- "path_verify_io",
- "schema_core",
- "schemas_embedded",
-]
-
-[[package]]
 name = "chumsky"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1392,6 +1298,7 @@ dependencies = [
  "gate_io",
  "pyo3",
  "schemas_embedded",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -1545,6 +1452,7 @@ dependencies = [
  "gate_io",
  "pyo3",
  "schemas_embedded",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -1636,6 +1544,7 @@ dependencies = [
  "gate_io",
  "pyo3",
  "schemas_embedded",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -1645,6 +1554,7 @@ dependencies = [
  "gate_io",
  "pyo3",
  "schemas_embedded",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -1672,6 +1582,7 @@ dependencies = [
  "gate_io",
  "pyo3",
  "schemas_embedded",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -1699,6 +1610,7 @@ dependencies = [
  "gate_io",
  "pyo3",
  "schemas_embedded",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -1717,6 +1629,7 @@ dependencies = [
  "gate_io",
  "pyo3",
  "schemas_embedded",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -2330,15 +2243,6 @@ dependencies = [
  "schema_core",
  "serde_json",
  "session_io",
-]
-
-[[package]]
-name = "io_check"
-version = "0.1.0"
-dependencies = [
- "error_core",
- "serde",
- "serde_json",
 ]
 
 [[package]]

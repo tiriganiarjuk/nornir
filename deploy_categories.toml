@@ -120,17 +120,6 @@ pyo3_verify = "python_import"
 [gates]
 build = "maturin"
 python_version = "python3.13"
-cli_crates = [
-    "check_raw_definition",
-    "check_paths_resolved",
-    "check_paths_verified",
-    "check_includes_merged",
-    "check_permissions_resolved",
-    "check_universal_format",
-    "check_universal_render",
-    "check_anthropic_render",
-]
-cli_verify = "help"
 gate_crates = [
     "gate_raw_definition_input",
     "gate_raw_definition_defaults",
