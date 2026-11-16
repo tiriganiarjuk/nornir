@@ -3458,6 +3458,7 @@ version = "0.1.0"
 dependencies = [
  "pyo3",
  "reader_io",
+ "serde_json",
 ]
 
 [[package]]
