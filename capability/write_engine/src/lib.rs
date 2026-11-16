@@ -8,6 +8,7 @@
 //! - `--help` output showing all hardcoded configuration
 //! - `--dump-schema` to print embedded JSON Schema for inspection
 //! - Untamperable stamps (sequence, timestamp, session) applied before validation
+//! - A receipt on stdout for every write: how many records, and the last record's stamps
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -16,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use failure_mode_core::Failure;
 use schema_core::EmbeddedValidator;
+use schemas_embedded::WRITE_RECEIPT;
 pub use stamp_core::Stamps;
 use stamp_core::StampContext;
 
@@ -86,8 +88,8 @@ pub struct WriterConfig {
 // Error types (writer-specific, not NornirError)
 // =============================================================================
 
-/// Every refusal or failure a writer can produce. Its message comes from the error
-/// registry (`failure_mode_core`); `format` presents it as the writers' `FAIL:<reason>`.
+/// Every refusal or failure a writer can produce. Its class, message and route come from
+/// the error registry (`failure_mode_core`).
 #[derive(Debug)]
 enum WriteError {
     StdinEmpty,
@@ -279,8 +281,16 @@ fn format_help_output(config: &WriterConfig, lines: &mut Vec<String>) {
         WriteFrequency::Record => "the record is written",
         WriteFrequency::Batch => "every record of the batch is written",
     };
+    let receipt = if config.stamps.is_none() {
+        r#"{"written": N}"#.to_string()
+    } else {
+        format!(
+            r#"{{"written": N, "last_record_stamps": {{...}}}} — the last record's {}"#,
+            config.stamps.field_names().join(", ")
+        )
+    };
     lines.push("OUTPUT:".into());
-    lines.push(format!("  success   nothing on stdout; {written}"));
+    lines.push(format!("  success   {written}; stdout: the receipt, {receipt}"));
     lines.push("  refusal   stderr: the failure class on the first line, then the message; nothing is written".into());
     lines.push(String::new());
     lines.push("EXIT CODES:".into());
@@ -380,6 +390,36 @@ fn stamp_lines(
         stamped_lines.push(stamped);
     }
     Ok(stamped_lines)
+}
+
+// =============================================================================
+// The receipt — what the writer hands back once the write is on disk
+// =============================================================================
+
+/// The receipt for `written` records, the last of which is `last_record`: the count, and
+/// the last record's stamped fields under the writer's own field names. Built and checked
+/// against `write-receipt` before anything is written, so a write that lands always has
+/// its receipt.
+fn receipt(config: &WriterConfig, written: usize, last_record: &serde_json::Value) -> Result<String, WriteError> {
+    let stamps: serde_json::Map<String, serde_json::Value> = config
+        .stamps
+        .field_names()
+        .into_iter()
+        .filter_map(|field| last_record.get(field).map(|value| (field.to_string(), value.clone())))
+        .collect();
+    let mut body = serde_json::Map::new();
+    body.insert("written".to_string(), serde_json::Value::from(written));
+    if !stamps.is_empty() {
+        body.insert("last_record_stamps".to_string(), serde_json::Value::Object(stamps));
+    }
+    let json = serde_json::Value::Object(body).to_string();
+    let result = WRITE_RECEIPT
+        .validate(&json)
+        .map_err(|e| WriteError::EngineFault(format!("receipt: {e}")))?;
+    if !result.valid {
+        return Err(WriteError::EngineFault(format!("receipt: {}", result.message)));
+    }
+    Ok(json)
 }
 
 // =============================================================================
@@ -509,9 +549,9 @@ pub fn append_line_fsync(path: &Path, line: &str) -> Result<(), String> {
 /// Main entry point for all writer binaries.
 ///
 /// Reads the arguments and stdin, validates, writes, and presents the outcome under the
-/// CLI contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces): nothing on stdout
-/// on success, the failure class and message on stderr on a refusal, the usage on wrong
-/// arguments. Returns the exit code; a writer's `main()` exits with it.
+/// CLI contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces): the receipt on
+/// stdout on success, the failure class and message on stderr on a refusal, the usage on
+/// wrong arguments. Returns the exit code; a writer's `main()` exits with it.
 pub fn run_cli(config: &WriterConfig) -> i32 {
     match run_tool(config) {
         Err(WriteError::MissingArg(argument)) => {
@@ -521,8 +561,8 @@ pub fn run_cli(config: &WriterConfig) -> i32 {
     }
 }
 
-/// The writer's one behaviour: `Some(text)` for --help and --dump-schema, `None` once the
-/// record or batch is written.
+/// The writer's one behaviour: the help text for --help, the schema for --dump-schema,
+/// and the receipt once the record or batch is written.
 fn run_tool(config: &WriterConfig) -> Result<Option<String>, WriteError> {
     let args: Vec<String> = std::env::args().collect();
 
@@ -546,15 +586,15 @@ fn run_tool(config: &WriterConfig) -> Result<Option<String>, WriteError> {
         return Err(WriteError::StdinEmpty);
     }
 
-    match config.frequency {
+    let written = match config.frequency {
         WriteFrequency::Record => run_record(config, &output_path, input)?,
         WriteFrequency::Batch => run_batch(config, &output_path, input)?,
-    }
-    Ok(None)
+    };
+    Ok(Some(written))
 }
 
-/// Handle single-record writes.
-fn run_record(config: &WriterConfig, output_path: &Path, input: &str) -> Result<(), WriteError> {
+/// Handle single-record writes. Returns the receipt.
+fn run_record(config: &WriterConfig, output_path: &Path, input: &str) -> Result<String, WriteError> {
     // Stamp first: the stamps are part of the record the schema sees
     let stamped;
     let input = if config.stamps.is_none() {
@@ -581,6 +621,7 @@ fn run_record(config: &WriterConfig, output_path: &Path, input: &str) -> Result<
     ))?;
     let compact = serde_json::to_string(&data)
         .map_err(|e| WriteError::IoFailed(format!("re-serialization: {e}")))?;
+    let receipt = receipt(config, 1, &data)?;
 
     // Write based on format
     match config.format {
@@ -615,7 +656,7 @@ fn run_record(config: &WriterConfig, output_path: &Path, input: &str) -> Result<
         }
     }
 
-    Ok(())
+    Ok(receipt)
 }
 
 fn validate_batch_lines(config: &WriterConfig, lines: &[&str]) -> Result<Vec<String>, WriteError> {
@@ -692,8 +733,8 @@ fn write_json_array(output_path: &Path, validated: &[String]) -> Result<(), Writ
     write_atomic(output_path, &pretty)
 }
 
-/// Handle batch writes (multiple JSONL lines, all-or-nothing).
-fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<(), WriteError> {
+/// Handle batch writes (multiple JSONL lines, all-or-nothing). Returns the receipt.
+fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<String, WriteError> {
     let lines = batch_lines(config, input)?;
 
     let stamped_lines;
@@ -706,13 +747,20 @@ fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<(
     };
 
     let validated = validate_batch_lines(config, &lines)?;
+    let last_record: serde_json::Value = validated
+        .last()
+        .ok_or_else(|| WriteError::EngineFault("no record after validation".to_string()))
+        .and_then(|line| {
+            serde_json::from_str(line).map_err(|e| WriteError::EngineFault(format!("batch re-parse: {e}")))
+        })?;
+    let receipt = receipt(config, validated.len(), &last_record)?;
 
     match config.format {
         OutputFormat::Jsonl => append_lines(output_path, &validated)?,
         OutputFormat::Json => write_json_array(output_path, &validated)?,
     }
 
-    Ok(())
+    Ok(receipt)
 }
 
 // =============================================================================
@@ -967,6 +1015,83 @@ mod tests {
         let numbers: Vec<_> = records.iter().map(|r| r["exchange"].as_u64().unwrap()).collect();
         assert_eq!(numbers, vec![1, 2, 3]);
         assert!(records.iter().all(|r| r["session"] == records[0]["session"]));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // =========================================================================
+    // the receipt
+    // =========================================================================
+
+    fn receipt_of(json: &str) -> serde_json::Value {
+        assert!(WRITE_RECEIPT.is_valid(json).unwrap(), "not a write-receipt: {json}");
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn an_unstamped_record_is_receipted_with_its_count_alone() {
+        let (dir, path) = temp_jsonl("receipt_plain");
+        let config = WriterConfig {
+            name: "test_plain",
+            schema: &DUMMY_VALIDATOR,
+            schema_source_path: "test".into(),
+            format: OutputFormat::Jsonl,
+            frequency: WriteFrequency::Record,
+            output: OutputPath::FixedFile(path.clone()),
+            batch_size: None,
+            stamps: Stamps::NONE,
+        };
+
+        let receipt = run_record(&config, &path, r#"{"a": 1}"#).unwrap();
+
+        assert_eq!(receipt, r#"{"written":1}"#);
+        assert_eq!(records_in(&path).len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stamped_record_is_receipted_with_the_stamps_it_was_given() {
+        let (dir, path) = temp_jsonl("receipt_stamped");
+        let config = stamped_config(path.clone());
+
+        run_record(&config, &path, r#"{"stt": "first"}"#).unwrap();
+        let receipt = receipt_of(&run_record(&config, &path, r#"{"stt": "second"}"#).unwrap());
+
+        let written = &records_in(&path)[1];
+        assert_eq!(receipt["written"], 1);
+        assert_eq!(receipt["last_record_stamps"]["exchange"], 2);
+        assert_eq!(receipt["last_record_stamps"]["ts"], written["ts"]);
+        assert_eq!(receipt["last_record_stamps"]["session"], written["session"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_batch_is_receipted_with_its_count_and_the_last_records_stamps() {
+        let (dir, path) = temp_jsonl("receipt_batch");
+        let mut config = stamped_config(path.clone());
+        config.frequency = WriteFrequency::Batch;
+
+        let input = "{\"stt\": \"a\"}\n{\"stt\": \"b\"}\n{\"stt\": \"c\"}";
+        let receipt = receipt_of(&run_batch(&config, &path, input).unwrap());
+
+        assert_eq!(receipt["written"], 3);
+        assert_eq!(receipt["last_record_stamps"]["exchange"], 3);
+        assert_eq!(receipt["last_record_stamps"]["session"], records_in(&path)[2]["session"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_receipt_names_no_path() {
+        let (dir, path) = temp_jsonl("receipt_no_path");
+        let config = stamped_config(path.clone());
+
+        let receipt = run_record(&config, &path, r#"{"stt": "x"}"#).unwrap();
+
+        assert!(!receipt.contains(dir.to_str().unwrap()));
+        assert!(!receipt.contains("OPEN.jsonl"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

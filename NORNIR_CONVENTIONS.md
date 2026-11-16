@@ -180,6 +180,13 @@ first record's timestamp in basic ISO form and copied thereafter). A record that
 stamped field is refused. The rules are pure in `stamp_core`; `write_engine` gathers the
 context from the file and the clock.
 
+**The receipt** is what a writer prints on stdout once the write is on disk:
+`{"written": 1}`, and for a stamping writer
+`{"written": 3, "last_record_stamps": {"exchange": 43, "ts": "…", "session": "…"}}` — the
+last record's stamps under the writer's own field names. `write_engine` builds it and
+checks it against `schemas/tools/write-receipt.schema.json` before writing; it names no
+path (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces).
+
 **Stores** (`store_` on `store_engine`) are the counterpart: close the open file as one
 session — copy to `sessions/<id>.jsonl`, verify SHA-256, append a validated index record
 with the closing note from the command line, truncate the open file in place.

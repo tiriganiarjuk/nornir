@@ -200,6 +200,11 @@ static DIRECTORY_WRITE_REPORT_JSON: &str =
 pub static DIRECTORY_WRITE_REPORT: EmbeddedValidator =
     EmbeddedValidator::new(DIRECTORY_WRITE_REPORT_JSON, "directory-write-report");
 
+static WRITE_RECEIPT_JSON: &str =
+    include_str!("../../../schemas/tools/write-receipt.schema.json");
+pub static WRITE_RECEIPT: EmbeddedValidator =
+    EmbeddedValidator::new(WRITE_RECEIPT_JSON, "write-receipt");
+
 static SANITY_REPORT_JSON: &str =
     include_str!("../../../schemas/tools/sanity-report.schema.json");
 pub static SANITY_REPORT: EmbeddedValidator =
@@ -463,6 +468,16 @@ mod tests {
     fn test_directory_write_report_shape() {
         assert!(DIRECTORY_WRITE_REPORT.is_valid(r#"{"written":1,"unchanged":2,"removed":0}"#).unwrap());
         assert!(!DIRECTORY_WRITE_REPORT.is_valid(r#"{"written":-1,"unchanged":0,"removed":0}"#).unwrap());
+    }
+
+    #[test]
+    fn test_write_receipt_shape() {
+        assert!(WRITE_RECEIPT.is_valid(r#"{"written":1}"#).unwrap());
+        let stamped = r#"{"written":3,"last_record_stamps":{"exchange":43,"ts":"2026-11-10T04:55:15Z"}}"#;
+        assert!(WRITE_RECEIPT.is_valid(stamped).unwrap());
+        assert!(!WRITE_RECEIPT.is_valid(r#"{"written":0}"#).unwrap());
+        assert!(!WRITE_RECEIPT.is_valid(r#"{"written":1,"last_record_stamps":{}}"#).unwrap());
+        assert!(!WRITE_RECEIPT.is_valid(r#"{"written":1,"path":"/x"}"#).unwrap());
     }
 
 }

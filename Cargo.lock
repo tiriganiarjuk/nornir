@@ -5712,6 +5712,7 @@ dependencies = [
  "failure_mode_core",
  "path_core",
  "schema_core",
+ "schemas_embedded",
  "serde_json",
  "stamp_core",
  "tool_face_io",

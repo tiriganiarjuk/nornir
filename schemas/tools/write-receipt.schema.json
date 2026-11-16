@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "write-receipt",
+  "description": "What a writer on write_engine did, printed on stdout once the write is on disk: how many records it wrote, and — for a writer that stamps — the stamped fields of the last record written, under the writer's own field names. With `written`, the last record's sequence gives the whole range. It names no path.",
+  "type": "object",
+  "required": ["written"],
+  "additionalProperties": false,
+  "properties": {
+    "written": {"type": "integer", "minimum": 1},
+    "last_record_stamps": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": ["integer", "string"]}
+    }
+  }
+}
