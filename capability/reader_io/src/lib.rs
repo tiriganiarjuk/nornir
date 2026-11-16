@@ -34,6 +34,7 @@ use format_core::convert::{
 };
 use format_core::serialize::to_json;
 use format_core::tomlx::{parse_tomlx, TomlxOutput};
+use failure_mode_core::Failure;
 use schema_core::EmbeddedValidator;
 
 // =============================================================================
@@ -95,71 +96,59 @@ impl SourceFormat {
 // Errors
 // =============================================================================
 
-/// Every failure a reader can produce. `error_type()` is the `error.type` a reader
-/// returns to Python; the Display string is the `error.message`.
-#[derive(Debug, thiserror::Error)]
+/// Every failure a reader can produce. Its class and message come from the error
+/// registry (`failure_mode_core`): `error_type()` is the `error.type` a reader returns,
+/// the Display string — the mode's standard message and route — is the `error.message`.
+#[derive(Debug)]
 pub enum ReaderError {
-    #[error("Cannot read '{path}': {message}")]
     ReadFailed { path: String, message: String },
-
-    #[error("{format} parse error in '{path}': {message}")]
-    ParseFailed {
-        format: &'static str,
-        path: String,
-        message: String,
-    },
-
-    #[error("Invalid JSON from {format} conversion: {message}")]
-    ConvertedJsonInvalid {
-        format: &'static str,
-        message: String,
-    },
-
-    #[error("Cannot read schema '{path}': {message}")]
+    ParseFailed { format: &'static str, path: String, message: String },
+    ConvertedJsonInvalid { format: &'static str, message: String },
     SchemaReadFailed { path: String, message: String },
-
-    #[error("Schema '{path}' is not valid JSON: {message}")]
     SchemaNotJson { path: String, message: String },
-
-    #[error("Schema '{path}' is not valid JSON Schema: {message}")]
     SchemaCompileFailed { path: String, message: String },
-
-    /// The educational message from `error_core`, verbatim.
-    #[error("{0}")]
+    /// The educational report from `error_core`: every issue, its path, and its fix.
     ValidationFailed(String),
-
-    #[error("Validator cache poisoned: {0}")]
     CachePoisoned(String),
-
-    #[error("No type annotations in '{path}' — read_tomlx_json_schema needs at least one annotated section")]
     TomlxNoSchema { path: String },
-
-    #[error("Embedded schema '{name}' is unusable: {message}")]
     EmbeddedSchemaInvalid { name: String, message: String },
-
     /// The paths the data names that do not exist, every one at once.
-    #[error("{0}")]
     PathsMissing(String),
 }
 
 impl ReaderError {
-    /// The failure class a caller branches on — the `error.type` of the reader result.
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled.
+    pub fn failure(&self) -> Failure {
         match self {
-            ReaderError::ReadFailed { .. } => "read_error",
-            ReaderError::ParseFailed { .. } => "parse_error",
-            ReaderError::ConvertedJsonInvalid { .. } => "conversion_error",
-            ReaderError::SchemaReadFailed { .. }
-            | ReaderError::SchemaNotJson { .. }
-            | ReaderError::SchemaCompileFailed { .. }
-            | ReaderError::TomlxNoSchema { .. }
-            | ReaderError::EmbeddedSchemaInvalid { .. } => "schema_error",
-            ReaderError::ValidationFailed(_) => "validation_error",
-            ReaderError::CachePoisoned(_) => "cache_error",
-            ReaderError::PathsMissing(_) => "path_error",
+            ReaderError::ReadFailed { path, message } => failure_mode_core::file_unreadable(path, message),
+            ReaderError::ParseFailed { format, path, message } => failure_mode_core::file_not_in_format(path, format, message),
+            ReaderError::ConvertedJsonInvalid { format, message } => {
+                failure_mode_core::conversion_produced_invalid_json(format, message)
+            }
+            ReaderError::SchemaReadFailed { path, message } => failure_mode_core::schema_unreadable(path, message),
+            ReaderError::SchemaNotJson { path, message } => failure_mode_core::schema_not_json(path, message),
+            ReaderError::SchemaCompileFailed { path, message } => failure_mode_core::schema_not_compilable(path, message),
+            ReaderError::ValidationFailed(report) => failure_mode_core::data_not_matching_schema(report),
+            ReaderError::CachePoisoned(message) => failure_mode_core::validator_cache_poisoned(message),
+            ReaderError::TomlxNoSchema { path } => failure_mode_core::tomlx_without_annotations(path),
+            ReaderError::EmbeddedSchemaInvalid { name, message } => failure_mode_core::embedded_schema_unusable(name, message),
+            ReaderError::PathsMissing(report) => failure_mode_core::paths_missing(report),
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of the reader result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+impl std::fmt::Display for ReaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for ReaderError {}
 
 // =============================================================================
 // Schema cache (compiled once per schema path, per process)

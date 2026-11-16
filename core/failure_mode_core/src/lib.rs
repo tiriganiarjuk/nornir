@@ -36,9 +36,12 @@ pub struct Failure {
 }
 
 impl Failure {
-    /// The full message of standard mode: what, where, and the route.
+    /// The full message of standard mode: what, where, and the route. A one-line message
+    /// carries its route after it; a multi-line report carries it on its own line.
     pub fn standard_message(&self) -> String {
-        format!("{} {}", self.standard, self.route)
+        let standard = self.standard.trim_end();
+        let separator = if standard.contains('\n') { "\n" } else { " " };
+        format!("{standard}{separator}{}", self.route)
     }
 
     /// The message of adversarial mode: the shared stop order, and nothing a user could probe with.
@@ -77,6 +80,12 @@ mod tests {
         let failure = file_unwritable("/out/report.json", "Permission denied");
         assert!(failure.to_string().starts_with("Cannot write '/out/report.json': Permission denied."));
         assert!(failure.to_string().ends_with(&failure.route));
+    }
+
+    #[test]
+    fn a_multi_line_report_carries_its_route_on_its_own_line() {
+        let failure = data_not_matching_schema("schema failed — 1 issue:\n\n  1. Path: /port\n");
+        assert!(failure.to_string().ends_with(&format!("  1. Path: /port\n{}", failure.route)));
     }
 
     #[test]

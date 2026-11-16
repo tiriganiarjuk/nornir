@@ -49,3 +49,45 @@ class       = "schema_error"
 standard    = "Schema '{path}' is not valid JSON Schema: {reason}."
 route       = "Report the schema's path and this message to the user; the schema is corrected before the call is made again."
 adversarial = "stop"
+
+[file_not_in_format]
+class       = "parse_error"
+standard    = "'{path}' is not valid {format}: {reason}."
+route       = "The file is not in the format this tool reads. Report its path and this message to the user; the file is corrected before it is read again."
+adversarial = "stop"
+
+[conversion_produced_invalid_json]
+class       = "conversion_error"
+standard    = "Converting {format} to JSON produced invalid JSON: {reason}."
+route       = "This is a fault in the conversion, not in the file. Report this message to the user."
+adversarial = "stop"
+
+[data_not_matching_schema]
+class       = "validation_error"
+standard    = "{report}"
+route       = "Correct the data so it matches the schema: each issue above names its path, what was found and what was expected."
+adversarial = "stop"
+
+[paths_missing]
+class       = "path_error"
+standard    = "{report}"
+route       = "Every path the data names must exist. Report the missing paths to the user."
+adversarial = "stop"
+
+[validator_cache_poisoned]
+class       = "cache_error"
+standard    = "The schema cache failed: {reason}."
+route       = "This is a fault in the engine, not in the data. Report this message to the user."
+adversarial = "stop"
+
+[tomlx_without_annotations]
+class       = "schema_error"
+standard    = "'{path}' has no type annotations, so no schema can be derived from it."
+route       = "Annotate at least one section with a type, or read the file with read_tomlx_json, which derives no schema."
+adversarial = "stop"
+
+[embedded_schema_unusable]
+class       = "schema_error"
+standard    = "The schema '{name}' compiled into this tool is unusable: {reason}."
+route       = "The schema is part of the tool. Report this message to the user; the tool is rebuilt with a corrected schema."
+adversarial = "stop"

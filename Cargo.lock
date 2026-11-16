@@ -3444,6 +3444,7 @@ name = "reader_io"
 version = "0.1.0"
 dependencies = [
  "error_core",
+ "failure_mode_core",
  "format_core",
  "jsonschema",
  "path_verify_io",
