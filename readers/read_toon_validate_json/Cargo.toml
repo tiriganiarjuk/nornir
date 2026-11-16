@@ -7,6 +7,17 @@ edition = "2021"
 name = "read_toon_validate_json"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "read_toon_validate_json"
+path = "src/main.rs"
+
+[features]
+python = ["dep:pyo3", "tool_face_io/python"]
+
 [dependencies]
-pyo3 = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 reader_io = { path = "../../capability/reader_io" }
+tool_face_io = { path = "../../capability/tool_face_io" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

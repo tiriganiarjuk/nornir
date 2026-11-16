@@ -5,36 +5,33 @@
 //! process). The schema describes the data after conversion — values in their target
 //! units. Environment references resolve live; `base=config` references resolve
 //! against the file's directory.
-//! Returns the gate contract: `{"ok": bool, "data": str | None, "error": {"type": str, "message": str} | None}`.
-//! `error.type` is one of `ReaderError::error_type()`; it never raises for a failed read.
+//!
+//! One tool, two faces (`NORNIR_CONVENTIONS.md` § Tool Structure). `read` is the tool;
+//! the CLI face (`main.rs`) and the PyO3 face (below, feature "python") hand its result
+//! to `tool_face_io`.
 
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
+pub use reader_io::ReaderError;
 
-/// Read a .tomlx file, validate its converted data against the named schema. Pass an absolute schema_dir.
-#[pyfunction]
-fn read(py: Python<'_>, file_path: &str, schema_name: &str, schema_dir: &str) -> PyResult<PyObject> {
-    let dict = PyDict::new_bound(py);
-    match reader_io::read_tomlx_validate_json(file_path, schema_name, schema_dir) {
-        Ok(json) => {
-            dict.set_item("ok", true)?;
-            dict.set_item("data", &json)?;
-            dict.set_item("error", py.None())?;
-        }
-        Err(e) => {
-            let err = PyDict::new_bound(py);
-            err.set_item("type", e.error_type())?;
-            err.set_item("message", e.to_string())?;
-            dict.set_item("ok", false)?;
-            dict.set_item("data", py.None())?;
-            dict.set_item("error", err)?;
-        }
-    }
-    Ok(dict.into())
+pub const USAGE: &str = "usage: read_tomlx_validate_json <file_path> <schema_name> <schema_dir>\n\
+                         Pass the three arguments in that order; schema_dir is an absolute path.";
+
+/// Read a .tomlx file and validate its converted data against the named schema. Pass an absolute schema_dir.
+pub fn read(file_path: &str, schema_name: &str, schema_dir: &str) -> Result<Option<String>, ReaderError> {
+    reader_io::read_tomlx_validate_json(file_path, schema_name, schema_dir).map(Some)
 }
 
-#[pymodule]
-fn read_tomlx_validate_json(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(read, m)?)?;
-    Ok(())
+#[cfg(feature = "python")]
+mod python_face {
+    use pyo3::prelude::*;
+
+    #[pyfunction]
+    fn read(py: Python<'_>, file_path: &str, schema_name: &str, schema_dir: &str) -> PyResult<PyObject> {
+        tool_face_io::py_contract(py, super::read(file_path, schema_name, schema_dir), super::ReaderError::error_type)
+    }
+
+    #[pymodule]
+    fn read_tomlx_validate_json(m: &Bound<'_, PyModule>) -> PyResult<()> {
+        m.add_function(wrap_pyfunction!(read, m)?)?;
+        Ok(())
+    }
 }
