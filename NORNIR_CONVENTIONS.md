@@ -49,7 +49,7 @@ A built tool is one crate with two faces: a CLI binary always, and a PyO3 module
 | `intercept_` | `interceptors/` | Intercepts and transforms live traffic streams |
 | `record_` | `daemons/` | Long-running background process that records data |
 
-**Specialist tools** (`saga`, `syn`) are proper nouns without verb prefix. Package names: `saga_cli`, `syn_cli`. Binary names: `saga`, `syn`. These are the only exceptions.
+**Specialist tools** (`saga`, `syn`) are proper nouns without verb prefix. Package names: `saga_cli`, `syn_cli` — the suffix is required because the bare package name `syn` is the well-known Rust parsing crate. Binary names: `saga`, `syn`. These are the only exceptions.
 
 **Name structure:** `{verb}_{domain}_{specifics}` — e.g., `append_truth_qc_report_record`, `hook_pre_llm_bash`, `check_universal_render`.
 
@@ -82,6 +82,10 @@ A built tool is one crate with two faces: a CLI binary always, and a PyO3 module
 ### What Never Appears
 
 Hyphens in crate/binary names. Generic words (`utils`, `helpers`, `common`). Version suffixes (`_v2`, `_new`). Abbreviations beyond universally understood ones (`io` is OK, `fmt` is not).
+
+### Module Contents: Grouped by Action
+
+Functions belong together by what they do. Group by action — `schema_build`, `field_annotate`, `conditional_build`, `zone_collect` — and ask of each function "what does this DO?": two functions that both build JSON Schema nodes belong together, though one serves atoms and the other sections. A module that builds, records metadata and dispatches is three modules, one per action.
 
 ---
 
@@ -201,7 +205,7 @@ fn decide(input: &HookInput) -> HookDecision {
 }
 ```
 
-Shared rule parsing lives in `hook_io::rules`. Use `parse_toml_table()` and `parse_rule_array()` — do not reimplement TOML parsing in hook binaries.
+Shared rule parsing lives in `hook_io::rules`. Use `parse_toml_table()` and `parse_rule_array()` — do not reimplement TOML parsing in hook binaries. A hook's reply is built with `hook_io::response`: one response type per Claude Code hook event, exposing only what that event accepts, so an invalid reply does not compile. The module's own documentation maps each term to the wire format.
 
 ### Senders (thin wrappers on datagram_io)
 
@@ -241,6 +245,7 @@ Before writing logic, check if it already exists:
 | Text writer I/O: validate JSON against a named schema, then write atomically | `text_writer_io` |
 | A generated directory replaced whole: validated files, kept identical files, removed stale ones, one report | `directory_write_io` |
 | Datagram emission to Hlidskjalf | `datagram_io` |
+| A directory's workspace name (`@smidja:nornir`), for any tool that operates on directories | `datagram_io::workspace_from_path` |
 | Schema constants | `schemas_embedded` |
 | File-arg diagnostic CLI contract | `io_check` |
 | Directory listing: every entry, its kind, size and sha256, unreadable paths reported | `directory_read_io` |
