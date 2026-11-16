@@ -63,9 +63,42 @@ impl fmt::Display for Failure {
 
 include!(concat!(env!("OUT_DIR"), "/failure_modes.rs"));
 
+/// The lines that open and close the generated table in MUST_READ_BEFORE_BUILDING.md.
+pub const ERROR_TYPE_TABLE_OPENS: &str =
+    "<!-- error-type-table: generated from core/failure_mode_core/failure_modes.toml — \
+     cargo run -p failure_mode_core --example write_error_type_table -->";
+pub const ERROR_TYPE_TABLE_CLOSES: &str = "<!-- /error-type-table -->";
+
+/// The document with its generated table replaced by the registry's, or why it cannot be.
+pub fn with_error_type_table(document: &str) -> Result<String, String> {
+    let opens = document
+        .find(ERROR_TYPE_TABLE_OPENS)
+        .ok_or_else(|| "the document has no line opening the error-type table".to_string())?;
+    let table_starts = opens + ERROR_TYPE_TABLE_OPENS.len();
+    let closes = document[table_starts..]
+        .find(ERROR_TYPE_TABLE_CLOSES)
+        .ok_or_else(|| "the document has no line closing the error-type table".to_string())?;
+    Ok(format!(
+        "{}\n{ERROR_TYPE_TABLE}{}",
+        &document[..table_starts],
+        &document[table_starts + closes..]
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_documented_error_types_are_the_registry_s() {
+        let document = include_str!("../../../MUST_READ_BEFORE_BUILDING.md");
+        assert_eq!(
+            with_error_type_table(document).as_deref(),
+            Ok(document),
+            "MUST_READ_BEFORE_BUILDING.md is behind the registry — run: \
+             cargo run -p failure_mode_core --example write_error_type_table"
+        );
+    }
 
     #[test]
     fn a_mode_fills_its_slots_into_its_message() {

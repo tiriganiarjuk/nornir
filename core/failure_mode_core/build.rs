@@ -4,7 +4,7 @@
 //! than "stop", or a brace that is not a `{slot}` fails the build here. An alert priority
 //! that is not a `datagram_core::Priority` fails it when the generated code compiles.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -18,14 +18,29 @@ fn main() -> Result<(), String> {
     let registry: toml::Table = source.parse().map_err(|e| format!("{REGISTRY}: {e}"))?;
 
     let mut generated = String::new();
+    let mut modes_by_class: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for (name, entry) in &registry {
         let entry = entry.as_table().ok_or_else(|| format!("{REGISTRY}: [{name}] is not a table"))?;
         generated.push_str(&entry_function(name, entry)?);
+        modes_by_class.entry(text_field(name, entry, "class")?).or_default().push(name);
     }
+    let _ = writeln!(generated, "/// The `error.type` table of MUST_READ_BEFORE_BUILDING.md: every failure class,");
+    let _ = writeln!(generated, "/// and the failure modes that carry it.");
+    let _ = writeln!(generated, "pub const ERROR_TYPE_TABLE: &str = {:?};", error_type_table(&modes_by_class));
 
     let out_dir = std::env::var("OUT_DIR").map_err(|e| format!("OUT_DIR: {e}"))?;
     std::fs::write(Path::new(&out_dir).join("failure_modes.rs"), generated)
         .map_err(|e| format!("writing the generated failure modes: {e}"))
+}
+
+/// The markdown table of failure classes, each with the modes that carry it.
+fn error_type_table(modes_by_class: &BTreeMap<String, Vec<&str>>) -> String {
+    let mut table = String::from("| `error.type` | Failure modes |\n|---|---|\n");
+    for (class, modes) in modes_by_class {
+        let named: Vec<String> = modes.iter().map(|mode| format!("`{mode}`")).collect();
+        let _ = writeln!(table, "| `{class}` | {} |", named.join(", "));
+    }
+    table
 }
 
 /// The Rust function for one failure mode.

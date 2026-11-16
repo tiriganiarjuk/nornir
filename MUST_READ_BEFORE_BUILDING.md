@@ -49,23 +49,31 @@ its message — presented for a shell and for the next program in a pipe:
 
 `error.type` names the failure class, taken from the engine's typed error by its
 `error_type()` method: one type per class a caller can act on differently. A caller branches
-on `error.type`; `error.message` is for people. A new class joins this table when an engine
-first produces it.
+on `error.type`; `error.message` is for people.
 
-| `error.type` | What failed | Produced by |
-|---|---|---|
-| `read_error` | the file could not be read | gates, readers, binary readers |
-| `parse_error` | the file, or the text or bytes handed to a writer, is not valid in its own format | gates, readers, binary readers, text writers, binary writers |
-| `conversion_error` | the data and the file's format do not convert: reading, the format→JSON conversion produced invalid JSON — an engine fault; writing, the data holds what the format cannot express — a null in TOML, an XML document without its one root key, a markdown envelope without its parts | gates, readers, text writers |
-| `schema_error` | the schema could not be loaded or compiled, or a tomlx file has no annotations to derive one | gates, readers, text writers |
-| `validation_error` | the data does not match the schema | gates, readers, text writers |
-| `cache_error` | the validator cache failed — an engine fault | readers, text writers |
-| `path_error` | a path the data names does not exist | gates that verify paths |
-| `verification_error` | the bytes are well formed but carry more than the stated shape, or a different one | binary readers, binary writers |
-| `rules_error` | the rules the caller stated are invalid, or do not fit the data | binary readers |
-| `repair_error` | a bad value has no good neighbour to repair from | binary readers |
-| `compression_error` | the bytes could not be compressed | binary writers |
-| `write_error` | the output could not be written | gates, text writers, binary writers |
+The table is generated from the error registry, `core/failure_mode_core/failure_modes.toml`:
+every class, and the failure modes that carry it. Each mode's entry in the registry says what
+failed and what to do next. `cargo test -p failure_mode_core` fails while this table is behind
+the registry.
+
+<!-- error-type-table: generated from core/failure_mode_core/failure_modes.toml — cargo run -p failure_mode_core --example write_error_type_table -->
+| `error.type` | Failure modes |
+|---|---|
+| `argument_error` | `argument_missing`, `arguments_invalid` |
+| `cache_error` | `validator_cache_poisoned` |
+| `compression_error` | `compression_failed` |
+| `conversion_error` | `conversion_produced_invalid_json`, `data_not_expressible` |
+| `instrument_error` | `instrument_not_runnable`, `instrument_output_unusable`, `source_not_examinable` |
+| `parse_error` | `text_not_json`, `file_not_in_format`, `directory_request_not_json`, `record_not_json`, `png_signature_missing`, `png_chunk_truncated`, `png_chunk_corrupt`, `png_chunks_out_of_order`, `png_header_invalid`, `png_pixel_data_invalid`, `png_undecodable`, `mesh_truncated`, `mesh_header_invalid`, `mesh_vertex_data_invalid`, `mesh_indices_invalid`, `mesh_edges_invalid` |
+| `path_error` | `paths_missing` |
+| `read_error` | `file_unreadable`, `directory_unlistable`, `directory_partly_unreadable`, `record_absent`, `store_open_file_missing` |
+| `repair_error` | `heights_unrepairable` |
+| `rules_error` | `height_rules_invalid`, `height_grid_size_mismatch`, `height_encoding_unknown`, `shape_not_terrarium` |
+| `schema_error` | `schema_unreadable`, `schema_not_json`, `schema_not_compilable`, `tomlx_without_annotations`, `embedded_schema_unusable` |
+| `validation_error` | `data_not_matching_schema`, `directory_request_invalid`, `directory_paths_refused`, `directory_files_refused`, `directory_listing_invalid`, `directory_report_invalid`, `record_name_not_plain`, `batch_too_large`, `stamped_field_supplied`, `store_open_file_empty`, `store_first_record_unstamped`, `store_index_record_invalid`, `sanity_report_invalid`, `sidecar_not_matching` |
+| `verification_error` | `png_chunk_not_accepted`, `png_chunk_too_large`, `png_trailing_data`, `png_shape_mismatch`, `png_pixel_data_excess`, `mesh_extension_not_accepted` |
+| `write_error` | `file_unwritable`, `directory_not_generated`, `directory_unwritable`, `output_exists`, `output_not_prepared`, `output_directory_absent`, `writer_io_failed`, `store_sessions_directory_absent`, `store_session_already_stored`, `store_copy_mismatch`, `writer_engine_fault` |
+<!-- /error-type-table -->
 
 ### Calling one from Python
 
