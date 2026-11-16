@@ -7,6 +7,14 @@ edition = "2021"
 name = "write_json_validate_toml"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "write_json_validate_toml"
+path = "src/main.rs"
+
+[features]
+python = ["dep:pyo3", "tool_face_io/python"]
+
 [dependencies]
-pyo3 = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 text_writer_io = { path = "../../capability/text_writer_io" }
+tool_face_io = { path = "../../capability/tool_face_io" }

@@ -20,6 +20,20 @@ pub fn positional_args<const N: usize>() -> Option<[String; N]> {
     args.try_into().ok()
 }
 
+/// CLI face input: all of stdin, as text — the JSON a writer's PyO3 face takes as an
+/// argument. A failure to read it is reported under the CLI contract here, and its exit
+/// code comes back as the error for `main()` to exit with.
+pub fn stdin_text() -> Result<String, i32> {
+    let mut text = String::new();
+    match std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut text) {
+        Ok(_) => Ok(text),
+        Err(e) => {
+            eprintln!("read_error\nCould not read the input on stdin: {e}. Pipe the JSON to write into this command.");
+            Err(EXIT_FAILURE)
+        }
+    }
+}
+
 /// CLI face, wrong arguments: the usage on stderr. Returns the exit code for `main()`.
 pub fn cli_usage(usage: &str) -> i32 {
     eprintln!("{usage}");

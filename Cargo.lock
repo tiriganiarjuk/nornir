@@ -5720,6 +5720,8 @@ version = "0.1.0"
 dependencies = [
  "directory_write_io",
  "pyo3",
+ "serde_json",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -5728,6 +5730,7 @@ version = "0.1.0"
 dependencies = [
  "pyo3",
  "text_writer_io",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -5736,6 +5739,7 @@ version = "0.1.0"
 dependencies = [
  "pyo3",
  "text_writer_io",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -5744,6 +5748,7 @@ version = "0.1.0"
 dependencies = [
  "pyo3",
  "text_writer_io",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -5752,6 +5757,7 @@ version = "0.1.0"
 dependencies = [
  "pyo3",
  "text_writer_io",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -5760,6 +5766,7 @@ version = "0.1.0"
 dependencies = [
  "pyo3",
  "text_writer_io",
+ "tool_face_io",
 ]
 
 [[package]]
@@ -5768,6 +5775,7 @@ version = "0.1.0"
 dependencies = [
  "pyo3",
  "text_writer_io",
+ "tool_face_io",
 ]
 
 [[package]]

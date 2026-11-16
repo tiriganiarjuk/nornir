@@ -7,6 +7,17 @@ edition = "2021"
 name = "write_json_validate_directory"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "write_json_validate_directory"
+path = "src/main.rs"
+
+[features]
+python = ["dep:pyo3", "tool_face_io/python"]
+
 [dependencies]
-pyo3 = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 directory_write_io = { path = "../../capability/directory_write_io" }
+tool_face_io = { path = "../../capability/tool_face_io" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
