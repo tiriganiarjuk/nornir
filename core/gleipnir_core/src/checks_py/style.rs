@@ -4,10 +4,7 @@
 //! nesting_depth, no_none_returns, no_throwaway_assignment,
 //! no_single_letter_names, no_numbered_suffixes, short_param_names.
 
-use regex::Regex;
-use std::sync::LazyLock;
-
-use crate::classify;
+use crate::numbered_names;
 use crate::parsing::{find_nodes_by_type, node_field, node_line, node_text, walk_tree};
 use crate::structures::{CheckConfig, ParsedSource, Severity, Violation};
 
@@ -339,30 +336,6 @@ pub fn check_no_throwaway_assignment(
 
 const SINGLE_LETTER_ALLOWLIST: &[&str] = &["i", "j", "k", "_"];
 
-static NUMBERED_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-z][a-z_]*\d+$").unwrap());
-
-static NUMBERED_ALLOWED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(concat!(
-        r"^(",
-        r"step_\d+|",
-        r"utf_?\d+|",
-        r"sha\d+|md\d+|",
-        r"h\d+|",
-        r"ipv\d+|",
-        r"base\d+|",
-        r"int\d+|float\d+|",
-        r"v\d+|",
-        r"rgb\d*|",
-        r"level\d+|",
-        r"phase\d+|",
-        r"log\d*|",
-        r"p\d{4,}",
-        r")$",
-    ))
-    .unwrap()
-});
-
 const SHORT_PARAM_ALLOWLIST: &[&str] = &[
     "self", "cls", "id", "db", "ok", "os", "io", "fn", "fp", "fh", "ip", "tx", "rx", "ui", "pk",
     "op",
@@ -471,7 +444,7 @@ fn collect_body_target_names<'a>(
 }
 
 fn is_bad_numbered_name(name: &str) -> bool {
-    NUMBERED_PATTERN.is_match(name) && !NUMBERED_ALLOWED.is_match(name)
+    numbered_names::python_numbered().is_match(name) && !numbered_names::python_allowed().is_match(name)
 }
 
 // -------------------------------------------------------------------------
@@ -729,9 +702,6 @@ fn is_wildcard_case(case_node: tree_sitter::Node, source: &[u8]) -> bool {
 /// Gravity: CC below the level minimum → function must move down.
 /// Ceiling: CC above the level maximum → function must move up.
 pub fn check_v2_cc_level(source: &ParsedSource, config: &CheckConfig) -> Vec<Violation> {
-    let classification = classify::classify_file_v2(source.file_path);
-    let level = classification.level;
-
     let min_cc = config.min_cc;
     let max_cc = config.max_cc;
 
@@ -755,14 +725,14 @@ pub fn check_v2_cc_level(source: &ParsedSource, config: &CheckConfig) -> Vec<Vio
                 violations.push(violation(
                     node_line(func_node),
                     format!(
-                        "{func_name}() gravity violation: CC={cc} belongs at a lower level (min CC={min_cc} for {level:?})",
+                        "{func_name}() gravity violation: too simple for this level — belongs at a lower level",
                     ),
                 ));
             } else if cc > max_cc {
                 violations.push(violation(
                     node_line(func_node),
                     format!(
-                        "{func_name}() ceiling violation: CC={cc} exceeds {level:?} maximum of {max_cc}",
+                        "{func_name}() ceiling violation: too complex for this level — belongs at a higher level or needs decomposition",
                     ),
                 ));
             }
@@ -1209,5 +1179,46 @@ def foo():
         );
         let violations = check_v2_cc_level(&parsed, &v2_config(crate::structures::Level::L4));
         assert!(violations.is_empty());
+    }
+
+    const HIGH_CC_FUNCTION: &str = "def foo(a, b, c, d):\n    if a:\n        if b:\n            return 1\n    elif c:\n        return 2\n    return 0\n";
+
+    #[test]
+    fn cc_outside_level_has_no_band() {
+        let path = "/project/src/pkg/random_file.py";
+        let classification = crate::classify::classify_file_v2(path);
+        assert_eq!(classification.level, crate::structures::Level::Outside);
+        let config = CheckConfig::for_v2(classification.level, classification.zone, &crate::STATISTICS);
+        let parsed = parse_with_path(HIGH_CC_FUNCTION, path);
+        assert!(check_v2_cc_level(&parsed, &config).is_empty());
+    }
+
+    #[test]
+    fn cc_ceiling_violation_in_entry_point() {
+        let path = "/project/src/pkg/cli.py";
+        let classification = crate::classify::classify_file_v2(path);
+        assert_eq!(classification.level, crate::structures::Level::L8);
+        let config = CheckConfig::for_v2(classification.level, classification.zone, &crate::STATISTICS);
+        let parsed = parse_with_path(HIGH_CC_FUNCTION, path);
+        let violations = check_v2_cc_level(&parsed, &config);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("ceiling"));
+    }
+
+    #[test]
+    fn cc_level_messages_carry_no_numbers() {
+        let ceiling = parse_with_path(HIGH_CC_FUNCTION, "/project/src/pkg/logic/pure/check/primitive.py");
+        let gravity = parse_with_path(
+            "def foo():\n    return 1\n",
+            "/project/src/pkg/logic/pure/check/composed.py",
+        );
+        let mut violations = check_v2_cc_level(&ceiling, &v2_config(crate::structures::Level::L1));
+        violations.extend(check_v2_cc_level(&gravity, &v2_config(crate::structures::Level::L4)));
+        assert_eq!(violations.len(), 2);
+        assert!(violations[0].message.contains("foo") && violations[0].message.contains("ceiling violation"));
+        assert!(violations[1].message.contains("foo") && violations[1].message.contains("gravity violation"));
+        for viol in &violations {
+            assert!(!viol.message.contains(|c: char| c.is_ascii_digit()), "{}", viol.message);
+        }
     }
 }

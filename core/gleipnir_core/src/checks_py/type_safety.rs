@@ -194,19 +194,13 @@ pub fn check_union_member_count(source: &ParsedSource, config: &CheckConfig) -> 
             if simple_count > config.max_simple_union_members {
                 violations.push(violation(
                     line,
-                    format!(
-                        "union has too many simple types ({simple_count} simple, cap is {})",
-                        config.max_simple_union_members,
-                    ),
+                    "union has too many simple types".to_string(),
                 ));
             }
             if named_count > config.max_named_union_members {
                 violations.push(violation(
                     line,
-                    format!(
-                        "union has too many named types ({named_count} named, cap is {})",
-                        config.max_named_union_members,
-                    ),
+                    "union has too many named types".to_string(),
                 ));
             }
         }
@@ -358,17 +352,67 @@ fn is_type_alias_value(node: tree_sitter::Node, source: &[u8]) -> &'static str {
             }
         }
     }
-    if node.kind() == "binary_operator" {
-        let child_count = node.child_count();
-        for i in 0..child_count {
-            if let Some(child) = node.child(i) {
-                if !child.is_named() && child.kind() == "|" {
-                    return "Union";
-                }
-            }
-        }
+    if is_type_union(node, source) {
+        return "Union";
     }
     ""
+}
+
+/// Builtin type names that are type-shaped operands of a `|` alias.
+const ALIAS_BUILTIN_TYPE_NAMES: &[&str] = &[
+    "int", "str", "float", "bool", "bytes", "list", "dict", "set", "tuple", "frozenset",
+    "object", "type",
+];
+
+/// CapWords: starts uppercase and contains at least one lowercase letter.
+fn is_cap_words(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name.contains(|c: char| c.is_ascii_lowercase())
+}
+
+/// Check if a binary_operator node's operator is `|`.
+fn has_pipe_operator(node: tree_sitter::Node) -> bool {
+    let mut cursor = node.walk();
+    let found = node
+        .children(&mut cursor)
+        .any(|child| !child.is_named() && child.kind() == "|");
+    found
+}
+
+/// Check if an operand of `|` names a type: None, a builtin type, a subscript
+/// (`list[int]`), a CapWords name, an attribute ending in CapWords, or a
+/// nested `|` of such operands.
+fn is_type_shaped_operand(node: tree_sitter::Node, source: &[u8]) -> bool {
+    match node.kind() {
+        "none" | "subscript" => true,
+        "identifier" => {
+            let name = node_text(node, source);
+            name == "None" || ALIAS_BUILTIN_TYPE_NAMES.contains(&name) || is_cap_words(name)
+        }
+        "attribute" => node
+            .child_by_field_name("attribute")
+            .map(|segment| is_cap_words(node_text(segment, source)))
+            .unwrap_or(false),
+        "binary_operator" => is_type_union(node, source),
+        _ => false,
+    }
+}
+
+/// Check if a node is a `|` expression whose every operand is type-shaped.
+/// A `|` between values (sets, dicts, flags, constants) is an operation, not an alias.
+fn is_type_union(node: tree_sitter::Node, source: &[u8]) -> bool {
+    if node.kind() != "binary_operator" || !has_pipe_operator(node) {
+        return false;
+    }
+    let left = node.child_by_field_name("left");
+    let right = node.child_by_field_name("right");
+    match (left, right) {
+        (Some(left_operand), Some(right_operand)) => {
+            is_type_shaped_operand(left_operand, source)
+                && is_type_shaped_operand(right_operand, source)
+        }
+        _ => false,
+    }
 }
 
 pub fn check_no_implicit_type_aliases(
@@ -662,6 +706,20 @@ mod tests {
         assert!(violations[0].message.contains("simple types"));
     }
 
+    #[test]
+    fn union_member_count_messages_carry_no_numbers() {
+        let simple = parse("x: int | str | float | bool | bytes\n");
+        let named = parse(
+            "x: ModelA | ModelB | ModelC | ModelD | ModelE | ModelF | ModelG | ModelH | ModelI\n",
+        );
+        let mut violations = check_union_member_count(&simple, &default_config());
+        violations.extend(check_union_member_count(&named, &default_config()));
+        assert_eq!(violations.len(), 2);
+        for viol in &violations {
+            assert!(!viol.message.contains(|c: char| c.is_ascii_digit()), "{}", viol.message);
+        }
+    }
+
     // -- no_callable_params --
 
     #[test]
@@ -716,6 +774,39 @@ mod tests {
         let violations = check_no_implicit_type_aliases(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("Union"));
+    }
+
+    #[test]
+    fn union_alias_of_type_shaped_operands_caught() {
+        for code in [
+            "Maybe = Foo | None\n",
+            "Handler = list[int] | Mapping\n",
+            "Number = int | float | Decimal\n",
+            "Shape = shapes.Circle | shapes.Square\n",
+        ] {
+            let parsed = parse(code);
+            let violations = check_no_implicit_type_aliases(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+            assert!(violations[0].message.contains("Union"), "{code}");
+        }
+    }
+
+    #[test]
+    fn pipe_between_values_is_not_an_alias() {
+        for code in [
+            "ALL = FIRST_SET | SECOND_SET\n",
+            "merged = defaults | overrides\n",
+            "FLAGS = re.I | re.M\n",
+            "X = {1} | {2}\n",
+            "Combined = build() | Foo\n",
+            "Mask = Foo | 4\n",
+            "Mixed = int | str | SOME_CONSTANT\n",
+            "Total = Foo + Bar\n",
+        ] {
+            let parsed = parse(code);
+            let violations = check_no_implicit_type_aliases(&parsed, &default_config());
+            assert!(violations.is_empty(), "{code}");
+        }
     }
 
     #[test]

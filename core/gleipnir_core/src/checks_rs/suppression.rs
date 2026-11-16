@@ -5,6 +5,8 @@
 use crate::parsing::{find_nodes_by_type, node_line, node_text};
 use crate::structures::{CheckConfig, ParsedSource, Severity, Violation};
 
+use super::prohibited::path_is_test_file;
+
 fn violation(line: usize, message: String) -> Violation {
     Violation {
         line,
@@ -69,7 +71,7 @@ pub fn check_no_suppression_comments(
         }
 
         // Skip if in test context
-        if in_test_context_attr(node, source.source_bytes) {
+        if path_is_test_file(source.file_path) || in_test_context_attr(node, source.source_bytes) {
             continue;
         }
 

@@ -202,6 +202,7 @@ impl CheckConfig {
     pub fn for_v2(level: Level, zone: Zone, stats: &StatisticsToml) -> Self {
         let key = match level {
             Level::L0 => None,              // structure — no level-specific config
+            Level::Outside => None,         // unclassified — no level-specific config
             Level::L1 => Some("l1"),
             Level::L2 => Some("l2"),
             Level::L3 => Some("l3"),
@@ -209,10 +210,10 @@ impl CheckConfig {
             Level::L5 => Some("l5"),
             Level::L6 => Some("l6"),
             Level::L7 => Some("l7"),
-            Level::L8 | Level::Outside => Some("l8"),
+            Level::L8 => Some("l8"),
         };
         let v2_entry = key.and_then(|k| {
-            stats.v2.as_ref().and_then(|m| m.get(k))
+            stats.v2.as_ref().and_then(|m| m.levels.get(k))
         });
         let override_values = v2_entry.map(|e| &e.values);
         let mut config = Self::resolve(override_values, &stats.defaults);
@@ -220,7 +221,7 @@ impl CheckConfig {
             config.min_cc = entry.min_cc.unwrap_or(0);
             config.max_cc = entry.max_cc.unwrap_or(usize::MAX);
         }
-        // Apply zone-specific overrides (e.g. [v2.transform.simple])
+        // Apply zone-specific overrides (e.g. [v2.transform.l2])
         if let Some(level_key) = key {
             if let Some(zone_entry) = stats.v2_zone_override(zone, level_key) {
                 if let Some(cc) = zone_entry.max_cc {
@@ -284,20 +285,30 @@ pub struct StatisticsToml {
     #[serde(default)]
     pub v1: Option<std::collections::HashMap<String, StatisticValues>>,
     #[serde(default)]
-    pub v2: Option<std::collections::HashMap<String, V2LevelEntry>>,
+    pub v2: Option<V2Section>,
 }
 
 impl StatisticsToml {
     /// Look up a zone-specific override for a v2 level.
     /// Returns the zone override entry if `[v2.{zone}.{level}]` exists.
     pub fn v2_zone_override(&self, zone: Zone, level_key: &str) -> Option<&V2LevelEntry> {
-        let zone_key = match zone {
-            Zone::Transform => "transform",
+        let section = self.v2.as_ref()?;
+        let zone_levels = match zone {
+            Zone::Transform => section.transform.as_ref()?,
             _ => return None, // Only transform has overrides for now
         };
-        let compound_key = format!("{zone_key}.{level_key}");
-        self.v2.as_ref().and_then(|m| m.get(&compound_key))
+        zone_levels.get(level_key)
     }
+}
+
+/// The `[v2]` table: one entry per level (`[v2.l1]` ...), plus the
+/// transform zone's per-level overrides (`[v2.transform.l1]` ...).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct V2Section {
+    #[serde(default)]
+    pub transform: Option<std::collections::HashMap<String, V2LevelEntry>>,
+    #[serde(flatten)]
+    pub levels: std::collections::HashMap<String, V2LevelEntry>,
 }
 
 /// Numeric parameters. All fields optional — absence means "inherit from defaults".

@@ -212,7 +212,7 @@ canary = "LLM adds __all__ to control imports instead of organizing modules prop
 [no_nested_functions]
 detail = "Nested function definition. Extract to a standalone function at the appropriate level."
 signal = "Nested functions hide logic from reuse, testing, and discovery. A function inside another function cannot be imported, cannot be tested independently, and cannot be found by the LLM when searching for existing functionality."
-direction = "Extract the inner function to module level. Place it at the level matching its complexity — primitive if CC=1, simple if CC=2-3, etc. Pass any data it needs as explicit parameters."
+direction = "Extract the inner function to module level. Place it at the level matching its complexity — the lowest level its branching allows. Pass any data it needs as explicit parameters."
 canary = "LLM nests helper functions inside their callers to keep 'related code together', recreating class-like encapsulation through function nesting."
 
 [no_closures]
@@ -553,7 +553,7 @@ canary = "LLM imports freely across zones and levels, reconstructing OOP topolog
 
 [v2_cc_level]
 detail = "Function cyclomatic complexity does not match its level."
-signal = "Each level has a CC band: L1=1, L2=1-3, L3=1-2, L4=4-8, L5=1-2, L6=1-2, L7=1-5, L8=1-2. Functions must live at the lowest level their complexity allows. Below the band = gravity violation (too simple for this level). Above the band = ceiling violation (too complex for this level)."
+signal = "Each level has a CC band of its own. Functions must live at the lowest level their complexity allows. Below the band = gravity violation (too simple for this level). Above the band = ceiling violation (too complex for this level)."
 direction = "Gravity violation: your function is simpler than this level requires — move it to a lower level where simpler functions belong. This is good news — your function is clean enough to be a building block. Ceiling violation: your function has too many branches for this level — decompose it. Extract the branching paths into separate functions at this level, then compose them from the level above. Each extracted function should do one thing."
 canary = "LLM places functions at whatever level is convenient, ignoring the CC band that defines each level's purpose."
 

@@ -3,9 +3,7 @@
 //! Checks: function_length, param_count, nesting_depth, no_underscore_prefix,
 //! no_single_letter_names, no_numbered_suffixes, short_param_names.
 
-use regex::Regex;
-use std::sync::LazyLock;
-
+use crate::numbered_names;
 use crate::parsing::{find_nodes_by_type, node_line, node_text};
 use crate::structures::{CheckConfig, ParsedSource, Severity, Violation};
 
@@ -58,7 +56,7 @@ pub fn check_function_length(source: &ParsedSource, config: &CheckConfig) -> Vec
         let name = func_name(func_node, source.source_bytes);
 
         // Skip test functions
-        if in_test_context(func_node, source.source_bytes) {
+        if in_test_context(func_node, source) {
             continue;
         }
 
@@ -113,7 +111,7 @@ pub fn check_param_count(source: &ParsedSource, config: &CheckConfig) -> Vec<Vio
     for func_node in find_nodes_by_type(source.tree.root_node(), "function_item") {
         let name = func_name(func_node, source.source_bytes);
 
-        if in_test_context(func_node, source.source_bytes) {
+        if in_test_context(func_node, source) {
             continue;
         }
 
@@ -159,7 +157,7 @@ pub fn check_nesting_depth(source: &ParsedSource, config: &CheckConfig) -> Vec<V
     for func_node in find_nodes_by_type(source.tree.root_node(), "function_item") {
         let name = func_name(func_node, source.source_bytes);
 
-        if in_test_context(func_node, source.source_bytes) {
+        if in_test_context(func_node, source) {
             continue;
         }
 
@@ -252,7 +250,7 @@ pub fn check_no_underscore_prefix(
     for func_node in find_nodes_by_type(source.tree.root_node(), "function_item") {
         let name = func_name(func_node, source.source_bytes);
 
-        if in_test_context(func_node, source.source_bytes) {
+        if in_test_context(func_node, source) {
             continue;
         }
 
@@ -270,7 +268,7 @@ pub fn check_no_underscore_prefix(
 
     // Let bindings: only flag if used after the binding (count > 1 in enclosing block)
     for let_node in find_nodes_by_type(source.tree.root_node(), "let_declaration") {
-        if in_test_context(let_node, source.source_bytes) {
+        if in_test_context(let_node, source) {
             continue;
         }
         let pattern = match let_node.child_by_field_name("pattern") {
@@ -298,36 +296,13 @@ pub fn check_no_underscore_prefix(
 
 const SINGLE_LETTER_ALLOWLIST: &[&str] = &["i", "j", "k", "_", "f", "m"];
 
-static NUMBERED_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-z][a-z_]*\d+$").unwrap());
-
-static NUMBERED_ALLOWED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(concat!(
-        r"^(",
-        r"v\d+|",
-        r"utf_?\d+|",
-        r"sha\d+|md\d+|",
-        r"h\d+|",
-        r"ipv\d+|",
-        r"base\d+|",
-        r"int\d+|float\d+|u\d+|i\d+|f\d+|",
-        r"rgb\d*|",
-        r"level\d+|",
-        r"phase\d+|",
-        r"step_\d+|",
-        r"p\d{4,}",
-        r")$",
-    ))
-    .unwrap()
-});
-
 const SHORT_PARAM_ALLOWLIST: &[&str] = &[
     "id", "db", "ok", "io", "fn", "tx", "rx", "ui", "pk", "op",
     "fd", "ip", "cx", "f", "map", "py", "m", "sig", "key",
 ];
 
 fn is_bad_numbered_name(name: &str) -> bool {
-    NUMBERED_PATTERN.is_match(name) && !NUMBERED_ALLOWED.is_match(name)
+    numbered_names::rust_numbered().is_match(name) && !numbered_names::rust_allowed().is_match(name)
 }
 
 /// Collect let-binding names inside a function body.
@@ -366,7 +341,7 @@ pub fn check_no_single_letter_names(
     for func_node in find_nodes_by_type(source.tree.root_node(), "function_item") {
         let name = func_name(func_node, source.source_bytes);
 
-        if in_test_context(func_node, source.source_bytes) {
+        if in_test_context(func_node, source) {
             continue;
         }
 
@@ -406,7 +381,7 @@ pub fn check_no_numbered_suffixes(
     for func_node in find_nodes_by_type(source.tree.root_node(), "function_item") {
         let name = func_name(func_node, source.source_bytes);
 
-        if in_test_context(func_node, source.source_bytes) {
+        if in_test_context(func_node, source) {
             continue;
         }
 
@@ -442,7 +417,7 @@ pub fn check_short_param_names(source: &ParsedSource, config: &CheckConfig) -> V
     for func_node in find_nodes_by_type(source.tree.root_node(), "function_item") {
         let name = func_name(func_node, source.source_bytes);
 
-        if in_test_context(func_node, source.source_bytes) {
+        if in_test_context(func_node, source) {
             continue;
         }
 

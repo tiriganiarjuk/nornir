@@ -501,13 +501,13 @@ pub fn check_import_count(source: &ParsedSource, config: &CheckConfig) -> Vec<Vi
     if fn_imports > config.max_function_imports {
         violations.push(violation(
             1,
-            format!("{fn_imports} imports from functions/ — this module is coordinating, not computing"),
+            "too many imports from functions/ — this module is coordinating, not computing".to_string(),
         ));
     }
     if other_imports > config.max_other_imports {
         violations.push(violation(
             1,
-            format!("{other_imports} external/stdlib imports — module has too many external dependencies"),
+            "too many external/stdlib imports — module has too many external dependencies".to_string(),
         ));
     }
 
@@ -1105,6 +1105,22 @@ const ORCHESTRATE_ZONE_FILENAMES: &[&str] = &[
     "orchestrate.py", "dispatch.py", "__init__.py",
 ];
 
+/// The valid filenames and the name of a zone that has a filename convention.
+/// Structure zones have none.
+fn zone_filename_convention(zone: Zone) -> Option<(&'static [&'static str], &'static str)> {
+    match zone {
+        Zone::Pure => Some((LOGIC_ZONE_FILENAMES, "pure")),
+        Zone::Impure => Some((LOGIC_ZONE_FILENAMES, "impure")),
+        Zone::Transform => Some((LOGIC_ZONE_FILENAMES, "transform")),
+        Zone::Orchestrate => Some((ORCHESTRATE_ZONE_FILENAMES, "orchestrate")),
+        Zone::Structure
+        | Zone::StructureGen
+        | Zone::StructureModel
+        | Zone::StructureConfig
+        | Zone::StructureExample => None,
+    }
+}
+
 /// Detect files with unrecognized names inside v2 zones.
 ///
 /// Each zone has a fixed set of valid filenames. A file that doesn't match
@@ -1123,26 +1139,14 @@ pub fn check_unknown_file_in_zone(
 
     let filename = source.file_path.rsplit('/').next().unwrap_or("");
 
-    if classification.zone.is_structure() {
-        return Vec::new(); // structure has no filename convention
-    }
-    let valid_names = match classification.zone {
-        Zone::Pure | Zone::Impure | Zone::Transform => LOGIC_ZONE_FILENAMES,
-        Zone::Orchestrate => ORCHESTRATE_ZONE_FILENAMES,
-        _ => unreachable!(), // structure handled above
+    let (valid_names, zone_name) = match zone_filename_convention(classification.zone) {
+        Some(convention) => convention,
+        None => return Vec::new(), // structure has no filename convention
     };
 
     if valid_names.contains(&filename) {
         return Vec::new(); // __init__.py is valid and gets Outside legitimately
     }
-
-    let zone_name = match classification.zone {
-        Zone::Pure => "pure",
-        Zone::Impure => "impure",
-        Zone::Transform => "transform",
-        Zone::Orchestrate => "orchestrate",
-        _ => unreachable!(), // structure handled above
-    };
 
     let allowed = valid_names.iter()
         .filter(|f| **f != "__init__.py")
@@ -1539,6 +1543,21 @@ mod tests {
         let violations = check_import_count(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("external/stdlib"));
+    }
+
+    #[test]
+    fn import_count_messages_carry_no_numbers() {
+        let code = (0..5)
+            .map(|i| format!("from pkg.functions.pure.reshape_{i} import reshape_{i}\n"))
+            .chain((0..5).map(|i| format!("from stdlib_{i} import thing_{i}\n")))
+            .collect::<String>()
+            + "def coordinate(): pass\n";
+        let parsed = parse(&code);
+        let violations = check_import_count(&parsed, &default_config());
+        assert_eq!(violations.len(), 2);
+        for viol in &violations {
+            assert!(!viol.message.contains(|c: char| c.is_ascii_digit()), "{}", viol.message);
+        }
     }
 
     // -- structures_no_functions --

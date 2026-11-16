@@ -3,9 +3,7 @@
 //! Checks: function_length, param_count, nesting_depth, no_underscore_prefix,
 //! no_single_letter_names, no_numbered_suffixes, short_param_names.
 
-use regex::Regex;
-use std::sync::LazyLock;
-
+use crate::numbered_names;
 use crate::parsing::{find_nodes_by_type, node_line, node_text};
 use crate::structures::{CheckConfig, ParsedSource, Severity, Violation};
 
@@ -225,33 +223,14 @@ pub fn check_nesting_depth(source: &ParsedSource, config: &CheckConfig) -> Vec<V
 
 const SINGLE_LETTER_ALLOWLIST: &[&str] = &["i", "j", "k", "_", "e", "$"];
 
-static NUMBERED_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-z][a-zA-Z_]*\d+$").unwrap());
-
-static NUMBERED_ALLOWED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(concat!(
-        r"^(",
-        r"v\d+|",
-        r"utf\d+|",
-        r"sha\d+|md\d+|",
-        r"h\d+|",
-        r"base\d+|",
-        r"rgb\d*|",
-        r"level\d+|",
-        r"phase\d+|",
-        r"step\d+",
-        r")$",
-    ))
-    .unwrap()
-});
-
 const SHORT_PARAM_ALLOWLIST: &[&str] = &[
     "id", "db", "ok", "fn", "tx", "rx", "ui", "el", "ev",
     "cb", "on", "to",
 ];
 
 fn is_bad_numbered_name(name: &str) -> bool {
-    NUMBERED_PATTERN.is_match(name) && !NUMBERED_ALLOWED.is_match(name)
+    numbered_names::typescript_numbered().is_match(name)
+        && !numbered_names::typescript_allowed().is_match(name)
 }
 
 // -------------------------------------------------------------------------

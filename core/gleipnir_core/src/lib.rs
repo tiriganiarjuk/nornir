@@ -9,6 +9,7 @@ pub mod checks_svelte;
 pub mod checks_ts;
 pub mod classify;
 pub mod matrix;
+mod numbered_names;
 pub mod parsing;
 pub mod structures;
 
@@ -107,7 +108,7 @@ pub fn run_checks_v2(
         return run_checks(file_path, source);
     }
     let filename = file_path.rsplit('/').next().unwrap_or(file_path);
-    if filename.contains("test") {
+    if classify::is_test_filename(filename) {
         return run_checks(file_path, source);
     }
 
@@ -360,6 +361,23 @@ mod tests {
         assert!(names.contains(&"no_underscore_prefix"));
     }
 
+    #[test]
+    fn no_message_field_reveals_a_complexity_band() {
+        let entries: toml::Table =
+            toml::from_str(include_str!("../gleipnir_messages.toml")).expect("the messages parse");
+        assert!(!entries.is_empty(), "the messages file has entries");
+        let mut offenders = Vec::new();
+        for (check_name, entry) in &entries {
+            for field in ["detail", "signal", "direction"] {
+                let text = entry.get(field).and_then(|value| value.as_str()).unwrap_or("");
+                if text.contains("CC=") || text.contains("L1=") {
+                    offenders.push(format!("{check_name}.{field}"));
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "fields that reveal a band: {offenders:?}");
+    }
+
     // -- statistics loading --
 
     #[test]
@@ -393,6 +411,69 @@ mod tests {
         let config = CheckConfig::for_v2(Level::L4, Zone::Pure, &STATISTICS);
         assert_eq!(config.min_cc, 4);
         assert_eq!(config.max_cc, 8);
+    }
+
+    #[test]
+    fn for_v2_transform_overrides_cc_and_nesting_and_inherits_lines() {
+        // (level, [v2.transform.<level>] max_cc, max_nesting_depth) as written in the statistics.
+        let overridden = [(Level::L1, 1, 1), (Level::L2, 2, 2), (Level::L4, 4, 3)];
+        for (level, max_cc, max_nesting_depth) in overridden {
+            let base = CheckConfig::for_v2(level, Zone::Pure, &STATISTICS);
+            let transform = CheckConfig::for_v2(level, Zone::Transform, &STATISTICS);
+            assert_eq!(transform.max_cc, max_cc, "{level:?} max_cc");
+            assert_eq!(transform.max_nesting_depth, max_nesting_depth, "{level:?} max_nesting_depth");
+            assert_eq!(transform.max_function_lines, base.max_function_lines, "{level:?} lines inherit");
+            assert_eq!(transform.min_cc, base.min_cc, "{level:?} min_cc inherits");
+        }
+    }
+
+    #[test]
+    fn for_v2_pure_is_untouched_by_transform_overrides() {
+        // (level, [v2.<level>] max_cc, max_nesting_depth) as written in the statistics.
+        let base_values = [(Level::L1, 1, 2), (Level::L2, 3, 3), (Level::L4, 8, 4)];
+        for (level, max_cc, max_nesting_depth) in base_values {
+            let config = CheckConfig::for_v2(level, Zone::Pure, &STATISTICS);
+            assert_eq!(config.max_cc, max_cc, "{level:?} max_cc");
+            assert_eq!(config.max_nesting_depth, max_nesting_depth, "{level:?} max_nesting_depth");
+        }
+    }
+
+    #[test]
+    fn for_v2_transform_without_override_equals_base() {
+        let base = CheckConfig::for_v2(Level::L5, Zone::Pure, &STATISTICS);
+        let transform = CheckConfig::for_v2(Level::L5, Zone::Transform, &STATISTICS);
+        assert_eq!(transform.min_cc, base.min_cc);
+        assert_eq!(transform.max_cc, base.max_cc);
+        assert_eq!(transform.max_nesting_depth, base.max_nesting_depth);
+        assert_eq!(transform.max_function_lines, base.max_function_lines);
+        assert_eq!(transform.max_function_params, base.max_function_params);
+    }
+
+    #[test]
+    fn for_v2_outside_has_no_cc_band_and_l8_has_one() {
+        let outside = CheckConfig::for_v2(Level::Outside, Zone::Structure, &STATISTICS);
+        assert_eq!((outside.min_cc, outside.max_cc), (0, usize::MAX));
+        let entry_point = CheckConfig::for_v2(Level::L8, Zone::Orchestrate, &STATISTICS);
+        assert_eq!((entry_point.min_cc, entry_point.max_cc), (1, 2));
+    }
+
+    #[test]
+    fn run_checks_v2_routes_pytest_filename_to_v1_rules() {
+        let source = b"import tomllib\n";
+        let violations = run_checks_v2("/project/src/pkg/logic/impure/registry/test_simple.py", source)
+            .expect("the source parses");
+        assert!(violations.iter().all(|v| v.check_name != "no_direct_file_io"));
+    }
+
+    #[test]
+    fn run_checks_v2_keeps_file_merely_containing_test_under_v2_rules() {
+        let source = b"import tomllib\n";
+        let violations = run_checks_v2("/project/src/pkg/logic/impure/latest/simple.py", source)
+            .expect("the source parses");
+        assert!(violations.iter().any(|v| v.check_name == "no_direct_file_io"));
+        let violations = run_checks_v2("/project/src/pkg/logic/impure/registry/latest.py", source)
+            .expect("the source parses");
+        assert!(violations.iter().any(|v| v.check_name == "no_direct_file_io"));
     }
 
     #[test]

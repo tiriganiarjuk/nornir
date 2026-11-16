@@ -22,12 +22,24 @@ fn violation(line: usize, message: impl Into<String>) -> Violation {
 // Shared: test context detection
 // -------------------------------------------------------------------------
 
-/// Check if a node is inside a test function or a #[cfg(test)] module.
+/// True when the file lives under a `tests/` directory — a Rust integration-test
+/// file, where every function is test code whether or not it carries `#[test]`.
+pub(crate) fn path_is_test_file(file_path: &str) -> bool {
+    file_path.contains("/tests/")
+}
+
+/// Check if a node is test code: the file is an integration-test file, or the
+/// node is inside a test function or a #[cfg(test)] module.
 ///
 /// In tree-sitter-rust, attributes are previous siblings, not children:
 ///   attribute_item("#[test]")  <- sibling
 ///   function_item("fn ...")    <- the function
-pub(crate) fn in_test_context(node: tree_sitter::Node, source: &[u8]) -> bool {
+pub(crate) fn in_test_context(node: tree_sitter::Node, parsed: &ParsedSource) -> bool {
+    if path_is_test_file(parsed.file_path) {
+        return true;
+    }
+    let source = parsed.source_bytes;
+
     // Check the node itself first (when node IS a function_item/mod_item)
     match node.kind() {
         "function_item" => {
@@ -85,13 +97,6 @@ pub(crate) fn has_preceding_attribute(node: tree_sitter::Node, source: &[u8], ta
 // no_unwrap
 // -------------------------------------------------------------------------
 
-/// Check if a node is inside a static or const initializer.
-///
-/// `static FOO: LazyLock<T> = LazyLock::new(|| ...unwrap()...);`
-///
-/// Unwrap/expect in static initializers runs exactly once at first access
-/// (LazyLock) or at compile time (const). These are initialization panics
-/// on constant data, not runtime panics on variable data.
 /// Check if a closure node is passed to an initialization method (get_or_init, get_or_try_init).
 fn is_init_closure(closure: tree_sitter::Node, source: &[u8]) -> bool {
     let args = match closure.parent() {
@@ -114,6 +119,13 @@ fn is_init_closure(closure: tree_sitter::Node, source: &[u8]) -> bool {
     method == "get_or_init" || method == "get_or_try_init"
 }
 
+/// Check if a node is inside a static or const initializer.
+///
+/// `static FOO: LazyLock<T> = LazyLock::new(|| ...unwrap()...);`
+///
+/// Unwrap/expect in static initializers runs exactly once at first access
+/// (LazyLock) or at compile time (const). These are initialization panics
+/// on constant data, not runtime panics on variable data.
 fn in_initialization_context(node: tree_sitter::Node, source: &[u8]) -> bool {
     let mut current = node.parent();
     while let Some(ancestor) = current {
@@ -128,20 +140,53 @@ fn in_initialization_context(node: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
-/// Safe method names that start with "unwrap" but don't panic.
-const SAFE_UNWRAP_METHODS: &[&str] = &[
-    "unwrap_or",
-    "unwrap_or_default",
-    "unwrap_or_else",
+/// Macros that panic when reached.
+const PANICKING_MACROS: &[&str] = &[
+    "panic",
+    "unreachable",
+    "todo",
+    "unimplemented",
 ];
 
-/// Detect .unwrap() and .expect() calls in Rust source.
+/// Detect panic!(), unreachable!(), todo!() and unimplemented!() invocations,
+/// with the same exemptions as .unwrap() and .expect().
+fn find_panicking_macros(source: &ParsedSource) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    for node in find_nodes_by_type(source.tree.root_node(), "macro_invocation") {
+        let macro_node = match node.child_by_field_name("macro") {
+            Some(m) => m,
+            None => continue,
+        };
+
+        let macro_name = node_text(macro_node, source.source_bytes);
+        if !PANICKING_MACROS.contains(&macro_name) {
+            continue;
+        }
+        if in_test_context(node, source) {
+            continue;
+        }
+        if in_initialization_context(node, source.source_bytes) {
+            continue;
+        }
+
+        violations.push(violation(
+            node_line(node),
+            format!("{}!() panics when reached — return an error instead", macro_name),
+        ));
+    }
+
+    violations
+}
+
+/// Detect .unwrap() and .expect() calls and panicking macros in Rust source.
 ///
 /// Skips:
 /// - Test functions (#[test] or #[cfg(test)] modules)
+/// - Static, const and get_or_init initializers
 /// - unwrap_or, unwrap_or_default, unwrap_or_else (safe alternatives)
 pub fn check_no_unwrap(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
-    let mut violations = Vec::new();
+    let mut violations = find_panicking_macros(source);
 
     for node in find_nodes_by_type(source.tree.root_node(), "call_expression") {
         let function_node = match node.child_by_field_name("function") {
@@ -161,7 +206,7 @@ pub fn check_no_unwrap(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viol
         let method_name = node_text(field, source.source_bytes);
 
         if method_name == "unwrap" || method_name == "expect" {
-            if in_test_context(node, source.source_bytes) {
+            if in_test_context(node, source) {
                 continue;
             }
             if in_initialization_context(node, source.source_bytes) {
@@ -172,10 +217,6 @@ pub fn check_no_unwrap(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viol
                 node_line(node),
                 format!(".{}() panics on failure — propagate the error with ? instead", method_name),
             ));
-        }
-
-        if SAFE_UNWRAP_METHODS.contains(&method_name) {
-            continue;
         }
     }
 
@@ -189,6 +230,7 @@ pub fn check_no_unwrap(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viol
 /// Debug/print macro names that should not appear in production code.
 const FORBIDDEN_MACROS: &[&str] = &[
     "println",
+    "print",
     "dbg",
 ];
 
@@ -249,6 +291,15 @@ fn classify_rust_tier(file_path: &str) -> RustCrateTier {
         || file_path.contains("/senders/")
         || file_path.contains("/daemons/")
         || file_path.contains("/interceptors/")
+        || file_path.contains("/readers/")
+        || file_path.contains("/text_writers/")
+        || file_path.contains("/binary_readers/")
+        || file_path.contains("/binary_writers/")
+        || file_path.contains("/presence/")
+        || file_path.contains("/converters/")
+        || file_path.contains("/rewriters/")
+        || file_path.contains("/watchers/")
+        || file_path.contains("/dispatchers/")
     {
         RustCrateTier::Binary
     } else if file_path.contains("/gates/") {
@@ -274,13 +325,13 @@ fn in_run_function(node: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
-/// Detect println!() and dbg!() macro invocations.
+/// Detect println!(), print!() and dbg!() macro invocations.
 ///
 /// Skips:
 /// - Test contexts (#[test], #[cfg(test)])
-/// - println! inside fn main() (binary crates use stdout as their interface)
-/// - println! inside output functions (print_*, emit_*, display_*)
-/// - println! inside fn run() in binary crates (run() owns stdout interface)
+/// - println!/print! inside fn main() (binary crates use stdout as their interface)
+/// - println!/print! inside output functions (print_*, emit_*, display_*)
+/// - println!/print! inside fn run() in binary crates (run() owns stdout interface)
 ///
 /// dbg!() is always flagged — it is never intentional in production code.
 pub fn check_no_println(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
@@ -298,12 +349,12 @@ pub fn check_no_println(source: &ParsedSource, _config: &CheckConfig) -> Vec<Vio
         if !FORBIDDEN_MACROS.contains(&name) {
             continue;
         }
-        if in_test_context(node, source.source_bytes) {
+        if in_test_context(node, source) {
             continue;
         }
 
-        // println! gets contextual treatment; dbg! is always caught
-        if name == "println" {
+        // println! and print! get contextual treatment; dbg! is always caught
+        if name == "println" || name == "print" {
             if in_main_function(node, source.source_bytes) || in_output_function(node, source.source_bytes) {
                 continue;
             }
@@ -352,7 +403,7 @@ pub fn check_no_clone_spam(source: &ParsedSource, _config: &CheckConfig) -> Vec<
         if !is_method_call(function_node, "clone", source.source_bytes) {
             continue;
         }
-        if in_test_context(node, source.source_bytes) {
+        if in_test_context(node, source) {
             continue;
         }
         if clone_is_ownership_transfer(node, source.source_bytes) {
@@ -515,7 +566,12 @@ fn is_value_producing_position(block: tree_sitter::Node, target: tree_sitter::No
     }
 }
 
-/// Walk up the AST from a .clone() call to determine if it's an ownership transfer.
+/// The one ownership-context test, shared by `no_clone_spam` and `no_string_abuse`.
+///
+/// Receives the allocation call node — a `.clone()`, `.to_string()`, `.to_owned()`,
+/// `.into()` or `String::from` call — and walks up its AST parents to decide
+/// whether the value flows into a context that requires ownership (struct field,
+/// function argument, return, match arm). A change here changes both checks.
 fn clone_is_ownership_transfer(clone_call: tree_sitter::Node, source: &[u8]) -> bool {
     let mut current = clone_call.parent();
     while let Some(node) = current {
@@ -577,7 +633,7 @@ pub fn check_no_string_abuse(source: &ParsedSource, _config: &CheckConfig) -> Ve
     let mut violations = Vec::new();
 
     for node in find_nodes_by_type(source.tree.root_node(), "call_expression") {
-        if in_test_context(node, source.source_bytes) {
+        if in_test_context(node, source) {
             continue;
         }
         if let Some(msg) = detect_literal_method_abuse(node, source.source_bytes) {
@@ -664,7 +720,7 @@ pub fn check_no_pub_overuse(source: &ParsedSource, config: &CheckConfig) -> Vec<
                 continue;
             }
         }
-        if in_test_context(node, source.source_bytes) {
+        if in_test_context(node, source) {
             continue;
         }
 
@@ -709,6 +765,11 @@ mod tests {
     fn parse(code: &str) -> ParsedSource<'static> {
         let source: &'static [u8] = Box::leak(code.as_bytes().to_vec().into_boxed_slice());
         build_parsed_source_rust("/test/file.rs", source).unwrap()
+    }
+
+    fn parse_at(path: &'static str, code: &str) -> ParsedSource<'static> {
+        let source: &'static [u8] = Box::leak(code.as_bytes().to_vec().into_boxed_slice());
+        build_parsed_source_rust(path, source).unwrap()
     }
 
     fn default_config() -> CheckConfig {
@@ -910,7 +971,147 @@ mod tests {
         assert_eq!(violations.len(), 1, "unwrap in regular closure should still be caught");
     }
 
+    #[test]
+    fn unwrap_or_else_ok() {
+        let parsed = parse("fn main() { let x: Option<i32> = Some(1); x.unwrap_or_else(|| 0); }");
+        let violations = check_no_unwrap(&parsed, &default_config());
+        assert!(violations.is_empty());
+    }
+
+    // -- no_unwrap: panicking macros --
+
+    const PANICKING_INVOCATIONS: &[(&str, &str)] = &[
+        ("panic", r#"panic!("bad state")"#),
+        ("unreachable", "unreachable!()"),
+        ("todo", "todo!()"),
+        ("unimplemented", "unimplemented!()"),
+    ];
+
+    #[test]
+    fn panicking_macros_caught_in_plain_fn() {
+        for (name, invocation) in PANICKING_INVOCATIONS {
+            let parsed = parse(&format!("fn production_code() -> i32 {{ {invocation} }}"));
+            let violations = check_no_unwrap(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{name}! should be caught");
+            assert!(violations[0].message.contains(name));
+            assert!(!violations[0].message.contains(|c: char| c.is_ascii_digit()));
+        }
+    }
+
+    #[test]
+    fn panicking_macros_in_test_module_skipped() {
+        for (name, invocation) in PANICKING_INVOCATIONS {
+            let parsed = parse(&format!(
+                "#[cfg(test)]\nmod tests {{\n    fn helper() -> i32 {{ {invocation} }}\n}}\n"
+            ));
+            let violations = check_no_unwrap(&parsed, &default_config());
+            assert!(violations.is_empty(), "{name}! in #[cfg(test)] mod should be skipped");
+        }
+    }
+
+    #[test]
+    fn panicking_macros_in_test_function_skipped() {
+        for (name, invocation) in PANICKING_INVOCATIONS {
+            let parsed = parse(&format!("#[test]\nfn it_works() {{ {invocation} }}\n"));
+            let violations = check_no_unwrap(&parsed, &default_config());
+            assert!(violations.is_empty(), "{name}! in #[test] fn should be skipped");
+        }
+    }
+
+    #[test]
+    fn panic_in_static_lazy_lock_ok() {
+        let parsed = parse(
+            r#"
+            use std::sync::LazyLock;
+            static TABLE: LazyLock<Vec<i32>> = LazyLock::new(|| {
+                if SOURCE.is_empty() { panic!("embedded table must not be empty") }
+                Vec::new()
+            });
+            "#,
+        );
+        let violations = check_no_unwrap(&parsed, &default_config());
+        assert!(violations.is_empty(), "panic! in LazyLock static should be skipped");
+    }
+
+    #[test]
+    fn non_panicking_macro_ok() {
+        let parsed = parse(r#"fn production_code() -> String { format!("{}", 1) }"#);
+        let violations = check_no_unwrap(&parsed, &default_config());
+        assert!(violations.is_empty());
+    }
+
+    // -- test context by path --
+
+    const HELPER_WITH_UNWRAP: &str = "fn helper() -> i32 { let x: Option<i32> = Some(1); x.unwrap() }";
+
+    #[test]
+    fn tests_directory_segment_is_a_test_file() {
+        assert!(path_is_test_file("/x/readers/read_json/tests/cli_contract.rs"));
+        assert!(!path_is_test_file("/x/readers/read_json/src/lib.rs"));
+        assert!(!path_is_test_file("/x/tests_data/src/lib.rs"));
+    }
+
+    #[test]
+    fn unwrap_in_integration_test_helper_skipped() {
+        let parsed = parse_at("/x/readers/read_json/tests/cli_contract.rs", HELPER_WITH_UNWRAP);
+        let violations = check_no_unwrap(&parsed, &default_config());
+        assert!(violations.is_empty(), "helper fn in tests/ is test code");
+    }
+
+    #[test]
+    fn unwrap_in_src_file_caught() {
+        let parsed = parse_at("/x/readers/read_json/src/lib.rs", HELPER_WITH_UNWRAP);
+        let violations = check_no_unwrap(&parsed, &default_config());
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn unwrap_under_directory_merely_starting_with_tests_caught() {
+        let parsed = parse_at("/x/tests_data/src/lib.rs", HELPER_WITH_UNWRAP);
+        let violations = check_no_unwrap(&parsed, &default_config());
+        assert_eq!(violations.len(), 1);
+    }
+
     // -- no_println --
+
+    #[test]
+    fn print_caught() {
+        let parsed = parse(r#"fn process() { print!("hello"); }"#);
+        let violations = check_no_println(&parsed, &default_config());
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("print!"));
+    }
+
+    #[test]
+    fn print_in_fn_main_ok() {
+        let parsed = parse(r#"fn main() { print!("{}", 1); }"#);
+        let violations = check_no_println(&parsed, &default_config());
+        assert!(violations.is_empty(), "print inside fn main() should be allowed");
+    }
+
+    #[test]
+    fn print_in_run_function_binary_crate_ok() {
+        let parsed = parse_at(
+            "/nornir/cli/syn_cli/src/main.rs",
+            "fn run() -> Result<i32, String> { print!(\"output\"); Ok(0) }",
+        );
+        let violations = check_no_println(&parsed, &default_config());
+        assert!(violations.is_empty(), "print in fn run() of binary crate should be allowed");
+    }
+
+    #[test]
+    fn print_in_run_function_library_crate_caught() {
+        let parsed = parse_at("/nornir/core/text_core/src/lib.rs", "fn run() { print!(\"debug\"); }");
+        let violations = check_no_println(&parsed, &default_config());
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn eprint_and_eprintln_ok() {
+        let parsed = parse(r#"fn process() { eprint!("partial"); eprintln!("error"); }"#);
+        let violations = check_no_println(&parsed, &default_config());
+        assert!(violations.is_empty(), "eprint!/eprintln! are stderr output, not debug prints");
+    }
 
     #[test]
     fn println_caught() {
@@ -1677,6 +1878,39 @@ mod tests {
         assert_eq!(classify_rust_tier("/nornir/writers/append_raw_jsonl/src/main.rs"), RustCrateTier::Binary);
         assert_eq!(classify_rust_tier("/nornir/gates/gate_structure_in/src/lib.rs"), RustCrateTier::Gate);
         assert_eq!(classify_rust_tier("/other/project/src/main.rs"), RustCrateTier::Unknown);
+    }
+
+    #[test]
+    fn newly_listed_binary_directories_are_binary_tier() {
+        let directories = [
+            "readers", "text_writers", "binary_readers", "binary_writers", "presence",
+            "converters", "rewriters", "watchers", "dispatchers",
+        ];
+        for directory in directories {
+            let path = format!("/nornir/{directory}/some_tool/src/main.rs");
+            assert_eq!(classify_rust_tier(&path), RustCrateTier::Binary, "{directory}");
+        }
+    }
+
+    /// The nornir workspace manifest, so the tier map is checked against the
+    /// directories that exist rather than against a second hand-kept list.
+    const WORKSPACE_MANIFEST: &str = include_str!("../../../../Cargo.toml");
+
+    #[test]
+    fn every_workspace_member_has_a_tier() {
+        let manifest: toml::Value = toml::from_str(WORKSPACE_MANIFEST).unwrap();
+        let members = manifest["workspace"]["members"].as_array().unwrap();
+        assert!(!members.is_empty(), "the workspace lists its members");
+
+        let mut without_tier = Vec::new();
+        for member in members {
+            let member_path = member.as_str().unwrap();
+            let file_path = format!("/x/{member_path}/src/lib.rs");
+            if classify_rust_tier(&file_path) == RustCrateTier::Unknown {
+                without_tier.push(member_path);
+            }
+        }
+        assert!(without_tier.is_empty(), "workspace members with no tier: {without_tier:?}");
     }
 
     // -- let-mut clone detection (Change 3) --

@@ -9,7 +9,7 @@ use crate::structures::{FileKind, Level, V2Classification, Zone};
 ///
 /// Decision tree (order matters):
 /// 1. PEP 723 shebang → Script
-/// 2. "test" in filename → Test
+/// 2. Test filename (`is_test_filename`) → Test
 /// 3. Zone path → DataStructure / UnsafeImpure / UnsafePure / ImpureFunction / PureFunction
 /// 4. Fallback → Outside
 pub fn classify_file(file_path: &str, first_line: &str) -> FileKind {
@@ -18,7 +18,7 @@ pub fn classify_file(file_path: &str, first_line: &str) -> FileKind {
     }
 
     let filename = file_path.rsplit('/').next().unwrap_or(file_path);
-    if filename.contains("test") {
+    if is_test_filename(filename) {
         return FileKind::Test;
     }
 
@@ -39,6 +39,14 @@ pub fn classify_file(file_path: &str, first_line: &str) -> FileKind {
     }
 
     FileKind::Outside
+}
+
+/// True when a filename follows a pytest naming convention:
+/// `conftest.py`, `test_<name>.py`, or `<name>_test.py`.
+pub(crate) fn is_test_filename(filename: &str) -> bool {
+    filename == "conftest.py"
+        || (filename.starts_with("test_") && filename.ends_with(".py"))
+        || filename.ends_with("_test.py")
 }
 
 // -------------------------------------------------------------------------
@@ -274,6 +282,28 @@ mod tests {
                 "from pydantic import BaseModel",
             ),
             FileKind::Test,
+        );
+    }
+
+    #[test]
+    fn pytest_filenames_are_test_files() {
+        for filename in ["test_foo.py", "foo_test.py", "conftest.py"] {
+            assert!(is_test_filename(filename), "{filename} is a test file");
+        }
+    }
+
+    #[test]
+    fn filenames_merely_containing_test_are_not_test_files() {
+        for filename in ["latest.py", "contest.py", "attestation.py", "testing_tools.py", "test.py"] {
+            assert!(!is_test_filename(filename), "{filename} is not a test file");
+        }
+    }
+
+    #[test]
+    fn file_merely_containing_test_in_name_classified_by_path() {
+        assert_eq!(
+            classify_file("/project/src/pkg/functions/pure/latest.py", "def newest():"),
+            FileKind::PureFunction,
         );
     }
 
