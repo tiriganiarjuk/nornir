@@ -1,0 +1,12 @@
+[package]
+name = "hook_decision_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "hook_decision_core"
+crate-type = ["rlib"]
+
+[dependencies]
+toml = { workspace = true }
+regex = { workspace = true }

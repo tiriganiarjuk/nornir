@@ -50,7 +50,7 @@ fn classify_file(path: &Path) -> FileKind {
 }
 
 fn extract_file_path(input: &PostHookInput) -> Option<PathBuf> {
-    let path = Path::new(input.target_path()?);
+    let path = Path::new(input.file_path()?);
     if path.exists() {
         Some(path.to_path_buf())
     } else {
@@ -255,9 +255,7 @@ mod tests {
     fn extract_file_path_no_field() {
         let input = PostHookInput {
             tool_name: Some("Write".to_string()),
-            tool_input: serde_json::json!({}),
-            tool_result: None,
-        };
+            tool_input: serde_json::json!({}),        };
         assert!(extract_file_path(&input).is_none());
     }
 
@@ -265,9 +263,7 @@ mod tests {
     fn extract_file_path_null_value() {
         let input = PostHookInput {
             tool_name: Some("Write".to_string()),
-            tool_input: serde_json::json!({ "file_path": null }),
-            tool_result: None,
-        };
+            tool_input: serde_json::json!({ "file_path": null }),        };
         assert!(extract_file_path(&input).is_none());
     }
 
@@ -275,9 +271,7 @@ mod tests {
     fn extract_file_path_numeric_value() {
         let input = PostHookInput {
             tool_name: Some("Write".to_string()),
-            tool_input: serde_json::json!({ "file_path": 42 }),
-            tool_result: None,
-        };
+            tool_input: serde_json::json!({ "file_path": 42 }),        };
         assert!(extract_file_path(&input).is_none());
     }
 

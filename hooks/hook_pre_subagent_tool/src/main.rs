@@ -1,348 +1,210 @@
-//! PreToolUse hook: validate file tool paths against per-tool allowed prefixes.
+//! PreToolUse hook: the file-tool sandbox of a subagent.
 //!
 //! Usage (in agent frontmatter):
 //!     hook_pre_subagent_tool Read=/schemas/,/docs/ Grep=/schemas/ Write=/output/
 //!
-//! Each CLI arg is Tool=path1,path2 — the tool name and its allowed path prefixes.
-//! Reads tool_name from stdin JSON, looks up its allowed prefixes, validates
-//! the target path from tool_input.file_path or tool_input.path.
+//! Each argument is Tool=directory1,directory2: a tool the subagent may use,
+//! and the directories it may use it in. A call is allowed only when its tool
+//! is named and every path it reaches lies under one of that tool's
+//! directories. A tool not named, a call that reaches no path, and a path
+//! outside are all denied.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use hook_io::{HookDecision, HookInput};
+use hook_decision_core::paths::{is_under, normalize};
+use hook_decision_core::{deny_because_undecided, HookDecision};
+use hook_io::{HookInput, WhenUndecided};
+
+const HOOK: &str = "hook_pre_subagent_tool";
 
 fn main() -> ExitCode {
-    hook_io::run_hook(decide)
+    hook_io::run_pre_hook(WhenUndecided::Deny, decide)
 }
 
-fn parse_tool_paths() -> HashMap<String, Vec<String>> {
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    for arg in std::env::args().skip(1) {
-        if let Some((tool, paths_str)) = arg.split_once('=') {
-            let paths: Vec<String> = paths_str
-                .split(',')
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .collect();
-            map.entry(tool.to_string()).or_default().extend(paths);
-        }
+/// Tool → the directories it may be used in, normalised.
+type ToolGrants = BTreeMap<String, Vec<String>>;
+
+/// The command line, read strictly: every argument is `Tool=/dir[,/dir]`, and
+/// at least one is given.
+fn read_grants(args: &[String]) -> Result<ToolGrants, String> {
+    if args.is_empty() {
+        return Err("no tool is granted any directory".to_string());
     }
-    map
+    let mut grants = ToolGrants::new();
+    for arg in args {
+        let (tool, directories) = tool_grant(arg)?;
+        grants.entry(tool).or_default().extend(directories);
+    }
+    Ok(grants)
+}
+
+fn tool_grant(argument: &str) -> Result<(String, Vec<String>), String> {
+    let malformed = || format!("{argument} is not Tool=/directory[,/directory]");
+    let (tool, written) = argument.split_once('=').ok_or_else(malformed)?;
+    let directories: Vec<String> = written.split(',').map(normalize).collect();
+    if tool.is_empty() || directories.iter().any(|directory| !directory.starts_with('/')) {
+        return Err(malformed());
+    }
+    Ok((tool.to_string(), directories))
 }
 
 fn decide(input: &HookInput) -> HookDecision {
-    let tool_map = parse_tool_paths();
-
-    if tool_map.is_empty() {
-        return HookDecision::Deny {
-            category: "config".into(),
-            event: "no tool path mappings configured".into(),
-            reason: "No tool path mappings configured.".into(),
-        };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match read_grants(&args) {
+        Ok(grants) => decide_with_grants(input, &grants),
+        Err(cause) => deny_because_undecided(HOOK, &cause),
     }
-
-    decide_with_map(input, &tool_map)
 }
 
-/// Core decision logic, separated from CLI arg parsing for testability.
-fn decide_with_map(
-    input: &HookInput,
-    tool_map: &HashMap<String, Vec<String>>,
-) -> HookDecision {
-    let tool_name = match &input.tool_name {
-        Some(name) => name.as_str(),
-        None => return HookDecision::Allow,
-    };
-
-    let allowed = match tool_map.get(tool_name) {
-        Some(paths) => paths,
-        None => {
-            return HookDecision::Deny {
-                category: "path".into(),
-                event: format!("tool '{}' has no path grants", tool_name),
-                reason: format!("Tool '{}' is not in the allowed tool list.", tool_name),
-            };
-        }
-    };
-
-    let target = match input.target_path() {
-        Some(t) => t,
-        None => return HookDecision::Allow, // Grep/Glob with no path = cwd
-    };
-
-    // Reject path traversal before prefix check — ".." can escape any prefix
-    if target.contains("..") {
+fn decide_with_grants(input: &HookInput, grants: &ToolGrants) -> HookDecision {
+    let tool = input.tool_name.as_str();
+    let Some(allowed) = grants.get(tool) else {
         return HookDecision::Deny {
             category: "path".into(),
-            event: format!("blocked {} path traversal attempt", tool_name),
-            reason: format!(
-                "'{}' contains path traversal (..) which is not allowed.\n\
-                 Use absolute paths without '..' components.",
-                target
-            ),
+            event: format!("tool '{tool}' has no path grants"),
+            reason: format!("Tool '{tool}' is not in the allowed tool list."),
+        };
+    };
+
+    let targets = input.targets();
+    if targets.is_empty() {
+        return HookDecision::Deny {
+            category: "path".into(),
+            event: format!("{tool} call names no path"),
+            reason: format!("This {tool} call names no path. Name the path explicitly, under:\n{}", listed(allowed)),
         };
     }
 
-    for prefix in allowed {
-        if target.starts_with(prefix.as_str()) {
-            return HookDecision::Allow;
-        }
+    match targets.iter().find(|target| !allowed.iter().any(|directory| is_under(target, directory))) {
+        None => HookDecision::Allow,
+        Some(outside) => HookDecision::Deny {
+            category: "path".into(),
+            event: format!("blocked {tool} access to '{outside}'"),
+            reason: format!(
+                "'{outside}' is outside {tool}'s allowed paths.\nYou may only access:\n{}\n\
+                 Adjust your path to use one of these locations.",
+                listed(allowed)
+            ),
+        },
     }
+}
 
-    let paths_list: Vec<String> = allowed.iter().map(|p| format!("  {}", p)).collect();
-    HookDecision::Deny {
-        category: "path".into(),
-        event: format!("blocked {} access to '{}'", tool_name, target),
-        reason: format!(
-            "'{}' is outside {}'s allowed paths.\nYou may only access:\n{}\n\
-             Adjust your path to use one of these locations.",
-            target,
-            tool_name,
-            paths_list.join("\n")
-        ),
-    }
+fn listed(directories: &[String]) -> String {
+    directories.iter().map(|directory| format!("  {directory}")).collect::<Vec<_>>().join("\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_tool_map() -> HashMap<String, Vec<String>> {
-        let mut map = HashMap::new();
-        map.insert(
-            "Read".to_string(),
-            vec!["/schemas/".to_string(), "/docs/".to_string()],
-        );
-        map.insert(
-            "Write".to_string(),
-            vec!["/output/".to_string()],
-        );
-        map.insert(
-            "Grep".to_string(),
-            vec!["/schemas/".to_string()],
-        );
-        map
+    fn grants() -> ToolGrants {
+        let args: Vec<String> = ["Read=/schemas/,/docs/", "Write=/output/", "Grep=/schemas/", "Glob=/schemas"]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+        read_grants(&args).unwrap()
     }
 
-    fn make_input(tool: &str, file_path: &str) -> HookInput {
-        HookInput {
-            tool_name: Some(tool.to_string()),
-            tool_input: serde_json::json!({ "file_path": file_path }),
-        }
+    fn call(tool: &str, cwd: Option<&str>, tool_input: serde_json::Value) -> HookInput {
+        HookInput { tool_name: tool.to_string(), tool_input, cwd: cwd.map(str::to_string) }
     }
 
-    fn make_input_with_path(tool: &str, path: &str) -> HookInput {
-        HookInput {
-            tool_name: Some(tool.to_string()),
-            tool_input: serde_json::json!({ "path": path }),
-        }
+    fn file_call(tool: &str, path: &str) -> HookInput {
+        call(tool, Some("/work"), serde_json::json!({ "file_path": path }))
     }
 
-    fn make_input_no_path(tool: &str) -> HookInput {
-        HookInput {
-            tool_name: Some(tool.to_string()),
-            tool_input: serde_json::json!({}),
-        }
+    fn allowed(input: &HookInput) -> bool {
+        matches!(decide_with_grants(input, &grants()), HookDecision::Allow)
     }
 
-    fn make_input_no_tool() -> HookInput {
-        HookInput {
-            tool_name: None,
-            tool_input: serde_json::json!({}),
-        }
-    }
-
-    // ── Path under allowed prefix → Allow ─────────────────────────
+    // ── read_grants ──────────────────────────────────────────────
 
     #[test]
-    fn read_under_schemas_allowed() {
-        let map = make_tool_map();
-        let input = make_input("Read", "/schemas/agent.yaml");
-        match decide_with_map(&input, &map) {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Read under /schemas/ must Allow"),
-        }
+    fn grants_are_read_and_merged() {
+        let args = vec!["Read=/a/".to_string(), "Read=/b/../c".to_string()];
+        assert_eq!(read_grants(&args).unwrap().get("Read"), Some(&vec!["/a/".to_string(), "/c".to_string()]));
     }
 
     #[test]
-    fn read_under_docs_allowed() {
-        let map = make_tool_map();
-        let input = make_input("Read", "/docs/readme.md");
-        match decide_with_map(&input, &map) {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Read under /docs/ must Allow"),
-        }
+    fn no_grants_is_refused() {
+        assert!(read_grants(&[]).is_err());
     }
 
     #[test]
-    fn write_under_output_allowed() {
-        let map = make_tool_map();
-        let input = make_input("Write", "/output/result.json");
-        match decide_with_map(&input, &map) {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Write under /output/ must Allow"),
+    fn a_malformed_grant_is_refused() {
+        for arg in ["Read", "Read=", "=/a", "Read=relative", "Read=/a,,/b", "Read=/a,b"] {
+            assert!(read_grants(&[arg.to_string()]).is_err(), "{arg}");
         }
     }
 
-    // ── Path outside allowed prefix → Deny ────────────────────────
+    // ── Allowed ──────────────────────────────────────────────────
 
     #[test]
-    fn read_outside_prefix_denied() {
-        let map = make_tool_map();
-        let input = make_input("Read", "/etc/passwd");
-        match decide_with_map(&input, &map) {
-            HookDecision::Deny { category, reason, .. } => {
-                assert_eq!(category, "path");
-                assert!(reason.contains("/etc/passwd"));
-                assert!(reason.contains("Read"));
-            }
-            _ => panic!("Read outside allowed paths must Deny"),
-        }
+    fn a_path_under_a_granted_directory_is_allowed() {
+        assert!(allowed(&file_call("Read", "/schemas/a.json")));
+        assert!(allowed(&file_call("Read", "/docs/guide/b.md")));
+        assert!(allowed(&file_call("Write", "/output/x.json")));
+        assert!(allowed(&file_call("Read", "/schemas/sub/../a.json")));
     }
 
     #[test]
-    fn write_outside_prefix_denied() {
-        let map = make_tool_map();
-        let input = make_input("Write", "/schemas/hack.yaml");
-        match decide_with_map(&input, &map) {
-            HookDecision::Deny { category, .. } => {
-                assert_eq!(category, "path");
-            }
-            _ => panic!("Write to /schemas/ when only /output/ allowed must Deny"),
-        }
+    fn a_search_inside_a_granted_directory_is_allowed() {
+        assert!(allowed(&call("Grep", Some("/work"), serde_json::json!({ "pattern": "x", "path": "/schemas/" }))));
+        assert!(allowed(&call("Glob", Some("/work"), serde_json::json!({ "pattern": "**/*.json", "path": "/schemas" }))));
+        assert!(allowed(&call("Grep", Some("/schemas/sub"), serde_json::json!({ "pattern": "x" }))));
     }
 
-    // ── Tool not in allowed list → Deny ───────────────────────────
+    // ── Denied ───────────────────────────────────────────────────
 
     #[test]
-    fn unknown_tool_denied() {
-        let map = make_tool_map();
-        let input = make_input("Edit", "/schemas/file.yaml");
-        match decide_with_map(&input, &map) {
-            HookDecision::Deny { category, reason, .. } => {
-                assert_eq!(category, "path");
-                assert!(reason.contains("Edit"));
-                assert!(reason.contains("not in the allowed tool list"));
-            }
-            _ => panic!("Unknown tool must Deny"),
-        }
-    }
-
-    // ── No tool name → Allow ──────────────────────────────────────
-
-    #[test]
-    fn no_tool_name_allowed() {
-        let map = make_tool_map();
-        let input = make_input_no_tool();
-        match decide_with_map(&input, &map) {
-            HookDecision::Allow => {} // correct
-            _ => panic!("No tool name must Allow"),
-        }
-    }
-
-    // ── No path in input → Allow ──────────────────────────────────
-
-    #[test]
-    fn no_path_in_input_allowed() {
-        let map = make_tool_map();
-        let input = make_input_no_path("Grep");
-        match decide_with_map(&input, &map) {
-            HookDecision::Allow => {} // correct — Grep/Glob with no path = cwd
-            _ => panic!("No path in input must Allow"),
-        }
-    }
-
-    // ── "path" field (Grep/Glob) works ────────────────────────────
-
-    #[test]
-    fn grep_with_path_field_under_prefix_allowed() {
-        let map = make_tool_map();
-        let input = make_input_with_path("Grep", "/schemas/nested/file.yaml");
-        match decide_with_map(&input, &map) {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Grep with path under /schemas/ must Allow"),
-        }
+    fn a_tool_without_a_grant_is_denied() {
+        assert!(!allowed(&file_call("Edit", "/schemas/a.json")));
     }
 
     #[test]
-    fn grep_with_path_field_outside_prefix_denied() {
-        let map = make_tool_map();
-        let input = make_input_with_path("Grep", "/etc/shadow");
-        match decide_with_map(&input, &map) {
-            HookDecision::Deny { .. } => {} // correct
-            _ => panic!("Grep with path outside prefix must Deny"),
-        }
-    }
-
-    // ── Empty tool map → Deny ─────────────────────────────────────
-    // (This is tested via the `decide()` function path, but we can test
-    // the map-based logic with an empty map too)
-
-    #[test]
-    fn empty_map_still_denies_unknown_tools() {
-        let map = HashMap::new();
-        let input = make_input("Read", "/schemas/file.yaml");
-        match decide_with_map(&input, &map) {
-            HookDecision::Deny { .. } => {} // correct
-            _ => panic!("Empty map must Deny tools"),
-        }
-    }
-
-    // ── Multiple prefixes for same tool ───────────────────────────
-
-    #[test]
-    fn multiple_prefixes_second_matches() {
-        let map = make_tool_map();
-        let input = make_input("Read", "/docs/guide.md");
-        match decide_with_map(&input, &map) {
-            HookDecision::Allow => {} // correct — /docs/ is second prefix for Read
-            _ => panic!("Second prefix for Read must also Allow"),
-        }
-    }
-
-    // ── Path traversal attack ─────────────────────────────────────
-
-    #[test]
-    fn path_traversal_denied() {
-        let map = make_tool_map();
-        let input = make_input("Read", "/schemas/../../etc/passwd");
-        match decide_with_map(&input, &map) {
-            HookDecision::Deny { category, .. } => {
-                assert_eq!(category, "path");
-            }
-            _ => panic!("Path traversal with .. must be denied"),
-        }
+    fn a_tool_is_held_to_its_own_directories() {
+        assert!(!allowed(&file_call("Write", "/schemas/a.json")));
+        assert!(!allowed(&file_call("Read", "/output/x.json")));
     }
 
     #[test]
-    fn path_traversal_mid_path_denied() {
-        let map = make_tool_map();
-        let input = make_input("Read", "/schemas/foo/../../../etc/shadow");
-        match decide_with_map(&input, &map) {
-            HookDecision::Deny { category, .. } => {
-                assert_eq!(category, "path");
-            }
-            _ => panic!("Path traversal with .. must be denied"),
-        }
+    fn a_path_outside_is_denied() {
+        assert!(!allowed(&file_call("Read", "/etc/passwd")));
+        assert!(!allowed(&file_call("Read", "/schemas_private/a.json")));
     }
 
-    // ── file_path takes precedence over path ──────────────────────
+    #[test]
+    fn a_path_that_climbs_out_is_denied() {
+        assert!(!allowed(&file_call("Read", "/schemas/../etc/passwd")));
+        assert!(!allowed(&file_call("Read", "/schemas/a/../../etc/passwd")));
+    }
 
     #[test]
-    fn file_path_field_preferred_over_path() {
-        let input = HookInput {
-            tool_name: Some("Read".to_string()),
-            tool_input: serde_json::json!({
-                "file_path": "/schemas/a.yaml",
-                "path": "/etc/shadow"
-            }),
-        };
-        let map = make_tool_map();
-        // file_path is checked first, so /schemas/a.yaml should match
-        match decide_with_map(&input, &map) {
-            HookDecision::Allow => {} // correct — file_path matched first
-            _ => panic!("file_path must take precedence over path"),
-        }
+    fn a_relative_path_is_judged_from_the_working_directory() {
+        assert!(!allowed(&file_call("Read", "schemas/a.json")));
+        assert!(allowed(&call("Read", Some("/schemas"), serde_json::json!({ "file_path": "a.json" }))));
+    }
+
+    #[test]
+    fn a_call_that_names_no_path_is_denied() {
+        assert!(!allowed(&call("Read", Some("/schemas"), serde_json::json!({}))));
+        assert!(!allowed(&call("Read", Some("/schemas"), serde_json::json!({ "file_path": null }))));
+    }
+
+    #[test]
+    fn a_search_without_a_path_is_judged_by_where_it_runs() {
+        assert!(!allowed(&call("Grep", Some("/home/user"), serde_json::json!({ "pattern": "x" }))));
+        assert!(!allowed(&call("Grep", None, serde_json::json!({ "pattern": "x" }))));
+    }
+
+    #[test]
+    fn a_search_filter_that_reaches_outside_is_denied() {
+        let glob = call("Glob", Some("/work"), serde_json::json!({ "pattern": "/etc/*" }));
+        assert!(!allowed(&glob));
+        let climbing = call("Glob", Some("/work"), serde_json::json!({ "path": "/schemas", "pattern": "../etc/*" }));
+        assert!(!allowed(&climbing));
+        let grep = call("Grep", Some("/work"), serde_json::json!({ "pattern": "x", "path": "/schemas/", "glob": "../../etc/*" }));
+        assert!(!allowed(&grep));
     }
 }

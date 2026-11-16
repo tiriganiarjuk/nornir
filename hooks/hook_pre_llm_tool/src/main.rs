@@ -1,604 +1,327 @@
-//! PreToolUse hook: LLM behavioral detection for file access tools.
+//! PreToolUse hook: what the file tools of an interactive session may reach.
 //!
-//! Detects probing (reading security infrastructure) and gaming (circumventing
-//! constraints) in interactive LLM sessions. Not for subagents — those use
-//! hook_pre_subagent_tool.
+//! Every path a call reaches is matched against the protected path list
+//! (`hook_io`'s `protected_paths.toml`): the floor is always blocked, and
+//! probing — reading the security infrastructure — is met at the severity given
+//! on the command line. Subagents have their own hook, hook_pre_subagent_tool.
 //!
 //! Usage (in ~/.claude/settings.json):
-//!     hook_pre_llm_tool --gaming warn --probing block
+//!     hook_pre_llm_tool --probing warn
 //!
-//! Env vars (set by cc_launch at launch, persona-bound; setting them
-//! in-session is itself detected as subversion by hook_pre_llm_bash):
-//!     HOOK_LLM_ALLOW_PATHS=/path1:/path2  — exempt path PREFIXES from probing/gaming
-//!     HOOK_LLM_ALLOW_PATTERNS=/pat1/:/pat2/ — exempt path SUBSTRINGS from probing/gaming
-//!                                              (e.g. /.gleipnir/ anywhere, for Tyr)
-//! Neither exempts the floor layer.
+//! Env var (set by cc_launch at launch, persona-bound; setting it in-session
+//! is itself detected as subversion by hook_pre_llm_bash):
+//!     HOOK_LLM_ALLOW_PATHS=/path1:/path2  — directories exempt from probing
+//! Nothing exempts the floor.
 
 use std::process::ExitCode;
 
-use hook_io::rules::{parse_rule_array, parse_severity, parse_toml_table, RawRule, Severity};
-use hook_io::{DecisionInput, HookDecision, HookInput};
+use hook_decision_core::flags::parse_category_flags;
+use hook_decision_core::paths::{is_under, normalize};
+use hook_decision_core::rules::{decide_category, first_match, path_subject, rules_of, RuleSet};
+use hook_decision_core::{ask_because_undecided, make_decision, DecisionInput, HookDecision, Severity};
+use hook_io::{HookInput, WhenUndecided, FLOOR, PROBING};
 
-static RULES_TOML: &str = include_str!("../rules.toml");
+const HOOK: &str = "hook_pre_llm_tool";
 
 fn main() -> ExitCode {
-    hook_io::run_hook(decide)
-}
-
-// ── Rules ──────────────────────────────────────────────────────────
-
-struct Rules {
-    floor: Vec<RawRule>,
-    probing: Vec<RawRule>,
-    gaming: Vec<RawRule>,
-}
-
-fn parse_rules(toml_str: &str) -> Result<Rules, String> {
-    let table = parse_toml_table(toml_str)?;
-    Ok(Rules {
-        floor: parse_rule_array(&table, "floor"),
-        probing: parse_rule_array(&table, "probing"),
-        gaming: parse_rule_array(&table, "gaming"),
-    })
+    hook_io::run_pre_hook(WhenUndecided::AskUser, decide)
 }
 
 // ── Config ─────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 struct Config {
+    /// The severity of probing; `None` when the flag is not given.
     probing: Option<Severity>,
-    gaming: Option<Severity>,
+    /// Directories exempt from probing, normalised.
     allow_paths: Vec<String>,
-    allow_patterns: Vec<String>,
 }
 
-fn parse_config() -> Config {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut probing = None;
-    let mut gaming = None;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--probing" if i + 1 < args.len() => {
-                probing = parse_severity(&args[i + 1]);
-                i += 2;
-            }
-            "--gaming" if i + 1 < args.len() => {
-                gaming = parse_severity(&args[i + 1]);
-                i += 2;
-            }
-            _ => i += 1,
-        }
-    }
-
-    let allow_paths = split_env_list("HOOK_LLM_ALLOW_PATHS");
-    let allow_patterns = split_env_list("HOOK_LLM_ALLOW_PATTERNS");
-
-    Config {
-        probing,
-        gaming,
-        allow_paths,
-        allow_patterns,
-    }
-}
-
-fn split_env_list(name: &str) -> Vec<String> {
-    std::env::var(name)
-        .unwrap_or_default()
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect()
+fn read_config(args: &[String], allow_paths_env: &str) -> Result<Config, String> {
+    let severities = parse_category_flags(args, &[PROBING])?;
+    Ok(Config {
+        probing: severities.get(PROBING).copied(),
+        allow_paths: allow_paths_env
+            .split(':')
+            .filter(|path| !path.is_empty())
+            .map(normalize)
+            .collect(),
+    })
 }
 
 // ── Decision logic ─────────────────────────────────────────────────
 
 fn decide(input: &HookInput) -> HookDecision {
-    let config = parse_config();
-    let rules = match parse_rules(RULES_TOML) {
-        Ok(r) => r,
-        Err(e) => {
-            return HookDecision::Deny {
-                category: "config".into(),
-                event: "rules parse failure".into(),
-                reason: format!("Cannot load rules \u{2014} {e}"),
-            };
-        }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let allow_paths_env = std::env::var("HOOK_LLM_ALLOW_PATHS").unwrap_or_default();
+    let config = match read_config(&args, &allow_paths_env) {
+        Ok(config) => config,
+        Err(cause) => return ask_because_undecided(HOOK, &cause),
     };
-    decide_inner(input, &config, &rules)
+    match hook_io::protected_paths() {
+        Ok(protected) => decide_inner(input, &config, &protected),
+        Err(cause) => ask_because_undecided(HOOK, &cause),
+    }
 }
 
-/// Core decision logic, separated from config/rules parsing for testability.
-fn decide_inner(input: &HookInput, config: &Config, rules: &Rules) -> HookDecision {
-    let target = match input.target_path() {
-        Some(t) => t,
-        None => return HookDecision::Allow,
-    };
+/// The decision over every path the call reaches: the floor first, for all of
+/// them, then probing for those no grant exempts.
+fn decide_inner(input: &HookInput, config: &Config, protected: &RuleSet) -> HookDecision {
+    let targets = input.targets();
 
-    // Layer 1: Floor — always block, no override
-    for rule in &rules.floor {
-        if target.contains(&rule.pattern) {
-            return HookDecision::Deny {
-                category: "floor".into(),
-                event: format!("access to {} blocked", rule.description.to_lowercase()),
-                reason: format!(
-                    "Access to '{}' is permanently blocked ({}).",
-                    target, rule.description
-                ),
-            };
-        }
+    if let Some(denied) = targets.iter().find_map(|target| floor_decision(target, protected)) {
+        return denied;
     }
 
-    // Check env var exemptions before probing/gaming (never before floor).
-    // Paths are prefixes (a territory); patterns are substrings (a file class
-    // wherever it appears — e.g. /.gleipnir/ across all projects, for Tyr).
-    if is_allowed_path(target, &config.allow_paths)
-        || is_allowed_pattern(target, &config.allow_patterns)
-    {
+    let Some(probing_severity) = config.probing else {
         return HookDecision::Allow;
-    }
-
-    // Layer 2: Probing
-    if let Some(default_severity) = config.probing {
-        for rule in &rules.probing {
-            if target.contains(&rule.pattern) {
-                return hook_io::make_decision(&DecisionInput {
-                    severity: rule.severity.unwrap_or(default_severity),
-                    category: "probing",
-                    description: &rule.description,
-                    subject: target,
-                    verb_past: "accessed",
-                    verb_present: "access",
-                    max_subject_len: None,
-                });
-            }
-        }
-    }
-
-    // Layer 3: Gaming
-    if let Some(default_severity) = config.gaming {
-        for rule in &rules.gaming {
-            if target.contains(&rule.pattern) {
-                return hook_io::make_decision(&DecisionInput {
-                    severity: rule.severity.unwrap_or(default_severity),
-                    category: "gaming",
-                    description: &rule.description,
-                    subject: target,
-                    verb_past: "accessed",
-                    verb_present: "access",
-                    max_subject_len: None,
-                });
-            }
-        }
-    }
-
-    // Layer 4: Allow everything else
-    HookDecision::Allow
+    };
+    targets
+        .iter()
+        .filter(|target| !is_exempt(target, &config.allow_paths))
+        .find_map(|target| {
+            decide_category(rules_of(protected, PROBING), &path_subject(target), PROBING, probing_severity)
+        })
+        .unwrap_or(HookDecision::Allow)
 }
 
-fn is_allowed_path(target: &str, allow_paths: &[String]) -> bool {
-    allow_paths.iter().any(|prefix| target.starts_with(prefix))
+fn floor_decision(target: &str, protected: &RuleSet) -> Option<HookDecision> {
+    first_match(rules_of(protected, FLOOR), target).map(|rule| {
+        make_decision(&DecisionInput {
+            severity: Severity::Block,
+            category: FLOOR,
+            description: &rule.description,
+            subject: target,
+            verb_past: "accessed",
+            verb_present: "access",
+            max_subject_chars: None,
+        })
+    })
 }
 
-fn is_allowed_pattern(target: &str, allow_patterns: &[String]) -> bool {
-    allow_patterns.iter().any(|pattern| target.contains(pattern))
+fn is_exempt(target: &str, allow_paths: &[String]) -> bool {
+    allow_paths.iter().any(|allowed| is_under(target, allowed))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── parse_rules: embedded TOML ────────────────────────────────
-
-    #[test]
-    fn parse_rules_succeeds_on_embedded_toml() {
-        let rules = parse_rules(RULES_TOML);
-        assert!(rules.is_ok(), "Embedded RULES_TOML must parse successfully");
+    fn protected() -> RuleSet {
+        hook_io::protected_paths().unwrap()
     }
 
-    #[test]
-    fn parse_rules_contains_floor_rules() {
-        let rules = parse_rules(RULES_TOML).unwrap();
-        assert!(!rules.floor.is_empty(), "Floor rules must not be empty");
-
-        let patterns: Vec<&str> = rules.floor.iter().map(|r| r.pattern.as_str()).collect();
-        assert!(patterns.contains(&"/.ssh/"), "Must block SSH keys");
-        assert!(patterns.contains(&"/.aws/"), "Must block AWS credentials");
-        assert!(patterns.contains(&"/.gnupg/"), "Must block GPG keyrings");
+    fn config(probing: Option<Severity>, allow_paths: &[&str]) -> Config {
+        Config { probing, allow_paths: allow_paths.iter().map(|path| normalize(path)).collect() }
     }
 
-    #[test]
-    fn parse_rules_contains_probing_rules() {
-        let rules = parse_rules(RULES_TOML).unwrap();
-        assert!(!rules.probing.is_empty(), "Probing rules must not be empty");
-
-        let patterns: Vec<&str> = rules.probing.iter().map(|r| r.pattern.as_str()).collect();
-        assert!(patterns.contains(&"/.claude/hooks/"), "Must detect hook probing");
-        assert!(patterns.contains(&"/.gleipnir/"), "Must detect gleipnir probing");
-        assert!(patterns.contains(&"/.claude/settings"), "Must detect settings probing");
+    fn blocking() -> Config {
+        config(Some(Severity::Block), &[])
     }
 
-    #[test]
-    fn parse_rules_invalid_toml_returns_error() {
-        let result = parse_rules("[[[broken");
-        assert!(result.is_err());
+    fn read(path: &str) -> HookInput {
+        HookInput::for_tool("Read", serde_json::json!({ "file_path": path }))
     }
 
-    // ── is_allowed_path ───────────────────────────────────────────
-
-    #[test]
-    fn is_allowed_path_matches_prefix() {
-        let allow = vec!["/home/user/project/".to_string()];
-        assert!(is_allowed_path("/home/user/project/src/main.rs", &allow));
+    fn decided(input: &HookInput, config: &Config) -> HookDecision {
+        decide_inner(input, config, &protected())
     }
 
-    #[test]
-    fn is_allowed_path_no_match() {
-        let allow = vec!["/home/user/project/".to_string()];
-        assert!(!is_allowed_path("/etc/passwd", &allow));
-    }
-
-    #[test]
-    fn is_allowed_path_empty_list() {
-        let allow: Vec<String> = vec![];
-        assert!(!is_allowed_path("/any/path", &allow));
-    }
-
-    #[test]
-    fn is_allowed_path_multiple_prefixes() {
-        let allow = vec!["/path/a/".to_string(), "/path/b/".to_string()];
-        assert!(is_allowed_path("/path/b/file.rs", &allow));
-        assert!(!is_allowed_path("/path/c/file.rs", &allow));
-    }
-
-    #[test]
-    fn is_allowed_path_exact_match() {
-        let allow = vec!["/exact/path".to_string()];
-        assert!(is_allowed_path("/exact/path", &allow));
-    }
-
-    #[test]
-    fn is_allowed_path_partial_prefix_no_false_positive() {
-        // "/home/user" should NOT match "/home/username"
-        let allow = vec!["/home/user/".to_string()];
-        assert!(!is_allowed_path("/home/username/secret", &allow));
-    }
-
-    // ── make_decision (via hook_io) ─────────────────────────────────
-
-    fn tool_decision(severity: Severity, category: &str, description: &str, target: &str) -> HookDecision {
-        hook_io::make_decision(&DecisionInput {
-            severity, category, description, subject: target,
-            verb_past: "accessed", verb_present: "access", max_subject_len: None,
-        })
-    }
-
-    #[test]
-    fn make_decision_block_returns_deny() {
-        let decision = tool_decision(Severity::Block, "probing", "Hook scripts", "/home/.claude/hooks/myhook");
+    fn category_of(decision: &HookDecision) -> &str {
         match decision {
-            HookDecision::Deny { category, reason, .. } => {
-                assert_eq!(category, "probing");
-                assert!(reason.contains("blocked"));
-                assert!(reason.contains("/home/.claude/hooks/myhook"));
-            }
-            _ => panic!("Block severity must produce Deny"),
+            HookDecision::Deny { category, .. }
+            | HookDecision::Ask { category, .. }
+            | HookDecision::Warn { category, .. } => category,
+            _ => "",
+        }
+    }
+
+    // ── read_config ──────────────────────────────────────────────
+
+    fn args(written: &[&str]) -> Vec<String> {
+        written.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    #[test]
+    fn the_probing_flag_is_read() {
+        let config = read_config(&args(&["--probing", "warn"]), "").unwrap();
+        assert_eq!(config.probing, Some(Severity::Warn));
+    }
+
+    #[test]
+    fn no_flag_means_probing_is_not_examined() {
+        assert_eq!(read_config(&[], "").unwrap().probing, None);
+    }
+
+    #[test]
+    fn a_misspelled_severity_is_refused() {
+        assert!(read_config(&args(&["--probing", "wran"]), "").is_err());
+    }
+
+    #[test]
+    fn a_flag_this_hook_does_not_read_is_refused() {
+        assert!(read_config(&args(&["--gaming", "warn"]), "").is_err());
+    }
+
+    #[test]
+    fn allowed_paths_are_split_and_normalised() {
+        let config = read_config(&[], "/a/b/:/c/../d/").unwrap();
+        assert_eq!(config.allow_paths, vec!["/a/b/", "/d/"]);
+    }
+
+    // ── Floor: always denied ─────────────────────────────────────
+
+    #[test]
+    fn every_credential_store_is_denied_with_no_flag_given() {
+        let stores = [
+            "/home/user/.ssh/id_rsa",
+            "/home/user/.aws/credentials",
+            "/home/user/.gnupg/secring.gpg",
+            "/home/user/.kube/config",
+            "/home/user/.docker/config.json",
+            "/home/user/.netrc",
+        ];
+        for store in stores {
+            let decision = decided(&read(store), &config(None, &[]));
+            assert!(matches!(decision, HookDecision::Deny { .. }), "{store}");
+            assert_eq!(category_of(&decision), FLOOR, "{store}");
         }
     }
 
     #[test]
-    fn make_decision_warn_returns_warn() {
-        let decision = tool_decision(Severity::Warn, "gaming", "Circumvention attempt", "/some/path");
-        match decision {
-            HookDecision::Warn {
-                category,
-                user_reason,
-                llm_context,
-                ..
-            } => {
-                assert_eq!(category, "gaming");
-                assert!(user_reason.contains("flagged"));
-                assert!(llm_context.contains("gaming"));
-            }
-            _ => panic!("Warn severity must produce Warn"),
-        }
-    }
-
-    // ── decide_inner: integration tests ─────────────────────────────
-
-    fn default_rules() -> Rules {
-        parse_rules(RULES_TOML).unwrap()
-    }
-
-    fn config_all_block() -> Config {
-        Config { probing: Some(Severity::Block), gaming: Some(Severity::Block), allow_paths: vec![], allow_patterns: vec![] }
-    }
-
-    fn config_all_warn() -> Config {
-        Config { probing: Some(Severity::Warn), gaming: Some(Severity::Warn), allow_paths: vec![], allow_patterns: vec![] }
-    }
-
-    fn config_disabled() -> Config {
-        Config { probing: None, gaming: None, allow_paths: vec![], allow_patterns: vec![] }
-    }
-
-    /// Tyr-shaped config: probing/gaming active, gleipnir pattern exempted.
-    fn config_tyr_patterns() -> Config {
-        Config {
-            probing: Some(Severity::Block),
-            gaming: Some(Severity::Block),
-            allow_paths: vec![],
-            allow_patterns: vec!["/.gleipnir/".to_string()],
-        }
-    }
-
-    fn make_input(path: &str) -> HookInput {
-        HookInput {
-            tool_name: Some("Read".to_string()),
-            tool_input: serde_json::json!({ "file_path": path }),
-        }
-    }
-
-    fn make_input_path_field(path: &str) -> HookInput {
-        HookInput {
-            tool_name: Some("Grep".to_string()),
-            tool_input: serde_json::json!({ "path": path }),
-        }
-    }
-
-    // Layer 1: Floor — always deny regardless of config
-
-    #[test]
-    fn decide_floor_ssh_denied() {
-        let d = decide_inner(&make_input("/home/user/.ssh/id_rsa"), &config_disabled(), &default_rules());
-        match d {
-            HookDecision::Deny { category, .. } => assert_eq!(category, "floor"),
-            _ => panic!("Floor must deny SSH access"),
-        }
+    fn a_grant_never_exempts_the_floor() {
+        let granted = config(Some(Severity::Block), &["/home/user/.ssh/", "/home/user/"]);
+        assert_eq!(category_of(&decided(&read("/home/user/.ssh/id_rsa"), &granted)), FLOOR);
     }
 
     #[test]
-    fn decide_floor_aws_denied() {
-        let d = decide_inner(&make_input("/home/user/.aws/credentials"), &config_disabled(), &default_rules());
-        assert!(matches!(d, HookDecision::Deny { .. }));
+    fn a_path_spelled_around_the_floor_is_denied() {
+        let decision = decided(&read("/home/user/project/../.ssh/id_rsa"), &config(None, &[]));
+        assert_eq!(category_of(&decision), FLOOR);
     }
 
     #[test]
-    fn decide_floor_gnupg_denied() {
-        let d = decide_inner(&make_input("/home/user/.gnupg/secring.gpg"), &config_disabled(), &default_rules());
-        assert!(matches!(d, HookDecision::Deny { .. }));
+    fn a_glob_with_an_absolute_pattern_and_no_path_is_denied() {
+        let glob = HookInput::for_tool("Glob", serde_json::json!({ "pattern": "/home/user/.ssh/*" }));
+        assert_eq!(category_of(&decided(&glob, &config(None, &[]))), FLOOR);
     }
 
     #[test]
-    fn decide_floor_kube_denied() {
-        let d = decide_inner(&make_input("/home/user/.kube/config"), &config_disabled(), &default_rules());
-        assert!(matches!(d, HookDecision::Deny { .. }));
+    fn a_glob_pattern_into_the_floor_under_a_plain_path_is_denied() {
+        let glob = HookInput::for_tool("Glob", serde_json::json!({ "path": "/home/user", "pattern": ".aws/*" }));
+        assert_eq!(category_of(&decided(&glob, &config(None, &[]))), FLOOR);
     }
 
     #[test]
-    fn decide_floor_docker_denied() {
-        let d = decide_inner(&make_input("/home/user/.docker/config.json"), &config_disabled(), &default_rules());
-        assert!(matches!(d, HookDecision::Deny { .. }));
-    }
-
-    #[test]
-    fn decide_floor_netrc_denied() {
-        let d = decide_inner(&make_input("/home/user/.netrc"), &config_disabled(), &default_rules());
-        assert!(matches!(d, HookDecision::Deny { .. }));
-    }
-
-    // Pattern exemptions (HOOK_LLM_ALLOW_PATTERNS) — the Tyr grant
-
-    #[test]
-    fn pattern_exemption_allows_gleipnir_anywhere() {
-        // .gleipnir outside any allow-path prefix — pattern must exempt it
-        let d = decide_inner(
-            &make_input("/Users/johnny/ai/smidja/draupnir/.gleipnir/rules.toml"),
-            &config_tyr_patterns(),
-            &default_rules(),
+    fn a_grep_glob_into_the_floor_is_denied() {
+        let grep = HookInput::for_tool(
+            "Grep",
+            serde_json::json!({ "pattern": "key", "path": "/home/user", "glob": ".ssh/*" }),
         );
-        assert!(
-            matches!(d, HookDecision::Allow),
-            "Tyr pattern grant must exempt .gleipnir dirs in any project"
-        );
+        assert_eq!(category_of(&decided(&grep, &config(None, &[]))), FLOOR);
     }
 
     #[test]
-    fn pattern_exemption_does_not_leak_to_other_probing() {
-        // Same config, non-gleipnir probing target — must still trigger
-        let d = decide_inner(
-            &make_input("/some/other/place/hook_pre_llm_tool/src/main.rs"),
-            &config_tyr_patterns(),
-            &default_rules(),
-        );
-        assert!(
-            !matches!(d, HookDecision::Allow),
-            "Pattern grant must exempt ONLY its own pattern"
-        );
+    fn a_notebook_on_the_floor_is_denied() {
+        let edit = HookInput::for_tool("NotebookEdit", serde_json::json!({ "notebook_path": "/u/.aws/n.ipynb" }));
+        assert_eq!(category_of(&decided(&edit, &config(None, &[]))), FLOOR);
     }
 
     #[test]
-    fn pattern_exemption_never_overrides_floor() {
-        let config = Config {
-            probing: Some(Severity::Block),
-            gaming: Some(Severity::Block),
-            allow_paths: vec![],
-            allow_patterns: vec!["/.ssh/".to_string()], // hostile pattern
+    fn a_search_run_from_inside_the_floor_is_denied() {
+        let grep = HookInput {
+            tool_name: "Grep".to_string(),
+            tool_input: serde_json::json!({ "pattern": "BEGIN" }),
+            cwd: Some("/home/user/.ssh/keys".to_string()),
         };
-        let d = decide_inner(&make_input("/home/user/.ssh/id_rsa"), &config, &default_rules());
-        assert!(
-            matches!(d, HookDecision::Deny { .. }),
-            "Floor must deny even when a pattern claims the path"
+        assert_eq!(category_of(&decided(&grep, &config(None, &[]))), FLOOR);
+    }
+
+    #[test]
+    fn a_grep_for_text_that_names_the_floor_is_allowed() {
+        let grep = HookInput::for_tool("Grep", serde_json::json!({ "pattern": "/.ssh/", "path": "/home/user/docs" }));
+        assert!(matches!(decided(&grep, &blocking()), HookDecision::Allow));
+    }
+
+    #[test]
+    fn a_name_that_only_resembles_a_store_is_allowed() {
+        for near in ["/home/user/ssh/notes.md", "/home/user/.sshx/id", "/home/user/aws/readme.md"] {
+            assert!(matches!(decided(&read(near), &blocking()), HookDecision::Allow), "{near}");
+        }
+    }
+
+    // ── Probing ──────────────────────────────────────────────────
+
+    #[test]
+    fn probing_at_block_denies() {
+        let decision = decided(&read("/home/user/.claude/hooks/pre_tool"), &blocking());
+        assert!(matches!(decision, HookDecision::Deny { .. }));
+        assert_eq!(category_of(&decision), PROBING);
+    }
+
+    #[test]
+    fn probing_at_warn_warns() {
+        let decision = decided(&read("/n/hooks/hook_pre_subagent_bash/src/main.rs"), &config(Some(Severity::Warn), &[]));
+        assert!(matches!(decision, HookDecision::Warn { .. }));
+    }
+
+    #[test]
+    fn probing_without_its_flag_is_allowed() {
+        assert!(matches!(decided(&read("/home/user/.claude/hooks/x"), &config(None, &[])), HookDecision::Allow));
+    }
+
+    #[test]
+    fn the_settings_rule_asks_at_any_category_severity() {
+        let decision = decided(&read("/home/user/.claude/settings.json"), &blocking());
+        assert!(matches!(decision, HookDecision::Ask { .. }));
+    }
+
+    #[test]
+    fn the_grant_file_is_watched() {
+        let decision = decided(&read("/n/cli/cc_launch/src/permissions.rs"), &blocking());
+        assert_eq!(category_of(&decision), PROBING);
+    }
+
+    #[test]
+    fn a_granted_directory_is_exempt_from_probing() {
+        let granted = config(Some(Severity::Block), &["/n/"]);
+        assert!(matches!(decided(&read("/n/core/gleipnir_core/src/lib.rs"), &granted), HookDecision::Allow));
+    }
+
+    #[test]
+    fn a_path_that_climbs_out_of_a_granted_directory_is_not_exempt() {
+        let granted = config(Some(Severity::Block), &["/a/tools/"]);
+        let decision = decided(&read("/a/tools/../nornir/core/gleipnir_core/src/lib.rs"), &granted);
+        assert_eq!(category_of(&decision), PROBING);
+    }
+
+    #[test]
+    fn a_sibling_of_a_granted_directory_is_not_exempt() {
+        let granted = config(Some(Severity::Block), &["/a/tools"]);
+        let decision = decided(&read("/a/tools_other/hook_io/src/lib.rs"), &granted);
+        assert_eq!(category_of(&decision), PROBING);
+    }
+
+    #[test]
+    fn one_exempt_path_does_not_exempt_another_in_the_same_call() {
+        let granted = config(Some(Severity::Block), &["/n/"]);
+        let grep = HookInput::for_tool(
+            "Grep",
+            serde_json::json!({ "pattern": "x", "path": "/n/core", "glob": "../../other/hook_io/*" }),
         );
+        assert_eq!(category_of(&decided(&grep, &granted)), PROBING);
+    }
+
+    // ── Allow ────────────────────────────────────────────────────
+
+    #[test]
+    fn an_ordinary_file_is_allowed() {
+        assert!(matches!(decided(&read("/home/user/project/src/main.rs"), &blocking()), HookDecision::Allow));
     }
 
     #[test]
-    fn no_patterns_means_gleipnir_still_probed() {
-        let d = decide_inner(
-            &make_input("/Users/johnny/ai/annie/.gleipnir/rules.toml"),
-            &config_all_block(),
-            &default_rules(),
-        );
-        assert!(
-            matches!(d, HookDecision::Deny { .. }),
-            "Without the grant, .gleipnir access must still trigger probing"
-        );
-    }
-
-    #[test]
-    fn decide_floor_overrides_allow_paths() {
-        // allow_paths cannot exempt floor rules
-        let config = Config {
-            probing: Some(Severity::Block),
-            gaming: Some(Severity::Block),
-            allow_paths: vec!["/home/user/.ssh/".to_string()],
-            allow_patterns: vec![],
-        };
-        let d = decide_inner(&make_input("/home/user/.ssh/id_rsa"), &config, &default_rules());
-        match d {
-            HookDecision::Deny { category, .. } => assert_eq!(category, "floor"),
-            _ => panic!("Floor must deny even with allow_paths"),
-        }
-    }
-
-    // Allow path exemption (probing/gaming only)
-
-    #[test]
-    fn decide_allow_path_exempts_probing() {
-        let config = Config {
-            probing: Some(Severity::Block),
-            gaming: None,
-            allow_paths: vec!["/home/user/.claude/hooks/".to_string()],
-            allow_patterns: vec![],
-        };
-        let d = decide_inner(&make_input("/home/user/.claude/hooks/pre_tool"), &config, &default_rules());
-        assert!(matches!(d, HookDecision::Allow));
-    }
-
-    // Layer 2: Probing
-
-    #[test]
-    fn decide_probing_block_denies() {
-        let config = Config { probing: Some(Severity::Block), gaming: None, allow_paths: vec![], allow_patterns: vec![] };
-        let d = decide_inner(&make_input("/home/user/.claude/hooks/pre_tool"), &config, &default_rules());
-        match d {
-            HookDecision::Deny { category, .. } => assert_eq!(category, "probing"),
-            _ => panic!("Probing block must deny"),
-        }
-    }
-
-    #[test]
-    fn decide_probing_warn_warns() {
-        let config = Config { probing: Some(Severity::Warn), gaming: None, allow_paths: vec![], allow_patterns: vec![] };
-        let d = decide_inner(&make_input("/home/user/.claude/hooks/pre_tool"), &config, &default_rules());
-        match d {
-            HookDecision::Warn { category, .. } => assert_eq!(category, "probing"),
-            _ => panic!("Probing warn must warn"),
-        }
-    }
-
-    #[test]
-    fn decide_probing_disabled_allows() {
-        let config = Config { probing: None, gaming: None, allow_paths: vec![], allow_patterns: vec![] };
-        let d = decide_inner(&make_input("/home/user/.claude/hooks/pre_tool"), &config, &default_rules());
-        assert!(matches!(d, HookDecision::Allow));
-    }
-
-    #[test]
-    fn decide_probing_gleipnir_detected() {
-        let d = decide_inner(&make_input("/project/.gleipnir/rules.toml"), &config_all_block(), &default_rules());
-        match d {
-            HookDecision::Deny { category, .. } => assert_eq!(category, "probing"),
-            _ => panic!("Gleipnir probing must be detected"),
-        }
-    }
-
-    #[test]
-    fn decide_probing_settings_uses_per_rule_ask() {
-        // settings rule has severity = "ask", overriding the category default
-        let d = decide_inner(&make_input("/home/user/.claude/settings.json"), &config_all_block(), &default_rules());
-        match d {
-            HookDecision::Ask { category, .. } => assert_eq!(category, "probing"),
-            _ => panic!("Settings must use per-rule severity (ask), not category default"),
-        }
-    }
-
-    // Layer 3: Gaming
-
-    #[test]
-    fn decide_gaming_block_denies() {
-        // Use a gaming pattern — need to check what gaming rules exist
-        let rules = default_rules();
-        if rules.gaming.is_empty() {
-            // No gaming rules currently defined — skip
-            return;
-        }
-        let target = format!("/some/path/{}", rules.gaming[0].pattern);
-        let config = Config { probing: None, gaming: Some(Severity::Block), allow_paths: vec![], allow_patterns: vec![] };
-        let d = decide_inner(&make_input(&target), &config, &rules);
-        match d {
-            HookDecision::Deny { category, .. } => assert_eq!(category, "gaming"),
-            _ => panic!("Gaming block must deny"),
-        }
-    }
-
-    #[test]
-    fn decide_gaming_warn_warns() {
-        let rules = default_rules();
-        if rules.gaming.is_empty() {
-            return;
-        }
-        let target = format!("/some/path/{}", rules.gaming[0].pattern);
-        let config = Config { probing: None, gaming: Some(Severity::Warn), allow_paths: vec![], allow_patterns: vec![] };
-        let d = decide_inner(&make_input(&target), &config, &rules);
-        match d {
-            HookDecision::Warn { category, .. } => assert_eq!(category, "gaming"),
-            _ => panic!("Gaming warn must warn"),
-        }
-    }
-
-    // Layer 4: Allow
-
-    #[test]
-    fn decide_benign_path_allowed() {
-        let d = decide_inner(&make_input("/home/user/project/src/main.rs"), &config_all_block(), &default_rules());
-        assert!(matches!(d, HookDecision::Allow));
-    }
-
-    #[test]
-    fn decide_no_path_in_input_allowed() {
-        let input = HookInput {
-            tool_name: Some("Read".to_string()),
-            tool_input: serde_json::json!({}),
-        };
-        let d = decide_inner(&input, &config_all_block(), &default_rules());
-        assert!(matches!(d, HookDecision::Allow));
-    }
-
-    #[test]
-    fn decide_path_field_works() {
-        // Glob/Grep use "path" instead of "file_path"
-        let d = decide_inner(&make_input_path_field("/home/user/.ssh/keys"), &config_disabled(), &default_rules());
-        match d {
-            HookDecision::Deny { category, .. } => assert_eq!(category, "floor"),
-            _ => panic!("path field must be recognized"),
-        }
-    }
-
-    // Priority: probing checked before gaming
-
-    #[test]
-    fn decide_probing_takes_priority_over_gaming() {
-        // A path matching probing should return probing decision even if gaming is also configured
-        let d = decide_inner(
-            &make_input("/home/user/.claude/hooks/pre_tool"),
-            &config_all_warn(),
-            &default_rules(),
-        );
-        match d {
-            HookDecision::Warn { category, .. } => assert_eq!(category, "probing"),
-            _ => panic!("Probing must take priority over gaming"),
-        }
+    fn a_call_that_reaches_no_path_is_allowed() {
+        let empty = HookInput::for_tool("Read", serde_json::json!({}));
+        assert!(matches!(decided(&empty, &blocking()), HookDecision::Allow));
     }
 }

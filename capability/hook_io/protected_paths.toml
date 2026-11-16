@@ -1,0 +1,100 @@
+# Protected paths — the one list of where a session may not go, and where its
+# going is noticed.
+#
+# Read by both interactive hooks: hook_pre_llm_tool matches every path a file
+# tool reaches; hook_pre_llm_bash matches every path a command names. Each
+# pattern is literal text, matched anywhere in a normalised path.
+#
+# Embedded into hook_io at compile time. After editing:
+#     nornir_deploy --build hooks
+# Locked with the constraint layer: ~/ai/tools/scripts/lock_constraint_files.sh
+#
+#   floor   — always blocked. No flag turns it off, no grant exempts it, and a
+#             severity written on a floor rule is refused.
+#   probing — severity from each hook's --probing flag; a rule may state its own.
+#             Paths under HOOK_LLM_ALLOW_PATHS are exempt.
+
+# ─── Floor: credentials ─────────────────────────────────────────────
+
+[[floor]]
+pattern = "/.ssh/"
+description = "SSH keys and configuration"
+
+[[floor]]
+pattern = "/.aws/"
+description = "AWS credentials and configuration"
+
+[[floor]]
+pattern = "/.gnupg/"
+description = "GPG keys and keyrings"
+
+[[floor]]
+pattern = "/.kube/config"
+description = "Kubernetes credentials"
+
+[[floor]]
+pattern = "/.docker/config.json"
+description = "Docker registry credentials"
+
+[[floor]]
+pattern = "/.netrc"
+description = "Network authentication credentials"
+
+# ─── Probing: the security infrastructure ───────────────────────────
+
+[[probing]]
+pattern = "/.claude/settings"
+description = "Claude Code settings (permission model)"
+severity = "ask"
+
+[[probing]]
+pattern = "/.claude/hooks/"
+description = "Hook scripts that constrain LLM behavior"
+
+[[probing]]
+pattern = "/gleipnir_core/"
+description = "Gleipnir check source code"
+
+[[probing]]
+pattern = "/hook_io/"
+description = "Hook IO library source and the protected path list"
+
+[[probing]]
+pattern = "/hook_decision_core/"
+description = "Hook decision source code"
+
+[[probing]]
+pattern = "/hook_pre_llm"
+description = "Pre-tool hook source code"
+
+[[probing]]
+pattern = "/hook_pre_subagent"
+description = "Subagent sandbox hook source code"
+
+[[probing]]
+pattern = "/hook_post_llm"
+description = "Post-tool hook source code"
+
+[[probing]]
+pattern = "/cc_launch/src/permissions.rs"
+description = "The persona-bound grant of hook exemptions"
+
+[[probing]]
+pattern = "/saga_core/"
+description = "Enforcement runner source code"
+
+[[probing]]
+pattern = "/saga_runner/"
+description = "Enforcement runner and check routing source code"
+
+[[probing]]
+pattern = "/syn_core/"
+description = "Quality policy source code"
+
+[[probing]]
+pattern = "/syn_cli/"
+description = "Quality policy gate source code"
+
+[[probing]]
+pattern = "/.syn/"
+description = "Syn policy configuration (what is visible, what blocks)"

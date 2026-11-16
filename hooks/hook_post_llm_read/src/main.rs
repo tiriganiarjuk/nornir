@@ -24,7 +24,8 @@ use std::process::ExitCode;
 use dep_resolve_core::render::render_closure;
 use dep_resolve_core::resolve::{resolve_file, ResolveConfig, Target};
 use dep_resolve_core::ResolveMode;
-use hook_io::{HookDecision, HookInput};
+use hook_decision_core::HookDecision;
+use hook_io::{HookInput, WhenUndecided};
 
 /// What the injected text is for, said once before it.
 const PREFACE: &str = "The following are the resolved dependencies of the file being read — the \
@@ -32,7 +33,7 @@ symbols it imports and what those use. Read them to understand the interfaces be
 the code. A findings block, if present, names dependency problems in these files that need fixing.";
 
 fn main() -> ExitCode {
-    hook_io::run_pre_hook(decide)
+    hook_io::run_pre_hook(WhenUndecided::Allow, decide)
 }
 
 fn decide(input: &HookInput) -> HookDecision {
@@ -47,7 +48,7 @@ fn resolve_context(input: &HookInput) -> Option<String> {
         return None;
     }
 
-    let file_path = input.target_path()?;
+    let file_path = input.file_path()?;
     if !file_path.ends_with(".py") {
         return None;
     }
@@ -108,30 +109,24 @@ fn build_config() -> ResolveConfig {
 mod tests {
     use super::*;
 
+    fn read(tool_input: serde_json::Value) -> HookInput {
+        HookInput::for_tool("Read", tool_input)
+    }
+
     #[test]
     fn non_python_allows_silently() {
-        let input = HookInput {
-            tool_name: Some("Read".to_string()),
-            tool_input: serde_json::json!({ "file_path": "/tmp/test.rs" }),
-        };
-        matches!(decide(&input), HookDecision::Allow);
+        let input = read(serde_json::json!({ "file_path": "/tmp/test.rs" }));
+        assert!(matches!(decide(&input), HookDecision::Allow));
     }
 
     #[test]
     fn missing_file_allows_silently() {
-        let input = HookInput {
-            tool_name: Some("Read".to_string()),
-            tool_input: serde_json::json!({ "file_path": "/nonexistent/path/file.py" }),
-        };
-        matches!(decide(&input), HookDecision::Allow);
+        let input = read(serde_json::json!({ "file_path": "/nonexistent/path/file.py" }));
+        assert!(matches!(decide(&input), HookDecision::Allow));
     }
 
     #[test]
     fn no_file_path_allows_silently() {
-        let input = HookInput {
-            tool_name: Some("Read".to_string()),
-            tool_input: serde_json::json!({}),
-        };
-        matches!(decide(&input), HookDecision::Allow);
+        assert!(matches!(decide(&read(serde_json::json!({}))), HookDecision::Allow));
     }
 }

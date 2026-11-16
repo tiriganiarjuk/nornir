@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 hook_io = { path = "../../capability/hook_io" }
+hook_decision_core = { path = "../../core/hook_decision_core" }
 serde_json = { workspace = true }
 regex = { workspace = true }
 path_core = { path = "../../core/path_core" }

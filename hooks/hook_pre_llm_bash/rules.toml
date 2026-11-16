@@ -1,105 +1,129 @@
-# Hook Pre LLM Bash — Pattern Rules
+# Hook Pre LLM Bash — Command Pattern Rules
 #
-# This file declares all patterns used by hook_pre_llm_bash.
-# Embedded into the binary at compile time via include_str!().
-# Lock with: sudo chflags schg rules.toml
-# Unlock to edit: sudo chflags noschg rules.toml
+# The command patterns of hook_pre_llm_bash. The paths a command may not name
+# are a separate list, capability/hook_io/protected_paths.toml.
 #
-# After editing: cargo build --release (recompile to embed changes)
+# Embedded into the binary at compile time. After editing:
+#     nornir_deploy --build hooks
+# Locked with the constraint layer: ~/ai/tools/scripts/lock_constraint_files.sh
 #
-# Categories (severity from CLI flags):
-#   --subversion  warn|ask|block  — lock file manipulation
-#   --truncation  warn|ask|block  — partial reading of constraint files
-#   --evasion     warn|ask|block  — other adversarial shortcuts
-#   --destruction warn|ask|block  — scorched-earth git commands
-#   --revert      warn|ask|block  — file-specific git reverts
-#   --workflow    warn|ask|block  — build process guidance
-#   --chaining    warn|ask|block  — && command chaining
+# The file is read strictly: a category not listed here, an entry without its
+# pattern and description, a severity that is not warn, ask or block, or a
+# pattern that does not compile stops the hook from deciding, and the user is
+# asked about every command until it is fixed.
 #
-# Per-rule severity: add severity = "warn|ask|block" to override the category default.
-# HOOK_LLM_ALLOW_BASH env var: colon-separated pattern names to relax.
+# Categories (severity from the hook's command line; no flag, not examined):
+#   --destruction — commands that discard work
+#   --chaining    — && command chaining
+#   --subversion  — lock and constraint manipulation
+#   --truncation  — partial reading of constraint files
+#   --evasion     — replacing constraints
+#   --revert      — file-specific git reverts
+#   --workflow    — builds and source writes that belong to another tool
+#
+# A rule may state its own severity, which replaces its category's.
+#
+# What a pattern is matched against:
+#   destruction, subversion, truncation, evasion, revert — the whole command,
+#     quoted text and here-document bodies included: text a shell could run is
+#     examined wherever it sits.
+#   chaining, workflow — the command's structure: here-document bodies removed,
+#     and inside quotes the operators & | ; < > replaced by _ . Text a command
+#     merely carries (a commit message, a file body) is not structure.
+#
+# A pattern names its command as a word (\b) and stays within one simple
+# command ([^;&|]*), so a rule fires on the act and not on a word that happens
+# to contain the command's letters.
 
 # ─── Subversion: lock file and constraint manipulation ──────────────
 
 [[subversion]]
-pattern = "rm.*\\.lock"
+pattern = "\\brm\\s+[^;&|]*\\.lock\\b"
 description = "Deleting lock files"
 
 [[subversion]]
-pattern = "flock.*--unlock"
+pattern = "\\bflock\\s+[^;&|]*--unlock"
 description = "Unlocking file locks"
 
 [[subversion]]
-pattern = "chflags.*noschg"
+pattern = "\\bchflags\\s+[^;&|]*noschg"
 description = "Removing system immutable flag"
 
 [[subversion]]
-pattern = "chmod.*rules\\.toml"
+pattern = "\\bchmod\\s+[^;&|]*(rules|protected_paths)\\.toml"
 description = "Changing permissions on rules files"
 
 [[subversion]]
-pattern = "xattr.*-d.*rules\\.toml"
+pattern = "\\bxattr\\s+[^;&|]*-d[^;&|]*(rules|protected_paths)\\.toml"
 description = "Removing extended attributes from rules files"
 
 [[subversion]]
-pattern = "export.*HOOK_LLM"
+pattern = "\\bexport\\s+[^;&|]*HOOK_LLM"
 description = "Attempting to set hook override env vars"
 
 [[subversion]]
-pattern = "env.*HOOK_LLM"
+pattern = "\\benv\\s+[^;&|]*HOOK_LLM"
 description = "Attempting to run commands with hook override env vars"
+
+[[subversion]]
+pattern = "\\bHOOK_LLM_[A-Z_]+="
+description = "Assigning a hook override env var"
 
 # ─── Truncation: partial reading of constraint/guardrail files ──────
 
 [[truncation]]
-pattern = "guardrails.*\\|\\s*tail"
+pattern = "guardrails[^;&]*\\|\\s*tail\\b"
 description = "Tailing guardrail files (skipping early constraints)"
 
 [[truncation]]
-pattern = "head.*CLAUDE\\.md"
+pattern = "\\bhead\\b[^;&|]*CLAUDE\\.md"
 description = "Reading only the beginning of CLAUDE.md"
 
 [[truncation]]
-pattern = "tail.*CLAUDE\\.md"
+pattern = "\\btail\\b[^;&|]*CLAUDE\\.md"
 description = "Reading only the end of CLAUDE.md"
 
 [[truncation]]
-pattern = "head.*guardrails"
+pattern = "\\bhead\\b[^;&|]*guardrails"
 description = "Partial reading of guardrail files"
 
 [[truncation]]
-pattern = "sed.*CLAUDE\\.md"
+pattern = "\\bsed\\b[^;&|]*CLAUDE\\.md"
 description = "Selectively extracting from CLAUDE.md"
 
 [[truncation]]
-pattern = "awk.*CLAUDE\\.md"
+pattern = "\\bawk\\b[^;&|]*CLAUDE\\.md"
 description = "Selectively extracting from CLAUDE.md"
 
 [[truncation]]
-pattern = "grep.*CLAUDE\\.md"
+pattern = "\\bgrep\\b[^;&|]*CLAUDE\\.md"
 description = "Pattern-searching CLAUDE.md (use Read tool instead)"
 
-# ─── Evasion: adversarial shortcuts and circumvention ───────────────
+# ─── Evasion: replacing constraints ─────────────────────────────────
 
 [[evasion]]
-pattern = "git.*checkout.*CLAUDE\\.md"
+pattern = "\\bgit\\s+[^;&|]*\\bcheckout\\b[^;&|]*CLAUDE\\.md"
 description = "Reverting CLAUDE.md to a previous version"
 
 [[evasion]]
-pattern = "git.*restore.*CLAUDE\\.md"
+pattern = "\\bgit\\s+[^;&|]*\\brestore\\b[^;&|]*CLAUDE\\.md"
 description = "Restoring CLAUDE.md to a previous version"
 
 [[evasion]]
-pattern = "mv.*CLAUDE\\.md"
+pattern = "\\bmv\\s+[^;&|]*CLAUDE\\.md"
 description = "Moving/renaming CLAUDE.md"
 
 [[evasion]]
-pattern = "cp.*CLAUDE\\.md"
+pattern = "\\bcp\\s+[^;&|]*CLAUDE\\.md"
 description = "Copying CLAUDE.md (possible replacement attack)"
 
 [[evasion]]
-pattern = "git.*config.*hooks"
+pattern = "\\bgit\\s+(-\\S+\\s+)*config\\s+[^;&|]*hooks"
 description = "Modifying git hook configuration"
+
+[[evasion]]
+pattern = "\\bgit\\s+[^;&|]*-c\\s+core\\.hooksPath"
+description = "Running git with its hooks redirected"
 
 # ─── Destruction: scorched-earth git commands that discard work ────────
 #
@@ -160,25 +184,47 @@ description = "Bare git stash hides all uncommitted work"
 pattern = "git\\s+stash\\s+(push|save)"
 description = "Git stash push/save hides uncommitted work"
 
-# ─── Workflow: build process guidance ─────────────────────────────────
+# ─── Workflow: work that belongs to another tool ──────────────────────
 #
-# LLMs reach for `cargo build --release` directly, creating stale binaries
-# when shared dependencies change. nornir_deploy ensures all crates in a
-# category rebuild together. See MUST_READ_BEFORE_BUILDING.md.
+# Builds: LLMs reach for `cargo build --release` directly, creating stale
+# binaries when shared dependencies change. nornir_deploy rebuilds every crate
+# in a category together. See MUST_READ_BEFORE_BUILDING.md.
+#
+# A build rule fires where the build is a command: at the start of a line or
+# after a separator, with any VAR=value prefixes.
 
 [[workflow]]
-pattern = "cargo\\s+(build|install).*--release"
+pattern = "(?m)(^\\s*|[;&|(]\\s*)(\\S+=\\S*\\s+)*cargo\\s+(build|install)\\b[^;&|\\n]*--release"
 description = "Direct release build — use nornir_deploy for correct deployment with dependency coherence"
 severity = "ask"
 
 [[workflow]]
-pattern = "maturin\\s+build"
+pattern = "(?m)(^\\s*|[;&|(]\\s*)(\\S+=\\S*\\s+)*maturin\\s+build\\b"
 description = "Direct maturin build — use nornir_deploy --build gates"
 severity = "ask"
 
 [[workflow]]
-pattern = "cargo\\s+build"
+pattern = "(?m)(^\\s*|[;&|(]\\s*)(\\S+=\\S*\\s+)*cargo\\s+build\\b"
 description = "Debug build — consider nornir_deploy for deployment; cargo build alone does not deploy"
+severity = "warn"
+
+# Source writes: a source file written through the shell gets no quality
+# examination and no feedback — only the Write and Edit tools are followed by
+# one. Redirection, tee, and in-place sed or perl onto a source file.
+
+[[workflow]]
+pattern = ">{1,2}\\s*(\"[^\"]*|'[^']*|[^\\s;&|<>]+)\\.(py|rs|svelte)\\b"
+description = "Shell redirect onto a source file — it gets no quality feedback; write source with the Write or Edit tool"
+severity = "warn"
+
+[[workflow]]
+pattern = "\\btee\\s+(-\\S+\\s+)*[^;&|<>]*\\.(py|rs|svelte)\\b"
+description = "tee onto a source file — it gets no quality feedback; write source with the Write or Edit tool"
+severity = "warn"
+
+[[workflow]]
+pattern = "\\b(sed|perl)\\s+[^;&|]*-[a-zA-Z]*i\\b[^;&|]*\\.(py|rs|svelte)\\b"
+description = "In-place edit of a source file — it gets no quality feedback; change source with the Write or Edit tool"
 severity = "warn"
 
 # ─── Chaining: && command chaining hangs on long-running commands ────
@@ -192,4 +238,3 @@ severity = "warn"
 [[chaining]]
 pattern = "\\s&&\\s"
 description = "Chained commands hang on long-running ops, leaving user unable to tell if process is alive or stuck — run each command separately"
-

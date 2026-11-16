@@ -1,223 +1,226 @@
-//! Shared IO contracts for Claude Code hook binaries.
+//! The IO of a Claude Code hook binary: read the call from stdin, hand it to
+//! the hook's pure `decide` function, write the reply, and tell the user.
 //!
-//! Two layers:
-//!   response module — type-safe response builders for all hook events
-//!   run_pre_hook / run_post_hook — entry points that handle stdin/stdout IO
+//!   run_pre_hook / run_post_hook — the entry points
+//!   response                     — one reply type per hook event
 //!
-//! Always exits 0 — Claude Code requires this.
+//! The decision vocabulary (`HookDecision`, severities, rules) is
+//! `hook_decision_core`. This crate holds no decision logic.
 //!
-//! PreToolUse warn/deny decisions are emitted to Hlidskjalf (watchtower)
-//! via Unix stream socket — fire-and-forget, never blocks.
-//! PostToolUse assessment emission is handled by syn (not hook_io).
+//! A hook always exits 0: Claude Code reads the decision from stdout. A pre
+//! hook that cannot decide — its input unreadable or not the payload its
+//! schema describes, or `decide` itself failing — still replies, with what its
+//! caller chose for that case (`WhenUndecided`).
+//!
+//! Warn, ask and deny decisions are emitted to Hlidskjalf as alert datagrams.
 
 pub mod response;
-pub mod rules;
 
 use std::io::{Read, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::ExitCode;
 
+use hook_decision_core::paths::{absolute_from, normalize};
+use hook_decision_core::rules::{parse_rule_set, rules_of, PatternKind, RuleSet};
+use hook_decision_core::speech::{sentence, Spoken};
+use hook_decision_core::{ask_because_undecided, deny_because_undecided, HookDecision, UNDECIDED};
 use serde::Deserialize;
 
-/// Hook input from Claude Code (subset of PreToolUse payload).
+/// A PreToolUse call, as far as the hooks read it. Its shape on the wire is
+/// `schemas/tools/hook-pre-tool-use.schema.json`.
 #[derive(Debug, Deserialize)]
 pub struct HookInput {
-    pub tool_name: Option<String>,
-    #[serde(default)]
+    pub tool_name: String,
     pub tool_input: serde_json::Value,
+    /// The directory the session is working in.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 impl HookInput {
-    /// Extract target file path from tool_input.
-    /// Read/Write/Edit use "file_path", Grep/Glob use "path".
-    pub fn target_path(&self) -> Option<&str> {
-        self.tool_input
-            .get("file_path")
-            .and_then(|v| v.as_str())
-            .or_else(|| self.tool_input.get("path").and_then(|v| v.as_str()))
+    /// A call to `tool_name` with `tool_input`, from no stated directory.
+    pub fn for_tool(tool_name: &str, tool_input: serde_json::Value) -> Self {
+        Self { tool_name: tool_name.to_string(), tool_input, cwd: None }
     }
 
-    /// Extract command string from tool_input (Bash tool).
+    fn text(&self, key: &str) -> Option<&str> {
+        self.tool_input.get(key).and_then(|value| value.as_str())
+    }
+
+    /// The file a file tool was called on: its `file_path`.
+    pub fn file_path(&self) -> Option<&str> {
+        self.text("file_path")
+    }
+
+    /// The command of a Bash call; empty when the call carries none.
     pub fn command(&self) -> &str {
-        self.tool_input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
+        self.text("command").unwrap_or("")
     }
-}
 
-/// Decision from a hook's logic.
-pub enum HookDecision {
-    /// Allow silently — no output except permissionDecision: "allow".
-    Allow,
-    /// Allow and inject context for the LLM — no warning, no banner, no watchtower.
-    AllowWithContext {
-        context: String,
-    },
-    /// Allow but warn both user (stderr banner) and LLM (context injection).
-    Warn {
-        category: String,
-        event: String,
-        user_reason: String,
-        llm_context: String,
-    },
-    /// Pause and ask the user — permissionDecision: "ask".
-    /// User sees the reason and decides allow/deny interactively.
-    Ask {
-        category: String,
-        event: String,
-        reason: String,
-        llm_context: String,
-    },
-    /// Deny with reason shown to LLM.
-    Deny {
-        category: String,
-        event: String,
-        reason: String,
-    },
-}
+    /// Every path this call reaches, absolute and normalised.
+    ///
+    /// The paths a tool names (`file_path`, `path`, `notebook_path`), and for
+    /// the two search tools where the search runs: Glob's `pattern` and Grep's
+    /// `glob` joined to the directory searched, and that directory itself when
+    /// the call does not name one. A relative path is joined to `cwd`.
+    pub fn targets(&self) -> Vec<String> {
+        let base = self.cwd.as_deref().unwrap_or("/");
+        let mut reached: Vec<String> = ["file_path", "path", "notebook_path"]
+            .iter()
+            .filter_map(|key| self.text(key))
+            .map(|named| absolute_from(base, named))
+            .collect();
 
-// ── Shared decision builder ──────────────────────────────────────
-
-/// Input for building a HookDecision from a severity + contextual metadata.
-pub struct DecisionInput<'a> {
-    pub severity: rules::Severity,
-    pub category: &'a str,
-    pub description: &'a str,
-    pub subject: &'a str,
-    /// Past tense verb for the subject: "accessed" (paths) or "ran" (commands)
-    pub verb_past: &'a str,
-    /// Present tense verb: "access" (paths) or "run" (commands)
-    pub verb_present: &'a str,
-    /// Truncate subject to this length if set (e.g. Some(60) for commands)
-    pub max_subject_len: Option<usize>,
-}
-
-/// Truncate subject and format the event string for a hook decision.
-fn format_event_preamble(input: &DecisionInput) -> (String, String) {
-    let short = match input.max_subject_len {
-        Some(max) if input.subject.len() > max => {
-            format!("{}...", &input.subject[..max.saturating_sub(3)])
-        }
-        _ => input.subject.to_string(),
-    };
-    let event = format!("{} \u{2014} {}", input.description.to_lowercase(), short);
-    (short, event)
-}
-
-/// Build a HookDecision from severity and contextual metadata.
-///
-/// Handles subject truncation, event string formatting, and the
-/// Severity → HookDecision variant mapping with appropriate messages.
-pub fn make_decision(input: &DecisionInput) -> HookDecision {
-    let (short, event) = format_event_preamble(input);
-
-    match input.severity {
-        rules::Severity::Block => {
-            let subject_label = if input.verb_present == "run" {
-                format!("Command")
-            } else {
-                format!("Access to '{}'", short)
+        let search_filter = match self.tool_name.as_str() {
+            "Glob" => Some(self.text("pattern")),
+            "Grep" => Some(self.text("glob")),
+            _ => None,
+        };
+        if let Some(filter) = search_filter {
+            let searched = match self.text("path") {
+                Some(named) => absolute_from(base, named),
+                None => {
+                    let searched = normalize(base);
+                    reached.push(searched.clone());
+                    searched
+                }
             };
-            HookDecision::Deny {
-                category: input.category.into(),
-                event,
-                reason: format!(
-                    "{} blocked ({}: {}).\n{}",
-                    subject_label, input.category, input.description, short
-                ),
+            if let Some(filter) = filter {
+                reached.push(absolute_from(&searched, filter));
             }
         }
-        rules::Severity::Ask => HookDecision::Ask {
-            category: input.category.into(),
-            event,
-            reason: format!(
-                "LLM wants to {} '{}' ({}: {}). Allow or deny?",
-                input.verb_present, short, input.category, input.description
-            ),
-            llm_context: format!(
-                "Your command requires user approval ({}: {}). \
-                 The user is being asked whether to allow this. \
-                 Do NOT retry without permission.",
-                input.category, input.description
-            ),
-        },
-        rules::Severity::Warn => HookDecision::Warn {
-            category: input.category.into(),
-            event,
-            user_reason: format!(
-                "LLM {} '{}' ({}: {}). Behavior flagged.",
-                input.verb_past, short, input.category, input.description
-            ),
-            llm_context: format!(
-                "Your {} to '{}' was flagged as {} behavior ({}). \
-                 The user has been notified. If this {} is necessary \
-                 for your task, explain why to the user.",
-                input.verb_present, short, input.category, input.description, input.verb_present
-            ),
-        },
+        reached
     }
 }
 
-/// Run a PreToolUse hook: read stdin, parse, decide, output.
+static PROTECTED_PATHS_TOML: &str = include_str!("../protected_paths.toml");
+
+/// The category of paths that are always blocked.
+pub const FLOOR: &str = "floor";
+/// The category of paths whose access is noticed.
+pub const PROBING: &str = "probing";
+
+/// The protected path list, `protected_paths.toml`: its floor and probing rules.
+/// A floor rule is always a block, so one that states a severity is refused.
+pub fn protected_paths() -> Result<RuleSet, String> {
+    protected_paths_from(PROTECTED_PATHS_TOML)
+}
+
+fn protected_paths_from(toml_str: &str) -> Result<RuleSet, String> {
+    let rule_set = parse_rule_set(toml_str, &[(FLOOR, PatternKind::Literal), (PROBING, PatternKind::Literal)])?;
+    match rules_of(&rule_set, FLOOR).iter().find(|rule| rule.severity.is_some()) {
+        Some(rule) => Err(format!("the floor rule for {} states a severity; the floor always blocks", rule.pattern)),
+        None => Ok(rule_set),
+    }
+}
+
+/// What a pre hook replies when it cannot decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhenUndecided {
+    /// The user is asked. For the hooks of an interactive session.
+    AskUser,
+    /// The call is denied. For sandbox hooks, where no user is asking.
+    Deny,
+    /// The call runs. For a hook that only adds context and guards nothing.
+    Allow,
+}
+
+/// Run a PreToolUse hook: read the call, decide, reply.
 ///
-/// The `decide_fn` receives parsed hook input and returns a decision.
-/// This function handles all IO and JSON serialization.
-pub fn run_pre_hook<F>(decide_fn: F) -> ExitCode
+/// `decide_fn` is the hook's pure decision over the parsed call.
+pub fn run_pre_hook<F>(when_undecided: WhenUndecided, decide_fn: F) -> ExitCode
 where
     F: FnOnce(&HookInput) -> HookDecision,
 {
-    let mut input = String::new();
-    if std::io::stdin().read_to_string(&mut input).is_err() {
-        print_allow();
-        return ExitCode::SUCCESS;
-    }
-
-    let hook_input: HookInput = match serde_json::from_str(&input) {
-        Ok(v) => v,
-        Err(_) => {
-            print_allow();
-            return ExitCode::SUCCESS;
-        }
+    let hook = hook_name();
+    let (decision, tool) = match read_call() {
+        Ok(call) => (decided_or_undecided(when_undecided, &hook, &call, decide_fn), call.tool_name),
+        Err(cause) => (undecided(when_undecided, &hook, &cause), "unknown".to_string()),
     };
-
-    let tool = hook_input.tool_name.as_deref().unwrap_or("unknown");
-    emit_decision(decide_fn(&hook_input), tool);
+    emit_decision(decision, &tool);
     ExitCode::SUCCESS
 }
 
-/// Dispatch a decision: output JSON, notify user, emit to watchtower.
+fn hook_name() -> String {
+    std::env::args()
+        .next()
+        .and_then(|invoked| {
+            std::path::Path::new(&invoked).file_name().map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "hook".to_string())
+}
+
+/// The call on stdin, or why it could not be examined.
+fn read_call() -> Result<HookInput, String> {
+    let mut payload = String::new();
+    std::io::stdin()
+        .read_to_string(&mut payload)
+        .map_err(|io_err| format!("its input could not be read ({io_err})"))?;
+    parse_call(&payload)
+}
+
+/// A payload as a call: valid against the PreToolUse schema, then typed.
+pub fn parse_call(payload: &str) -> Result<HookInput, String> {
+    let checked = schemas_embedded::HOOK_PRE_TOOL_USE
+        .validate(payload)
+        .map_err(|schema_err| format!("its input could not be checked ({schema_err})"))?;
+    if !checked.valid {
+        return Err(format!("its input is not a PreToolUse call ({})", checked.message));
+    }
+    serde_json::from_str(payload).map_err(|json_err| format!("its input could not be typed ({json_err})"))
+}
+
+fn decided_or_undecided<F>(when_undecided: WhenUndecided, hook: &str, call: &HookInput, decide_fn: F) -> HookDecision
+where
+    F: FnOnce(&HookInput) -> HookDecision,
+{
+    match catch_unwind(AssertUnwindSafe(|| decide_fn(call))) {
+        Ok(decision) => decision,
+        Err(_) => undecided(when_undecided, hook, "it failed while deciding"),
+    }
+}
+
+fn undecided(when_undecided: WhenUndecided, hook: &str, cause: &str) -> HookDecision {
+    match when_undecided {
+        WhenUndecided::AskUser => ask_because_undecided(hook, cause),
+        WhenUndecided::Deny => deny_because_undecided(hook, cause),
+        WhenUndecided::Allow => HookDecision::Allow,
+    }
+}
+
+/// Dispatch a decision: reply on stdout, notify the user, emit to the watchtower.
 fn emit_decision(decision: HookDecision, tool: &str) {
     match decision {
         HookDecision::Allow => print_allow(),
         HookDecision::AllowWithContext { context } => print_allow_with_context(&context),
         HookDecision::Warn { category, event, user_reason, llm_context } => {
-            print_banner_warn(&category, &event, &user_reason);
+            notify_and_log('\u{26A0}', &category, &event, &user_reason);
             print_warn(&user_reason, &llm_context);
             emit_to_watchtower(&WatchtowerEvent {
-                decision: "warn", category: &category, event: &event,
+                spoken: Spoken::Warn, category: &category, event: &event,
                 tool, detail: &user_reason, context: &llm_context,
             });
         }
         HookDecision::Ask { category, event, reason, llm_context } => {
-            print_banner_ask(&category, &event, &reason);
+            notify_and_log('\u{2753}', &category, &event, &reason);
             print_ask(&reason, &llm_context);
             emit_to_watchtower(&WatchtowerEvent {
-                decision: "ask", category: &category, event: &event,
+                spoken: Spoken::Ask, category: &category, event: &event,
                 tool, detail: &reason, context: &llm_context,
             });
         }
         HookDecision::Deny { category, event, reason } => {
-            print_banner_deny(&category, &event, &reason);
+            notify_and_log('\u{2716}', &category, &event, &reason);
             print_deny(&reason);
             emit_to_watchtower(&WatchtowerEvent {
-                decision: "deny", category: &category, event: &event,
+                spoken: Spoken::Deny, category: &category, event: &event,
                 tool, detail: &reason, context: "",
             });
         }
     }
 }
 
-// ── JSON output to stdout ──────────────────────────────────────────
+// ── Reply on stdout ────────────────────────────────────────────────
 
 fn print_allow() {
     use response::{HookOutput, PreToolUseResponse};
@@ -231,9 +234,7 @@ fn print_allow_with_context(context: &str) {
 
 fn print_warn(user_reason: &str, llm_context: &str) {
     use response::{HookOutput, PreToolUseResponse};
-    let resp = PreToolUseResponse::allow()
-        .with_reason(user_reason)
-        .with_context(llm_context);
+    let resp = PreToolUseResponse::allow().with_reason(user_reason).with_context(llm_context);
     print!("{}", resp.to_json());
 }
 
@@ -250,31 +251,17 @@ fn print_deny(reason: &str) {
 
 // ── User notification ───────────────────────────────────────────────
 //
-// Claude Code captures stdout (JSON) and stderr via pipes.
-// macOS notifications + log file are the reliable user-facing channels.
-
-fn print_banner_warn(category: &str, event: &str, explanation: &str) {
-    notify_and_log('\u{26A0}', category, event, explanation);
-}
-
-fn print_banner_ask(category: &str, event: &str, explanation: &str) {
-    notify_and_log('\u{2753}', category, event, explanation);
-}
-
-fn print_banner_deny(category: &str, event: &str, explanation: &str) {
-    notify_and_log('\u{2716}', category, event, explanation);
-}
-
+// Claude Code captures stdout (the reply) and stderr through pipes. A macOS
+// notification and the intercept log are the channels that reach the user.
 
 fn notify_and_log(icon: char, category: &str, event: &str, explanation: &str) {
     let short = explanation.lines().next().unwrap_or(explanation);
     let workspace = std::env::var("CLAUDE_PROJECT_DIR").unwrap_or_default();
     let workspace_name = std::path::Path::new(&workspace)
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+        .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or(workspace);
 
-    // macOS notification (persists in notification center)
     let title = format!("{} INTERCEPT [{}]", icon, category);
     let _ = std::process::Command::new("terminal-notifier")
         .args(["-title", &title, "-message", short])
@@ -282,23 +269,12 @@ fn notify_and_log(icon: char, category: &str, event: &str, explanation: &str) {
         .stderr(std::process::Stdio::null())
         .spawn();
 
-    // Voice alerts spoken locally via announce (fire-and-forget)
-
-    // Append to log file
-    if let Ok(mut log) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path())
-    {
+    if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(log_path()) {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|since_epoch| since_epoch.as_secs())
             .unwrap_or(0);
-        let _ = writeln!(
-            log,
-            "[{}] [{}] [{}] {} — {}",
-            timestamp, workspace_name, category, event, short
-        );
+        let _ = writeln!(log, "[{}] [{}] [{}] {} — {}", timestamp, workspace_name, category, event, short);
     }
 }
 
@@ -307,55 +283,10 @@ fn log_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".claude").join("intercept.log")
 }
 
-// ── Speech text ──────────────────────────────────────────────────
-
-/// One clear spoken phrase per category.
-fn category_phrase(category: &str) -> &'static str {
-    match category {
-        "floor" => "access sensitive credentials",
-        "probing" => "probing the guardrail settings",
-        "gaming" => "gaming the guardrails",
-        "subversion" => "subvert the safety controls",
-        "truncation" => "reading constraint files selectively",
-        "evasion" => "evade the safety controls",
-        "destruction" => "destroy uncommitted work",
-        "revert" => "revert file changes",
-        "chaining" => "chain shell commands to escape the sandbox",
-        "path" => "access a restricted path",
-        "bash" => "run a restricted command",
-        _ => "do something unexpected",
-    }
-}
-
-fn build_speech(decision: &str, category: &str) -> String {
-    let phrase = category_phrase(category);
-    match decision {
-        "deny" => {
-            let prefix = match category {
-                "floor" | "subversion" | "chaining" | "destruction" => "DANGER",
-                _ => "WARNING",
-            };
-            format!("{}: Claude is trying to {} -- BLOCKED.", prefix, phrase)
-        }
-        "ask" => format!("ATTENTION: Claude is trying to {} -- Awaiting your decision.", phrase),
-        "warn" => format!("WARNING: Claude is {} -- Correction provided.", phrase),
-        _ => String::new(),
-    }
-}
-
 // ── Watchtower emission ───────────────────────────────────────────
 
-/// Backward-compatible alias.
-pub fn run_hook<F>(decide_fn: F) -> ExitCode
-where
-    F: FnOnce(&HookInput) -> HookDecision,
-{
-    run_pre_hook(decide_fn)
-}
-
-/// Fields needed to emit a watchtower alert datagram.
 struct WatchtowerEvent<'a> {
-    decision: &'a str,
+    spoken: Spoken,
     category: &'a str,
     event: &'a str,
     tool: &'a str,
@@ -363,70 +294,80 @@ struct WatchtowerEvent<'a> {
     context: &'a str,
 }
 
+fn decision_word(spoken: Spoken) -> &'static str {
+    match spoken {
+        Spoken::Deny => "deny",
+        Spoken::Ask => "ask",
+        Spoken::Warn => "warn",
+    }
+}
+
+/// A hook that could not decide is the highest priority there is: the guard
+/// itself is not working.
+fn alert_priority(spoken: Spoken, category: &str) -> datagram_io::Priority {
+    match spoken {
+        _ if category == UNDECIDED => datagram_io::Priority::High,
+        Spoken::Deny => datagram_io::Priority::High,
+        Spoken::Warn => datagram_io::Priority::Normal,
+        Spoken::Ask => datagram_io::Priority::Low,
+    }
+}
+
 fn emit_to_watchtower(alert: &WatchtowerEvent) {
-    let speech = build_speech(alert.decision, alert.category);
-
-    let source = std::env::args()
-        .next()
-        .and_then(|p| {
-            std::path::Path::new(&p)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| "hook".to_string());
-
     let datagram = datagram_io::Datagram {
         timestamp: datagram_io::now(),
-        source,
+        source: hook_name(),
         kind: datagram_io::DatagramKind::Alert,
         classifier: None,
-        priority: match alert.decision {
-            "deny" => datagram_io::Priority::High,
-            "warn" => datagram_io::Priority::Normal,
-            _ => datagram_io::Priority::Low,
-        },
+        priority: alert_priority(alert.spoken, alert.category),
         workspace: datagram_io::workspace_name(),
         detail: Some(alert.detail.to_string()),
-        speech: None, // Standard alerts speak locally via announce
+        speech: None, // spoken locally through announce
         payload: Some(serde_json::json!({
             "category": alert.category,
-            "decision": alert.decision,
+            "decision": decision_word(alert.spoken),
             "tool": alert.tool,
             "event": alert.event,
             "context_injected": alert.context,
         })),
     };
     datagram_io::emit(&datagram);
-    speak_alert(&speech, alert.decision, alert.category);
+    speak_alert(&sentence(alert.spoken, alert.category), alert.spoken, alert.category);
 }
 
-fn speak_alert(speech: &str, decision: &str, category: &str) {
-    if speech.is_empty() { return; }
-
-    // SILENT.lock: global first, then per-workspace
-    let control_voice = write_engine::ai_home().join("control/voice");
-    if control_voice.join("SILENT.lock").exists() { return; }
-    let source = std::env::var("CLAUDE_PROJECT_DIR").unwrap_or_default();
-    if let Some(ws) = if source.is_empty() { None } else {
-        workspace_registry::resolve_workspace_from_path(&source).ok().flatten()
-    } {
-        if workspace_registry::workspace_control_dir(&ws).join("SILENT.lock").exists() { return; }
-    }
-
-    let severity = match decision {
-        "deny" => match category {
+fn announce_severity(spoken: Spoken, category: &str) -> &'static str {
+    match spoken {
+        _ if category == UNDECIDED => "critical",
+        Spoken::Deny => match category {
             "floor" | "subversion" | "destruction" | "chaining" => "critical",
             _ => "alert",
         },
-        "ask" => "notify",
-        "warn" => "warn",
-        _ => return,
+        Spoken::Ask => "notify",
+        Spoken::Warn => "warn",
+    }
+}
+
+fn speak_alert(speech: &str, spoken: Spoken, category: &str) {
+    // SILENT.lock: global first, then per-workspace
+    let control_voice = write_engine::ai_home().join("control/voice");
+    if control_voice.join("SILENT.lock").exists() {
+        return;
+    }
+    let source = std::env::var("CLAUDE_PROJECT_DIR").unwrap_or_default();
+    let workspace = if source.is_empty() {
+        None
+    } else {
+        workspace_registry::resolve_workspace_from_path(&source).ok().flatten()
     };
+    if let Some(workspace) = workspace {
+        if workspace_registry::workspace_control_dir(&workspace).join("SILENT.lock").exists() {
+            return;
+        }
+    }
 
     let announce = write_engine::ai_home().join("tools/bin/announce");
-
     let mut cmd = std::process::Command::new(&announce);
-    cmd.args(["--severity", severity]);
+    cmd.args(["--severity", announce_severity(spoken, category)]);
     if !source.is_empty() {
         cmd.args(["--source", &source]);
     }
@@ -437,149 +378,26 @@ fn speak_alert(speech: &str, decision: &str, category: &str) {
     let _ = cmd.spawn();
 }
 
-// ── Tests ────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── HookInput::target_path ───────────────────────────────────
-
-    #[test]
-    fn target_path_from_file_path() {
-        let input = HookInput {
-            tool_name: Some("Read".into()),
-            tool_input: serde_json::json!({ "file_path": "/src/main.rs" }),
-        };
-        assert_eq!(input.target_path(), Some("/src/main.rs"));
-    }
-
-    #[test]
-    fn target_path_from_path() {
-        let input = HookInput {
-            tool_name: Some("Grep".into()),
-            tool_input: serde_json::json!({ "path": "/src/" }),
-        };
-        assert_eq!(input.target_path(), Some("/src/"));
-    }
-
-    #[test]
-    fn target_path_file_path_wins_over_path() {
-        let input = HookInput {
-            tool_name: Some("Read".into()),
-            tool_input: serde_json::json!({ "file_path": "/a.rs", "path": "/b.rs" }),
-        };
-        assert_eq!(input.target_path(), Some("/a.rs"));
-    }
-
-    #[test]
-    fn target_path_neither_field() {
-        let input = HookInput {
-            tool_name: Some("Read".into()),
-            tool_input: serde_json::json!({}),
-        };
-        assert!(input.target_path().is_none());
-    }
-
-    #[test]
-    fn target_path_null_value() {
-        let input = HookInput {
-            tool_name: Some("Read".into()),
-            tool_input: serde_json::json!({ "file_path": null }),
-        };
-        assert!(input.target_path().is_none());
-    }
-
-    // ── HookInput::command ───────────────────────────────────────
-
-    #[test]
-    fn command_present() {
-        let input = HookInput {
-            tool_name: Some("Bash".into()),
-            tool_input: serde_json::json!({ "command": "ls -la" }),
-        };
-        assert_eq!(input.command(), "ls -la");
-    }
-
-    #[test]
-    fn command_missing() {
-        let input = HookInput {
-            tool_name: Some("Bash".into()),
-            tool_input: serde_json::json!({}),
-        };
-        assert_eq!(input.command(), "");
-    }
-
-    #[test]
-    fn command_null_value() {
-        let input = HookInput {
-            tool_name: Some("Bash".into()),
-            tool_input: serde_json::json!({ "command": null }),
-        };
-        assert_eq!(input.command(), "");
-    }
-
-    // ── PostHookInput::target_path ───────────────────────────────
-
-    #[test]
-    fn post_target_path_from_file_path() {
-        let input = PostHookInput {
-            tool_name: Some("Write".into()),
-            tool_input: serde_json::json!({ "file_path": "/out/file.py" }),
-            tool_result: None,
-        };
-        assert_eq!(input.target_path(), Some("/out/file.py"));
-    }
-
-    #[test]
-    fn post_target_path_from_path() {
-        let input = PostHookInput {
-            tool_name: Some("Glob".into()),
-            tool_input: serde_json::json!({ "path": "/search/" }),
-            tool_result: None,
-        };
-        assert_eq!(input.target_path(), Some("/search/"));
-    }
-
-    #[test]
-    fn post_target_path_neither_field() {
-        let input = PostHookInput {
-            tool_name: Some("Write".into()),
-            tool_input: serde_json::json!({}),
-            tool_result: None,
-        };
-        assert!(input.target_path().is_none());
-    }
-}
-
 // ── PostToolUse contract ─────────────────────────────────────────
 
-/// Hook input from Claude Code PostToolUse payload.
+/// A PostToolUse call, as far as the hooks read it.
 #[derive(Debug, Deserialize)]
 pub struct PostHookInput {
     pub tool_name: Option<String>,
     #[serde(default)]
     pub tool_input: serde_json::Value,
-    #[serde(default)]
-    pub tool_result: Option<serde_json::Value>,
 }
 
 impl PostHookInput {
-    /// Extract target file path from tool_input.
-    /// Read/Write/Edit use "file_path", Grep/Glob use "path".
-    pub fn target_path(&self) -> Option<&str> {
-        self.tool_input
-            .get("file_path")
-            .and_then(|v| v.as_str())
-            .or_else(|| self.tool_input.get("path").and_then(|v| v.as_str()))
+    /// The file the tool was called on: its `file_path`.
+    pub fn file_path(&self) -> Option<&str> {
+        self.tool_input.get("file_path").and_then(|value| value.as_str())
     }
 }
 
-/// Run a PostToolUse hook: read stdin, parse, assess, output.
+/// Run a PostToolUse hook: read the call, assess, reply.
 ///
-/// The `assess_fn` receives parsed hook input and returns an optional
-/// context string. Some(msg) injects into LLM context via additionalContext.
-/// None produces no injection (silence).
+/// `assess_fn` returns the context to give the session, or `None` for silence.
 pub fn run_post_hook<F>(assess_fn: F) -> ExitCode
 where
     F: FnOnce(&PostHookInput) -> Option<String>,
@@ -592,7 +410,7 @@ where
     }
 
     let hook_input: PostHookInput = match serde_json::from_str(&input) {
-        Ok(v) => v,
+        Ok(parsed) => parsed,
         Err(_) => return ExitCode::SUCCESS,
     };
 
@@ -605,4 +423,233 @@ where
     }
 
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(tool: &str, cwd: Option<&str>, tool_input: serde_json::Value) -> HookInput {
+        HookInput { tool_name: tool.to_string(), tool_input, cwd: cwd.map(str::to_string) }
+    }
+
+    // ── protected_paths ──────────────────────────────────────────
+
+    #[test]
+    fn the_embedded_list_reads() {
+        let protected = protected_paths().unwrap();
+        assert!(!rules_of(&protected, FLOOR).is_empty());
+        assert!(!rules_of(&protected, PROBING).is_empty());
+    }
+
+    #[test]
+    fn the_floor_holds_every_credential_store() {
+        let protected = protected_paths().unwrap();
+        let floor: Vec<&str> = rules_of(&protected, FLOOR).iter().map(|rule| rule.pattern.as_str()).collect();
+        for store in ["/.ssh/", "/.aws/", "/.gnupg/", "/.kube/config", "/.docker/config.json", "/.netrc"] {
+            assert!(floor.contains(&store), "{store} is not on the floor");
+        }
+    }
+
+    #[test]
+    fn probing_covers_every_hook_and_the_grant() {
+        let protected = protected_paths().unwrap();
+        let probing = rules_of(&protected, PROBING);
+        let watched = [
+            "/n/hooks/hook_pre_llm_bash/src/main.rs",
+            "/n/hooks/hook_pre_llm_tool/src/main.rs",
+            "/n/hooks/hook_pre_subagent_bash/src/main.rs",
+            "/n/hooks/hook_pre_subagent_tool/src/main.rs",
+            "/n/hooks/hook_post_llm_tool/src/main.rs",
+            "/n/capability/hook_io/protected_paths.toml",
+            "/n/core/hook_decision_core/src/rules.rs",
+            "/n/cli/cc_launch/src/permissions.rs",
+            "/u/.claude/settings.json",
+        ];
+        for path in watched {
+            assert!(probing.iter().any(|rule| rule.is_match(path)), "{path} is not watched");
+        }
+    }
+
+    #[test]
+    fn a_floor_rule_that_states_a_severity_is_refused() {
+        let weakened = "[[floor]]\npattern = \"/.ssh/\"\ndescription = \"x\"\nseverity = \"warn\"\n";
+        assert!(protected_paths_from(weakened).unwrap_err().contains("always blocks"));
+    }
+
+    #[test]
+    fn a_list_with_a_category_of_its_own_is_refused() {
+        assert!(protected_paths_from("[[gaming]]\npattern = \"x\"\ndescription = \"x\"\n").is_err());
+    }
+
+    // ── parse_call ───────────────────────────────────────────────
+
+    #[test]
+    fn a_full_payload_is_a_call() {
+        let payload = r#"{"session_id":"s","hook_event_name":"PreToolUse","cwd":"/w","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+        let parsed = parse_call(payload).unwrap();
+        assert_eq!(parsed.tool_name, "Bash");
+        assert_eq!(parsed.command(), "ls");
+        assert_eq!(parsed.cwd.as_deref(), Some("/w"));
+    }
+
+    #[test]
+    fn the_deploy_verification_payload_is_a_call() {
+        assert!(parse_call(r#"{"tool_name":"Test","tool_input":{}}"#).is_ok());
+    }
+
+    #[test]
+    fn text_that_is_not_json_is_not_a_call() {
+        assert!(parse_call("not json").is_err());
+        assert!(parse_call("").is_err());
+    }
+
+    #[test]
+    fn a_payload_without_a_tool_name_is_not_a_call() {
+        let err = parse_call(r#"{"tool_input":{"command":"ls"}}"#).unwrap_err();
+        assert!(err.contains("not a PreToolUse call"), "{err}");
+    }
+
+    #[test]
+    fn a_payload_whose_tool_input_was_renamed_is_not_a_call() {
+        assert!(parse_call(r#"{"tool_name":"Bash","input":{"command":"ls"}}"#).is_err());
+    }
+
+    #[test]
+    fn a_payload_with_a_tool_input_that_is_not_an_object_is_not_a_call() {
+        assert!(parse_call(r#"{"tool_name":"Bash","tool_input":"ls"}"#).is_err());
+    }
+
+    // ── undecided ────────────────────────────────────────────────
+
+    #[test]
+    fn an_interactive_hook_that_cannot_decide_asks() {
+        assert!(matches!(undecided(WhenUndecided::AskUser, "h", "x"), HookDecision::Ask { .. }));
+    }
+
+    #[test]
+    fn a_sandbox_hook_that_cannot_decide_denies() {
+        assert!(matches!(undecided(WhenUndecided::Deny, "h", "x"), HookDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn a_decide_function_that_panics_is_undecided() {
+        let failing = |_: &HookInput| -> HookDecision { panic!("boom") };
+        let decision = decided_or_undecided(WhenUndecided::AskUser, "h", &call("Bash", None, serde_json::json!({})), failing);
+        match decision {
+            HookDecision::Ask { category, .. } => assert_eq!(category, UNDECIDED),
+            other => panic!("must ask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_decide_function_that_returns_is_passed_through() {
+        let allowing = |_: &HookInput| HookDecision::Allow;
+        let decision = decided_or_undecided(WhenUndecided::Deny, "h", &call("Bash", None, serde_json::json!({})), allowing);
+        assert!(matches!(decision, HookDecision::Allow));
+    }
+
+    #[test]
+    fn an_undecided_ask_is_high_priority() {
+        assert!(matches!(alert_priority(Spoken::Ask, UNDECIDED), datagram_io::Priority::High));
+        assert!(matches!(alert_priority(Spoken::Ask, "revert"), datagram_io::Priority::Low));
+    }
+
+    // ── targets ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_file_tool_reaches_its_file() {
+        let read = call("Read", Some("/w"), serde_json::json!({ "file_path": "/src/main.rs" }));
+        assert_eq!(read.targets(), vec!["/src/main.rs"]);
+    }
+
+    #[test]
+    fn a_path_is_normalised() {
+        let read = call("Read", Some("/w"), serde_json::json!({ "file_path": "/a/tools/../.ssh/id_rsa" }));
+        assert_eq!(read.targets(), vec!["/a/.ssh/id_rsa"]);
+    }
+
+    #[test]
+    fn a_relative_path_is_joined_to_the_working_directory() {
+        let read = call("Read", Some("/w/project"), serde_json::json!({ "file_path": "../other/x.py" }));
+        assert_eq!(read.targets(), vec!["/w/other/x.py"]);
+    }
+
+    #[test]
+    fn a_notebook_tool_reaches_its_notebook() {
+        let edit = call("NotebookEdit", Some("/w"), serde_json::json!({ "notebook_path": "/n/book.ipynb" }));
+        assert_eq!(edit.targets(), vec!["/n/book.ipynb"]);
+    }
+
+    #[test]
+    fn a_glob_with_an_absolute_pattern_reaches_it() {
+        let glob = call("Glob", Some("/w"), serde_json::json!({ "pattern": "/home/u/.ssh/*" }));
+        assert!(glob.targets().contains(&"/home/u/.ssh/*".to_string()));
+    }
+
+    #[test]
+    fn a_glob_without_a_path_reaches_the_working_directory() {
+        let glob = call("Glob", Some("/w/project"), serde_json::json!({ "pattern": "**/*.rs" }));
+        assert_eq!(glob.targets(), vec!["/w/project", "/w/project/**/*.rs"]);
+    }
+
+    #[test]
+    fn a_glob_pattern_is_joined_to_the_path_searched() {
+        let glob = call("Glob", Some("/w"), serde_json::json!({ "path": "/home/u", "pattern": ".aws/*" }));
+        assert_eq!(glob.targets(), vec!["/home/u", "/home/u/.aws/*"]);
+    }
+
+    #[test]
+    fn a_grep_reaches_its_path_and_its_glob() {
+        let grep = call("Grep", Some("/w"), serde_json::json!({ "pattern": "secret", "path": "/home/u", "glob": ".ssh/*" }));
+        assert_eq!(grep.targets(), vec!["/home/u", "/home/u/.ssh/*"]);
+    }
+
+    #[test]
+    fn a_grep_search_text_is_not_a_path() {
+        let grep = call("Grep", Some("/w"), serde_json::json!({ "pattern": "/.ssh/", "path": "/src" }));
+        assert_eq!(grep.targets(), vec!["/src"]);
+    }
+
+    #[test]
+    fn a_grep_without_a_path_reaches_the_working_directory() {
+        let grep = call("Grep", Some("/w/project"), serde_json::json!({ "pattern": "x" }));
+        assert_eq!(grep.targets(), vec!["/w/project"]);
+    }
+
+    #[test]
+    fn a_call_that_names_no_path_reaches_none() {
+        assert!(call("Read", Some("/w"), serde_json::json!({})).targets().is_empty());
+        assert!(call("Read", Some("/w"), serde_json::json!({ "file_path": null })).targets().is_empty());
+    }
+
+    // ── command ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_bash_call_carries_its_command() {
+        assert_eq!(call("Bash", None, serde_json::json!({ "command": "ls -la" })).command(), "ls -la");
+    }
+
+    #[test]
+    fn a_call_without_a_command_carries_an_empty_one() {
+        assert_eq!(call("Bash", None, serde_json::json!({})).command(), "");
+        assert_eq!(call("Bash", None, serde_json::json!({ "command": null })).command(), "");
+    }
+
+    // ── PostHookInput ────────────────────────────────────────────
+
+    #[test]
+    fn a_post_call_names_its_file() {
+        let post = PostHookInput {
+            tool_name: Some("Write".into()),
+            tool_input: serde_json::json!({ "file_path": "/out/file.py" }),
+        };
+        assert_eq!(post.file_path(), Some("/out/file.py"));
+    }
+
+    #[test]
+    fn a_post_call_without_a_file_names_none() {
+        let post = PostHookInput { tool_name: Some("Write".into()), tool_input: serde_json::json!({}) };
+        assert!(post.file_path().is_none());
+    }
 }

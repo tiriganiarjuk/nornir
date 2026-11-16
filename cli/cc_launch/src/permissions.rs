@@ -1,4 +1,4 @@
-/// A permission is a set of paths exempt from hook probing/gaming checks.
+/// A permission is a set of directories exempt from the hooks' probing check.
 /// These are superpowers — granted by PERSONA, never by manual selection.
 ///
 /// The persona→permission mapping is compiled into this binary deliberately:
@@ -11,16 +11,12 @@
 /// running session.
 pub struct Permission {
     pub name: &'static str,
-    /// Path PREFIXES exempt from probing/gaming (HOOK_LLM_ALLOW_PATHS).
+    /// Directories exempt from probing (HOOK_LLM_ALLOW_PATHS).
     pub paths: &'static [&'static str],
-    /// Path SUBSTRINGS exempt from probing/gaming wherever they appear
-    /// (HOOK_LLM_ALLOW_PATTERNS) — e.g. /.gleipnir/ across all projects.
-    pub patterns: &'static [&'static str],
 }
 
-/// Security-system access: enforcement source, deployed tools, hook config,
-/// plus .gleipnir constraint directories in every project. Tyr operates the
-/// security system, so every Tyr launch carries this.
+/// Security-system access: enforcement source, deployed tools, hook config.
+/// Tyr operates the security system, so every Tyr launch carries this.
 static SECURITY_INFRASTRUCTURE: Permission = Permission {
     name: "Security Infrastructure",
     paths: &[
@@ -28,7 +24,6 @@ static SECURITY_INFRASTRUCTURE: Permission = Permission {
         "/Users/johnny/ai/tools/",
         "/Users/johnny/.claude/",
     ],
-    patterns: &["/.gleipnir/"],
 };
 
 /// The permission a persona carries at every launch, if any.
@@ -47,14 +42,6 @@ pub fn permission_for_persona(persona_id: &str) -> Option<&'static Permission> {
 /// Returns None for personas that carry no permission.
 pub fn allow_paths_for_persona(persona_id: &str) -> Option<String> {
     permission_for_persona(persona_id).map(|permission| permission.paths.join(":"))
-}
-
-/// Build the HOOK_LLM_ALLOW_PATTERNS value for a persona.
-/// Returns None when the persona carries no permission or no patterns.
-pub fn allow_patterns_for_persona(persona_id: &str) -> Option<String> {
-    permission_for_persona(persona_id)
-        .filter(|permission| !permission.patterns.is_empty())
-        .map(|permission| permission.patterns.join(":"))
 }
 
 #[cfg(test)]
@@ -88,18 +75,5 @@ mod tests {
     #[test]
     fn non_tyr_allow_paths_are_none() {
         assert!(allow_paths_for_persona("kvasir").is_none());
-    }
-
-    #[test]
-    fn tyr_carries_gleipnir_pattern() {
-        let patterns = allow_patterns_for_persona("tyr").unwrap();
-        assert!(patterns.contains("/.gleipnir/"));
-    }
-
-    #[test]
-    fn non_tyr_patterns_are_none() {
-        for persona in ["mimir", "bragi", "odinn", ""] {
-            assert!(allow_patterns_for_persona(persona).is_none());
-        }
     }
 }

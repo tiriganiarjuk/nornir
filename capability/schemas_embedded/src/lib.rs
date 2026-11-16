@@ -210,6 +210,11 @@ static SANITY_REPORT_JSON: &str =
 pub static SANITY_REPORT: EmbeddedValidator =
     EmbeddedValidator::new(SANITY_REPORT_JSON, "sanity-report");
 
+static HOOK_PRE_TOOL_USE_JSON: &str =
+    include_str!("../../../schemas/tools/hook-pre-tool-use.schema.json");
+pub static HOOK_PRE_TOOL_USE: EmbeddedValidator =
+    EmbeddedValidator::new(HOOK_PRE_TOOL_USE_JSON, "hook-pre-tool-use");
+
 #[cfg(test)]
 mod tests {
     use super::*;

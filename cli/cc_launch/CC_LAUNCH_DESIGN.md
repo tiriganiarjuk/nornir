@@ -104,11 +104,11 @@ Languages are derived from descriptors, never manually configured in profiles. W
 
 ## Permissions
 
-Extended permissions are a safety policy. They are bound to the persona: a persona either carries a set of path exemptions from the probing/gaming hook checks, or it carries none. Only certain personas can carry one. Today exactly one does: Tyr, who operates the security system, so the power and the role arrive together.
+Extended permissions are a safety policy. They are bound to the persona: a persona either carries a set of directories exempt from the hooks' probing check, or it carries none. Only certain personas can carry one. Today exactly one does: Tyr, who operates the security system, so the power and the role arrive together.
 
 The persona-to-permission mapping is compiled into the launcher (`src/permissions.rs`), so the grant has the same protection as the paths it opens: changing it means editing nornir source and rebuilding through `nornir_deploy`. The grant follows the persona into whatever workspace it is launched in.
 
-The mechanism is two environment variables set once at launch, before `exec`ing claude: `HOOK_LLM_ALLOW_PATHS` (path prefixes) and `HOOK_LLM_ALLOW_PATTERNS` (path substrings). A running session cannot acquire them. The TUI shows what the selected persona carries in its summary column.
+The mechanism is one environment variable set once at launch, before `exec`ing claude: `HOOK_LLM_ALLOW_PATHS`, the exempt directories. A running session cannot acquire it. The TUI shows what the selected persona carries in its summary column.
 
 ---
 

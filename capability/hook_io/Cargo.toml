@@ -9,7 +9,8 @@ crate-type = ["rlib"]
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = { workspace = true }
+hook_decision_core = { path = "../../core/hook_decision_core" }
+schemas_embedded = { path = "../schemas_embedded" }
 datagram_io = { path = "../datagram_io" }
 write_engine = { path = "../write_engine" }
 workspace_registry = { path = "../workspace_registry" }

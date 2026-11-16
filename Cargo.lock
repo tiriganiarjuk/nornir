@@ -1845,13 +1845,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hook_decision_core"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "toml",
+]
+
+[[package]]
 name = "hook_io"
 version = "0.1.0"
 dependencies = [
  "datagram_io",
+ "hook_decision_core",
+ "schemas_embedded",
  "serde",
  "serde_json",
- "toml",
  "workspace_registry",
  "write_engine",
 ]
@@ -1872,6 +1881,7 @@ name = "hook_post_llm_read"
 version = "0.1.0"
 dependencies = [
  "dep_resolve_core",
+ "hook_decision_core",
  "hook_io",
  "serde_json",
  "write_engine",
@@ -1892,25 +1902,25 @@ dependencies = [
 name = "hook_pre_llm_bash"
 version = "0.1.0"
 dependencies = [
+ "hook_decision_core",
  "hook_io",
- "regex",
  "serde_json",
- "toml",
 ]
 
 [[package]]
 name = "hook_pre_llm_tool"
 version = "0.1.0"
 dependencies = [
+ "hook_decision_core",
  "hook_io",
  "serde_json",
- "toml",
 ]
 
 [[package]]
 name = "hook_pre_subagent_bash"
 version = "0.1.0"
 dependencies = [
+ "hook_decision_core",
  "hook_io",
  "path_core",
  "regex",
@@ -1921,6 +1931,7 @@ dependencies = [
 name = "hook_pre_subagent_tool"
 version = "0.1.0"
 dependencies = [
+ "hook_decision_core",
  "hook_io",
  "serde_json",
 ]

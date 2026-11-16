@@ -148,9 +148,6 @@ fn exec_from_spec() -> Result<(), String> {
         if let Some(allow_paths) = permissions::allow_paths_for_persona(persona_id) {
             std::env::set_var("HOOK_LLM_ALLOW_PATHS", allow_paths);
         }
-        if let Some(patterns) = permissions::allow_patterns_for_persona(persona_id) {
-            std::env::set_var("HOOK_LLM_ALLOW_PATTERNS", patterns);
-        }
     }
 
     let mut command = std::process::Command::new("claude");
@@ -222,15 +219,10 @@ fn resolve_update_target(
 }
 
 fn exec_claude(prompt_path: &Path, state: &AppState) -> Result<(), String> {
-    // Set hook exemption env vars if the selected persona carries a permission
+    // Set the hook exemption env var if the selected persona carries a permission
     // (persona-bound: Tyr always, everyone else never — see permissions.rs)
     if let Some(allow_paths) = assembly::build_allow_paths(state) {
         std::env::set_var("HOOK_LLM_ALLOW_PATHS", allow_paths);
-    }
-    if let Some(persona_id) = assembly::selected_persona_id(state) {
-        if let Some(patterns) = permissions::allow_patterns_for_persona(persona_id) {
-            std::env::set_var("HOOK_LLM_ALLOW_PATTERNS", patterns);
-        }
     }
 
     let mut command = std::process::Command::new("claude");
