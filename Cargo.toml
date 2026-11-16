@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "core/error_core",
+    "core/failure_mode_core",
     "core/format_core",
     "core/schema_core",
     "core/path_core",

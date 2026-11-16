@@ -1,0 +1,51 @@
+# The error registry — every failure mode a nornir tool can refuse or fail with, written once
+# (HOW_A_NORNIR_TOOL_IS_MADE.md § The error registry).
+#
+# Each entry becomes a function of failure_mode_core, named after the entry, whose parameters
+# are the {slots} its texts name. An engine refers to an entry by calling that function, so a
+# name with no entry, or a slot left unfilled, does not compile; a missing or unknown field
+# fails the build.
+#
+#   class        the error.type callers branch on
+#   standard     what was refused or failed, and where — with its {slots}
+#   route        what to do next; it never leads around the constraint that refused
+#   adversarial  what an opaque or possibly hostile user is told: "stop", the shared stop order
+#   alert        Hlidskjalf Alert priority in adversarial mode (trace, low, normal, high,
+#                critical); omitted = no alert
+
+[file_unreadable]
+class       = "read_error"
+standard    = "Cannot read '{path}': {reason}."
+route       = "Check that the path is right and the file is there; if it is, ask the user why it cannot be read."
+adversarial = "stop"
+alert       = "high"
+
+[file_unwritable]
+class       = "write_error"
+standard    = "Cannot write '{path}': {reason}."
+route       = "Check that the path is the one you were given to write; if it is, ask the user why it cannot be written."
+adversarial = "stop"
+
+[text_not_json]
+class       = "parse_error"
+standard    = "The text handed over for '{path}' is not valid JSON: {reason}."
+route       = "Hand over the data as JSON text, serialized by a JSON library."
+adversarial = "stop"
+
+[schema_unreadable]
+class       = "schema_error"
+standard    = "Cannot read schema '{path}': {reason}."
+route       = "Check that the schema name and schema directory are right and the schema file is there; if it is, ask the user why it cannot be read."
+adversarial = "stop"
+
+[schema_not_json]
+class       = "schema_error"
+standard    = "Schema '{path}' is not valid JSON: {reason}."
+route       = "Report the schema's path and this message to the user; the schema is corrected before the call is made again."
+adversarial = "stop"
+
+[schema_not_compilable]
+class       = "schema_error"
+standard    = "Schema '{path}' is not valid JSON Schema: {reason}."
+route       = "Report the schema's path and this message to the user; the schema is corrected before the call is made again."
+adversarial = "stop"

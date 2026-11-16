@@ -221,6 +221,7 @@ Before writing logic, check if it already exists:
 |------|-----|
 | JSON/YAML/TOML/TOON conversion | `format_core` |
 | Schema validation | `schema_core` + `schemas_embedded` |
+| A failure mode — its class, message and route, from the error registry | `failure_mode_core` (`failure_modes.toml`) |
 | Error types with educational formatting | `error_core` |
 | Path field extraction from schema | `path_core` |
 | Path existence checks | `path_verify_io` |

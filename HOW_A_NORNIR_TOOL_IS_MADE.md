@@ -100,8 +100,9 @@ to ask the user.
 ## The error registry — every failure mode, written once
 
 A **failure mode** is one named way a tool can refuse or fail. Every one lives in one registry:
-one TOML file compiled into one core crate, beside gleipnir's message file and built the same way.
-Engines refer to an entry by name and fill its slots; no engine writes failure text of its own.
+one TOML file, `core/failure_mode_core/failure_modes.toml`, compiled by that crate's build
+script into one function per mode, whose parameters are the mode's slots. Engines refer to an
+entry by calling its function; no engine writes failure text of its own.
 
 ```toml
 [file_unreadable]
