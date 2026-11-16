@@ -26,7 +26,7 @@ use std::process;
 use saga_runner::SanityReport;
 use syn_core::{FilterOverrides, PolicyMode, SynConfig};
 
-use report_render_core::{LocatedFault, OutputMode, total_issues, groups_to_json, format_output};
+use report_render_core::{LocatedFault, OutputMode, total_issues, report_to_json, format_output};
 
 // =============================================================================
 // Config loading (.syn/warn.toml, .syn/deny.toml)
@@ -297,29 +297,43 @@ fn load_reports_from_stdin() -> Result<Vec<SanityReport>, String> {
 // Hlidskjalf broadcast
 // =============================================================================
 
-fn broadcast(groups: &[report_render_core::CheckGroup], decision: &str, deny_count: usize, workspace: String, scan_path: &Path) {
-    let payload = groups_to_json(groups);
-    let classifier = if scan_path.is_file() { "file" } else { "directory" };
+/// What syn found, as it is broadcast.
+struct Outcome<'a> {
+    groups: &'a [report_render_core::CheckGroup],
+    faults: &'a [LocatedFault],
+    decision: &'a str,
+    deny_count: usize,
+}
 
-    let datagram = datagram_io::Datagram {
+/// The quality datagram for one run. A fault is high priority: a file that was
+/// not examined is not known to be clean.
+fn quality_datagram(outcome: &Outcome, workspace: String, classifier: &str) -> datagram_io::Datagram {
+    let priority = if outcome.decision == "deny" || !outcome.faults.is_empty() {
+        datagram_io::Priority::High
+    } else if outcome.decision == "warn" {
+        datagram_io::Priority::Normal
+    } else {
+        datagram_io::Priority::Low
+    };
+    datagram_io::Datagram {
         timestamp: datagram_io::now(),
         source: "syn".to_string(),
         kind: datagram_io::DatagramKind::Quality,
         classifier: Some(classifier.into()),
-        priority: match decision {
-            "deny" => datagram_io::Priority::High,
-            "warn" => datagram_io::Priority::Normal,
-            _ => datagram_io::Priority::Low,
-        },
+        priority,
         workspace,
         detail: Some(format!(
-            "{} issues, {} deny, decision: {}",
-            total_issues(groups), deny_count, decision
+            "{} issues, {} deny, {} faults, decision: {}",
+            total_issues(outcome.groups), outcome.deny_count, outcome.faults.len(), outcome.decision
         )),
         speech: None,
-        payload: Some(payload),
-    };
-    datagram_io::emit_validated_or_alert(&datagram, "syn");
+        payload: Some(report_to_json(outcome.groups, outcome.faults)),
+    }
+}
+
+fn broadcast(outcome: &Outcome, workspace: String, scan_path: &Path) {
+    let classifier = if scan_path.is_file() { "file" } else { "directory" };
+    datagram_io::emit_validated_or_alert(&quality_datagram(outcome, workspace, classifier), "syn");
 }
 
 // =============================================================================
@@ -375,10 +389,16 @@ fn run(args: &Args) -> Result<i32, String> {
         );
     }
 
-    if !args.silent && !result.warn_groups.is_empty() {
+    if !args.silent && (!result.warn_groups.is_empty() || !faults.is_empty()) {
         let scan_path = args.path.as_deref().unwrap_or(project_dir);
         let workspace = datagram_io::workspace_from_path(project_dir);
-        broadcast(&result.warn_groups, result.decision, result.deny_issues, workspace, scan_path);
+        let outcome = Outcome {
+            groups: &result.warn_groups,
+            faults: &faults,
+            decision: result.decision,
+            deny_count: result.deny_issues,
+        };
+        broadcast(&outcome, workspace, scan_path);
     }
 
     match result.decision {
@@ -451,6 +471,49 @@ mod tests {
         assert_eq!(expr, syn_core::DEFAULT_WARN_FILTER);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // =========================================================================
+    // the quality datagram
+    // =========================================================================
+
+    #[test]
+    fn a_quality_datagram_with_a_group_and_a_fault_matches_the_datagram_schema() {
+        let issue = saga_runner::Issue {
+            tool: "gleipnir".into(),
+            code: "no_print".into(),
+            severity: "error".into(),
+            line: 3,
+            column: None,
+            message: "print call".into(),
+            category: "structure".into(),
+            fixable: false,
+            detail: "the rule".into(),
+            signal: "why".into(),
+            direction: "the way forward".into(),
+            canary: "the gaming move".into(),
+        };
+        let report = SanityReport {
+            file: "/project/src/a.py".into(),
+            relative_path: "src/a.py".into(),
+            issues: vec![issue],
+            ..Default::default()
+        };
+        let groups = report_render_core::group_issues(&[report]);
+        let faults = vec![LocatedFault {
+            file: "src/b.py".into(),
+            tool: "ruff".into(),
+            mode: "instrument_not_runnable".into(),
+            class: "instrument_error".into(),
+            message: "ruff could not be run on 'src/b.py': not found.".into(),
+        }];
+        let outcome = Outcome { groups: &groups, faults: &faults, decision: "warn", deny_count: 0 };
+        let datagram = quality_datagram(&outcome, "@smidja:nornir".into(), "directory");
+
+        assert!(matches!(datagram.priority, datagram_io::Priority::High));
+        let json = serde_json::to_string(&datagram).unwrap();
+        let result = schemas_embedded::DATAGRAM.validate(&json).unwrap();
+        assert!(result.valid, "{}", result.message);
     }
 
     #[test]

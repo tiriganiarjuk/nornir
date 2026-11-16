@@ -234,9 +234,16 @@ enum Reader {
     Operator,
 }
 
-/// The report as JSON: the groups with each check's detail, and the faults.
-/// A worker's report carries no canary, and names its faults only when it has any.
-fn report_to_json(groups: &[CheckGroup], faults: &[LocatedFault], reader: Reader) -> serde_json::Value {
+/// The report as JSON for the operator: the groups with each check's detail and
+/// canary, and the faults. This is also the quality payload of a Hlidskjalf
+/// datagram (yggdrasil `schemas/payloads/payload.quality.schema.json`).
+pub fn report_to_json(groups: &[CheckGroup], faults: &[LocatedFault]) -> serde_json::Value {
+    report_for(groups, faults, Reader::Operator)
+}
+
+/// The report as JSON for one reader. A worker's report carries no canary, and
+/// names its faults only when it has any.
+fn report_for(groups: &[CheckGroup], faults: &[LocatedFault], reader: Reader) -> serde_json::Value {
     let mut report = groups_to_json(groups);
     if let Some(json_groups) = report["groups"].as_array_mut() {
         for (json_group, group) in json_groups.iter_mut().zip(groups) {
@@ -283,9 +290,8 @@ fn reader_fields(
     fields
 }
 
-/// The groups as the quality payload of a Hlidskjalf datagram
-/// (`schemas/tools/validate.datagram.schema.json`, `quality_payload`).
-pub fn groups_to_json(groups: &[CheckGroup]) -> serde_json::Value {
+/// The groups with the fields every reader is shown, before the reader's own are placed.
+fn groups_to_json(groups: &[CheckGroup]) -> serde_json::Value {
     let json_groups: Vec<serde_json::Value> = groups
         .iter()
         .map(|group| {
@@ -348,7 +354,7 @@ fn format_toon(groups: &[CheckGroup], faults: &[LocatedFault]) -> String {
         return "All checks passed.".to_string();
     }
 
-    let json = report_to_json(groups, faults, Reader::Worker);
+    let json = report_for(groups, faults, Reader::Worker);
     let body = match format_core::serialize::to_toon(&json) {
         Ok(toon) => toon,
         Err(_) => {
@@ -555,7 +561,7 @@ fn format_json(groups: &[CheckGroup], faults: &[LocatedFault]) -> String {
     if groups.is_empty() && faults.is_empty() {
         return r#"{"total":0,"check_types":0,"groups":[],"faults":[]}"#.to_string();
     }
-    serde_json::to_string_pretty(&report_to_json(groups, faults, Reader::Operator)).unwrap_or_default()
+    serde_json::to_string_pretty(&report_to_json(groups, faults)).unwrap_or_default()
 }
 
 /// The report in one output mode. TOON is what a worker session is shown; colored
@@ -1094,11 +1100,11 @@ mod tests {
     }
 
     #[test]
-    fn the_datagram_payload_keeps_its_schema_s_fields() {
-        let payload = groups_to_json(&gleipnir_groups());
-        let group = payload["groups"][0].as_object().expect("a group object");
-        assert!(!group.contains_key("detail"));
+    fn the_operator_s_report_always_names_its_faults_even_when_there_are_none() {
+        let report = report_to_json(&gleipnir_groups(), &[]);
+        assert_eq!(report["faults"], serde_json::json!([]));
+        let group = report["groups"][0].as_object().expect("a group object");
+        assert!(group.contains_key("detail"));
         assert!(group.contains_key("canary"));
-        assert!(payload.get("faults").is_none());
     }
 }

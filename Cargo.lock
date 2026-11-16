@@ -4248,6 +4248,7 @@ dependencies = [
  "datagram_io",
  "report_render_core",
  "saga_runner",
+ "schemas_embedded",
  "serde",
  "serde_json",
  "syn_core",
