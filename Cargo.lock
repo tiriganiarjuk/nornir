@@ -5626,6 +5626,7 @@ name = "write_engine"
 version = "0.1.0"
 dependencies = [
  "error_core",
+ "failure_mode_core",
  "path_core",
  "schema_core",
  "serde_json",

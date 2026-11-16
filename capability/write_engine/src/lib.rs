@@ -14,6 +14,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use failure_mode_core::Failure;
 use schema_core::EmbeddedValidator;
 pub use stamp_core::Stamps;
 use stamp_core::StampContext;
@@ -85,7 +86,8 @@ pub struct WriterConfig {
 // Error types (writer-specific, not NornirError)
 // =============================================================================
 
-/// Writer-specific errors with LLM-targeted messages.
+/// Every refusal or failure a writer can produce. Its message comes from the error
+/// registry (`failure_mode_core`); `format` presents it as the writers' `FAIL:<reason>`.
 #[derive(Debug)]
 enum WriteError {
     StdinEmpty,
@@ -98,73 +100,43 @@ enum WriteError {
     IoFailed(String),
     BatchTooLarge { got: usize, max: usize },
     MissingArg(String),
-    /// Pre-formatted batch line error (preserves exact original output format).
-    BatchLine(String),
+    /// One line of a batch was refused; the line number is added to its own failure.
+    LineRefused { line: usize, inner: Box<WriteError> },
+    /// A step after validation failed — a fault in the writer, not in the record.
+    EngineFault(String),
     Stamp(String),
 }
 
-/// Heredoc usage hint shared by stdin-empty and invalid-json errors.
-fn heredoc_hint(name: &str) -> String {
-    format!(
-        "For data with quotes or apostrophes, use heredoc:\n\
-         \x20 {name} <<'RECORD'\n\
-         \x20 {{\"field\":\"value with 'quotes'\"}}\n\
-         \x20 RECORD",
-        name = name,
-    )
-}
-
 impl WriteError {
-    /// Format error as FAIL:<reason> with educational guidance.
-    fn format(&self, config: &WriterConfig) -> String {
+    /// The registry's failure mode for this error, its slots filled.
+    fn failure(&self, config: &WriterConfig) -> Failure {
+        let tool = config.name;
         match self {
-            WriteError::StdinEmpty => format!(
-                "FAIL:stdin is empty — pipe JSON data into this command.\n\n\
-                 Usage:\n\x20 echo '<json>' | {name}\n\n{}",
-                heredoc_hint(config.name), name = config.name,
-            ),
-            WriteError::InvalidJson(detail) => format!(
-                "FAIL:invalid JSON — {detail}\n\n{}",
-                heredoc_hint(config.name), detail = detail,
-            ),
-            WriteError::SchemaValidation(msg) => format!("FAIL:schema validation — {}", msg),
-            WriteError::PathTraversal(input) => format!(
-                "FAIL:path traversal blocked — filename must not contain \"..\" or \"/\"\n\n\
-                 You provided: \"{input}\"\n\
-                 Filenames must be plain stems (e.g., \"entry-123\"), no path separators.",
-            ),
-            WriteError::FileExists(path) => format!(
-                "FAIL:output file already exists — refusing to overwrite.\n\n\
-                 Path: {path}\n\
-                 This writer creates new files only. Delete the existing file first if intentional.",
-            ),
-            WriteError::FileNotFound(path) => format!(
-                "FAIL:output file does not exist — the dispatcher must create the file first.\n\n\
-                 Expected: {path}\n\
-                 Run: touch {path}",
-            ),
-            WriteError::DirectoryNotFound(path) => format!(
-                "FAIL:output directory does not exist.\n\n\
-                 Expected: {path}\n\
-                 Run: mkdir -p {path}",
-            ),
-            WriteError::IoFailed(msg) => format!("FAIL:IO error — {}", msg),
-            WriteError::BatchTooLarge { got, max } => format!(
-                "FAIL:batch too large — got {got} records, max is {max}.\n\
-                 Split the batch into smaller chunks.",
-            ),
-            WriteError::MissingArg(what) => format!(
-                "FAIL:missing argument — {what} is required.\n\n\
-                 Run: {name} --help",
-                name = config.name,
-            ),
-            WriteError::BatchLine(msg) => msg.clone(),
-            WriteError::Stamp(msg) => format!(
-                "FAIL:stamp — {msg}\n\n\
-                 This writer stamps {fields} itself. Leave those fields out of the record.",
-                fields = config.stamps.field_names().join(", "),
-            ),
+            WriteError::StdinEmpty => failure_mode_core::record_absent(tool),
+            WriteError::InvalidJson(detail) => failure_mode_core::record_not_json(tool, detail),
+            WriteError::SchemaValidation(report) => failure_mode_core::data_not_matching_schema(report),
+            WriteError::PathTraversal(name) => failure_mode_core::record_name_not_plain(name),
+            WriteError::FileExists(path) => failure_mode_core::output_exists(path),
+            WriteError::FileNotFound(path) => failure_mode_core::output_not_prepared(path),
+            WriteError::DirectoryNotFound(path) => failure_mode_core::output_directory_absent(path),
+            WriteError::IoFailed(reason) => failure_mode_core::writer_io_failed(reason),
+            WriteError::BatchTooLarge { got, max } => failure_mode_core::batch_too_large(got, max),
+            WriteError::MissingArg(argument) => failure_mode_core::argument_missing(argument, tool),
+            WriteError::LineRefused { line, inner } => {
+                let mut failure = inner.failure(config);
+                failure.standard = format!("Line {line}: {}", failure.standard);
+                failure
+            }
+            WriteError::EngineFault(reason) => failure_mode_core::writer_engine_fault(reason),
+            WriteError::Stamp(reason) => {
+                failure_mode_core::stamped_field_supplied(reason, config.stamps.field_names().join(", "))
+            }
         }
+    }
+
+    /// The refusal as the writers present it: `FAIL:` and the full message with its route.
+    fn format(&self, config: &WriterConfig) -> String {
+        format!("FAIL:{}", self.failure(config).standard_message())
     }
 }
 
@@ -393,7 +365,7 @@ fn stamp_lines(
     let mut stamped_lines = Vec::with_capacity(lines.len());
     for (offset, line) in lines.iter().enumerate() {
         let stamped = stamp_record(config, &running, line, offset as u64)
-            .map_err(|e| WriteError::BatchLine(format!("FAIL:line {} — {}", offset + 1, e.format(config))))?;
+            .map_err(|e| WriteError::LineRefused { line: offset + 1, inner: Box::new(e) })?;
         if let (Some(field), None) = (config.stamps.session, &running.session_id) {
             running.session_id = Some(
                 stamp_core::session_id_of_first_record(&stamped, field)
@@ -644,27 +616,18 @@ fn validate_batch_lines(config: &WriterConfig, lines: &[&str]) -> Result<Vec<Str
     let mut validated: Vec<String> = Vec::with_capacity(lines.len());
     for (i, line) in lines.iter().enumerate() {
         let line_num = i + 1;
-        let result = config.schema.validate(line).map_err(|e| {
-            WriteError::BatchLine(format!(
-                "FAIL:line {} — {}",
-                line_num,
-                WriteError::InvalidJson(e.to_string()).format(config)
-            ))
-        })?;
+        let refused = |inner: WriteError| WriteError::LineRefused { line: line_num, inner: Box::new(inner) };
+        let result = config.schema.validate(line).map_err(|e| refused(WriteError::InvalidJson(e.to_string())))?;
 
         if !result.valid {
-            return Err(WriteError::BatchLine(format!(
-                "FAIL:line {} — schema validation — {}",
-                line_num, result.message
-            )));
+            return Err(refused(WriteError::SchemaValidation(result.message)));
         }
 
-        let data = result.data.ok_or_else(|| {
-            WriteError::BatchLine(format!("FAIL:line {} — no data after validation", line_num))
-        })?;
-        let compact = serde_json::to_string(&data).map_err(|e| {
-            WriteError::BatchLine(format!("FAIL:line {} — re-serialization: {e}", line_num))
-        })?;
+        let data = result
+            .data
+            .ok_or_else(|| refused(WriteError::EngineFault("no data after validation".to_string())))?;
+        let compact = serde_json::to_string(&data)
+            .map_err(|e| refused(WriteError::EngineFault(format!("re-serialization: {e}"))))?;
         validated.push(compact);
     }
     Ok(validated)

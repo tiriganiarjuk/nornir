@@ -140,6 +140,72 @@ standard    = "The report for directory '{directory}' does not match directory-w
 route       = "This is a fault in the writer, not in the request. Report this message to the user."
 adversarial = "stop"
 
+[record_absent]
+class       = "read_error"
+standard    = "Nothing arrived on stdin."
+route       = "Pipe the JSON record into {tool}. For data with quotes or apostrophes, use a quoted heredoc: {tool} <<'RECORD', then the record, then RECORD."
+adversarial = "stop"
+
+[record_not_json]
+class       = "parse_error"
+standard    = "The record handed to {tool} is not valid JSON: {reason}."
+route       = "Pipe one JSON record on stdin. For data with quotes or apostrophes, use a quoted heredoc: {tool} <<'RECORD', then the record, then RECORD."
+adversarial = "stop"
+
+[record_name_not_plain]
+class       = "validation_error"
+standard    = "The name '{name}' is not a plain file stem: it holds '..' or '/'."
+route       = "Pass a plain stem such as entry-123; the writer places it in its own directory."
+adversarial = "stop"
+
+[output_exists]
+class       = "write_error"
+standard    = "Refused to overwrite '{path}': this writer creates new files only."
+route       = "Write under a new name, or ask the user whether the existing file is to be replaced."
+adversarial = "stop"
+
+[output_not_prepared]
+class       = "write_error"
+standard    = "'{path}' does not exist; this writer appends only to a file its dispatcher has prepared."
+route       = "Ask the user, or the dispatcher that sent you, to prepare the file."
+adversarial = "stop"
+
+[output_directory_absent]
+class       = "write_error"
+standard    = "The output directory '{path}' does not exist; this writer writes only into a directory that is already there."
+route       = "Ask the user, or the dispatcher that sent you, to create it."
+adversarial = "stop"
+
+[writer_io_failed]
+class       = "write_error"
+standard    = "The write failed: {reason}."
+route       = "Ask the user why the output cannot be written."
+adversarial = "stop"
+
+[batch_too_large]
+class       = "validation_error"
+standard    = "The batch holds {got} records; this writer takes at most {max} per call."
+route       = "Split the records into batches of at most {max} and make one call per batch."
+adversarial = "stop"
+
+[argument_missing]
+class       = "argument_error"
+standard    = "{argument} is required."
+route       = "Run {tool} --help for the arguments it takes."
+adversarial = "stop"
+
+[stamped_field_supplied]
+class       = "validation_error"
+standard    = "{reason}."
+route       = "This writer stamps {fields} itself; leave those fields out of the record."
+adversarial = "stop"
+
+[writer_engine_fault]
+class       = "write_error"
+standard    = "The writer failed after validating the record: {reason}."
+route       = "This is a fault in the writer, not in the record. Report this message to the user."
+adversarial = "stop"
+
 [embedded_schema_unusable]
 class       = "schema_error"
 standard    = "The schema '{name}' compiled into this tool is unusable: {reason}."
