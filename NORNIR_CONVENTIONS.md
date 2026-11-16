@@ -14,7 +14,7 @@ Tier 2: CAPABILITY (feature libraries, may have I/O)
     capability/* — depend on core + other capability crates
 
 Tier 3: BINARIES (executables and Python extensions)
-    gates/*, readers/*, text_writers/*, binary_readers/*, binary_writers/*, cli/*, writers/*, hooks/*, senders/*,
+    gates/*, readers/*, text_writers/*, binary_readers/*, binary_writers/*, presence/*, cli/*, writers/*, hooks/*, senders/*,
     converters/*, rewriters/*, watchers/*, dispatchers/*, interceptors/*, daemons/*
     — depend on core + capability, NEVER on other binaries
 ```
@@ -40,6 +40,8 @@ A built tool is one crate with two faces: a CLI binary always, and a PyO3 module
 | `write_json_validate_` | `text_writers/` | Takes JSON text, validates it against a schema named at call time, writes one file format atomically |
 | `read_{format}_verify_` | `binary_readers/` | Reads one binary file format, verifies it against the format and the shape the caller states, returns the decoded content and its description |
 | `write_bytes_verify_` | `binary_writers/` | Takes bytes, verifies them against one binary format and the shape the caller states, writes the file atomically |
+| `create_` | `presence/` | Makes a thing exist where its existence is the point and its content is not: a flag (an empty file) — `create_flag_{name}` |
+| `remove_` | `presence/` | Takes such a thing away, only while it is still what `create_` made: a flag only while it is empty — `remove_flag_{name}` |
 | `hook_` | `hooks/` | Intercepts an LLM tool call for security/quality |
 | `send_` | `senders/` | Fire-and-forget datagram to hlidskjalf socket |
 | `rewrite_` | `rewriters/` | Reads JSON on stdin, modifies content, writes JSON on stdout |
@@ -242,6 +244,7 @@ Before writing logic, check if it already exists:
 | Validating JSON against a schema loaded by name | `reader_io::validate_against_named_schema` |
 | Text writer I/O: validate JSON against a named schema, then write atomically | `text_writer_io` |
 | A generated directory replaced whole: validated files, kept identical files, removed stale ones, one report | `directory_write_io` |
+| A flag — an empty file whose presence is the information — created, or removed only while empty | `presence_io` |
 | Datagram emission to Hlidskjalf | `datagram_io` |
 | A directory's workspace name (`@smidja:nornir`), for any tool that operates on directories | `datagram_io::workspace_from_path` |
 | Schema constants | `schemas_embedded` |

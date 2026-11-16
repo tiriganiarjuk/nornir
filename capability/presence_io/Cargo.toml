@@ -1,0 +1,10 @@
+[package]
+name = "presence_io"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+failure_mode_core = { path = "../../core/failure_mode_core" }

@@ -191,6 +191,14 @@ pyo3_crates = [
 ]
 pyo3_verify = "python_import"
 
+[presence]
+python_version = "python3.13"
+pyo3_crates = [
+    "create_flag_generate_lock",
+    "remove_flag_generate_lock",
+]
+pyo3_verify = "python_import"
+
 [binary_readers]
 python_version = "python3.13"
 pyo3_crates = [

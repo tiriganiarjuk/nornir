@@ -152,6 +152,36 @@ standard    = "The report for directory '{directory}' does not match directory-w
 route       = "This is a fault in the writer, not in the request. Report this message to the user."
 adversarial = "stop"
 
+[flag_occupied]
+class       = "write_error"
+standard    = "Refused to create '{flag}' in '{directory}': a '{flag}' is there and is not an empty file, so it is not a flag."
+route       = "Look at what is there and ask the user; never empty, move or replace it to create the flag."
+adversarial = "stop"
+
+[flag_folder_absent]
+class       = "write_error"
+standard    = "Cannot create '{flag}': the folder '{directory}' does not exist."
+route       = "Check the folder path; this tool creates no folders."
+adversarial = "stop"
+
+[flag_unwritable]
+class       = "write_error"
+standard    = "Cannot create '{flag}' in '{directory}': {reason}."
+route       = "Ask the user why the folder cannot be written."
+adversarial = "stop"
+
+[flag_not_empty]
+class       = "write_error"
+standard    = "Refused to remove '{flag}' in '{directory}': it is not an empty file, so it is not a flag."
+route       = "Look at what is there and ask the user; never empty or move it to remove the flag."
+adversarial = "stop"
+
+[flag_unremovable]
+class       = "write_error"
+standard    = "Cannot remove '{flag}' in '{directory}': {reason}."
+route       = "Ask the user why it cannot be removed."
+adversarial = "stop"
+
 [record_absent]
 class       = "read_error"
 standard    = "Nothing arrived on stdin."

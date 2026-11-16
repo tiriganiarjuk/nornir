@@ -1,0 +1,20 @@
+[package]
+name = "create_flag_generate_lock"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "create_flag_generate_lock"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "create_flag_generate_lock"
+path = "src/main.rs"
+
+[features]
+python = ["dep:pyo3", "tool_face_io/python"]
+
+[dependencies]
+pyo3 = { workspace = true, optional = true }
+presence_io = { path = "../../capability/presence_io" }
+tool_face_io = { path = "../../capability/tool_face_io" }
