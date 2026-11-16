@@ -27,6 +27,8 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 
 ### Binary Names: Verb Prefix
 
+A built tool is one crate with two faces: a CLI binary always, and a PyO3 module where Python needs it (§ Tool Structure). The table names what each kind of tool does; the face is not part of the kind. A gate is a generated variant for a Python pipeline, so it is a PyO3 module.
+
 | Prefix | Directory | What it does |
 |--------|-----------|--------------|
 | `append_` | `writers/` | Accepts data on stdin, appends to a file with fsync |
@@ -35,10 +37,10 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 | `check_` | `cli/` | Validates a file against a schema, exits 0/1/2 |
 | `convert_` | `converters/` | Reads one format on stdin, writes another on stdout |
 | `gate_` | `gates/` | PyO3 module: validates at a pipeline stage boundary |
-| `read_` | `readers/` | PyO3 module: reads one file format, or one directory tree, validates against a schema — named at call time, or the reader's own where its source carries its shape — and returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
-| `write_json_validate_` | `text_writers/` | PyO3 module: takes JSON text, validates it against a schema named at call time, writes one file format atomically, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
-| `read_{format}_verify_` | `binary_readers/` | PyO3 module: reads one binary file format, verifies it against the format and the shape the caller states, returns the binary reader contract — decoded content as `payload`, its description as `data` (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
-| `write_bytes_verify_` | `binary_writers/` | PyO3 module: takes bytes, verifies them against one binary format and the shape the caller states, writes the file atomically, returns the gate contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces) |
+| `read_` | `readers/` | Reads one file format, or one directory tree, validates against a schema — named at call time, or the reader's own where its source carries its shape — and returns the validated data |
+| `write_json_validate_` | `text_writers/` | Takes JSON text, validates it against a schema named at call time, writes one file format atomically |
+| `read_{format}_verify_` | `binary_readers/` | Reads one binary file format, verifies it against the format and the shape the caller states, returns the decoded content and its description |
+| `write_bytes_verify_` | `binary_writers/` | Takes bytes, verifies them against one binary format and the shape the caller states, writes the file atomically |
 | `hook_` | `hooks/` | Intercepts an LLM tool call for security/quality |
 | `send_` | `senders/` | Fire-and-forget datagram to hlidskjalf socket |
 | `rewrite_` | `rewriters/` | Reads JSON on stdin, modifies content, writes JSON on stdout |
@@ -63,7 +65,7 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 
 **Readers:** `read_{format}_validate_json` — four slots: `read` is the direction, `{format}` the input format, `validate` says a schema is a parameter (`read(file_path, schema_name, schema_dir)`), `json` the output format. A reader is general: any schema, any caller. `read_tomlx_validate_json` validates the data after the file's annotations have converted it, so its schema describes values in their target units. `read_tomlx_json` and `read_tomlx_json_schema` have no `validate` slot: they return the converted data, the latter with the schema derived from the file's annotations. Thin wrappers over `reader_io`. `read_directory_json` reads a directory tree the same way — its listing's shape is its own, `schemas/tools/directory-listing.schema.json` — and is a thin wrapper over `directory_read_io`, the one directory walker.
 
-**Text writers:** `write_json_validate_{format}` — the readers' four slots in the other direction: `write` is the direction, `json` what the caller hands over, `validate` says a schema is a parameter (`write(json_data, file_path, schema_name, schema_dir)`), `{format}` the file format written. A text writer is general: any schema, any caller — and it writes nothing without one. The JSON it takes is the JSON the matching reader returns, so a written file reads back as the same data: the markdown writer takes `{"frontmatter": {...}, "body": "..."}`, the XML writer one root key in the `@attr` / `#text` convention. Thin wrappers over `text_writer_io`, which validates through `reader_io`, so a schema is loaded and reported the same way in both directions. `write_json_validate_directory` writes a whole generated directory in one call — its files validated and rendered the same way, swapped in whole, byte-identical files kept with their time — and is a thin wrapper over `directory_write_io`; it returns the directory writer's variation of the contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces). Every directory it writes carries its marker, `.generated_directory.json`, holding `{"written_by": "write_json_validate_directory"}`: the writer's proof of ownership. A folder without the marker was not written by it and is never replaced.
+**Text writers:** `write_json_validate_{format}` — the readers' four slots in the other direction: `write` is the direction, `json` what the caller hands over, `validate` says a schema is a parameter (`write(json_data, file_path, schema_name, schema_dir)`), `{format}` the file format written. A text writer is general: any schema, any caller — and it writes nothing without one. The JSON it takes is the JSON the matching reader returns, so a written file reads back as the same data: the markdown writer takes `{"frontmatter": {...}, "body": "..."}`, the XML writer one root key in the `@attr` / `#text` convention. Thin wrappers over `text_writer_io`, which validates through `reader_io`, so a schema is loaded and reported the same way in both directions. `write_json_validate_directory` writes a whole generated directory in one call — its files validated and rendered the same way, swapped in whole, byte-identical files kept with their time — and is a thin wrapper over `directory_write_io`; it returns the directory writer's extension of the contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces). Every directory it writes carries its marker, `.generated_directory.json`, holding `{"written_by": "write_json_validate_directory"}`: the writer's proof of ownership. A folder without the marker was not written by it and is never replaced.
 
 **Binary readers:** `read_{format}_verify_{content}` — the readers' four slots with two changes of word: `verify` in place of `validate`, because the check is against the format's own standard plus the shape the caller states, and `{content}` names what comes back, since it is typed content and no longer JSON (`read_png_verify_heights` returns heights). The same strictness as the binary writers applies on the way in: a file carrying anything beyond its stated shape is refused. Thin wrappers over `binary_reader_io`.
 
@@ -71,7 +73,7 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 
 ### Identity Rule
 
-**Directory name = package name = binary name.** All three must match exactly. If the directory is `writers/append_raw_jsonl/`, the `Cargo.toml` name is `append_raw_jsonl`, and the `[[bin]]` name is `append_raw_jsonl`. No exceptions except specialist tools.
+**Directory name = package name = binary name = PyO3 module name.** All must match exactly. If the directory is `readers/read_toml_validate_json/`, the `Cargo.toml` name is `read_toml_validate_json`, the `[[bin]]` name is `read_toml_validate_json`, and Python imports `read_toml_validate_json`. One tool has one name, whichever face is called. No exceptions except specialist tools.
 
 ### Schema Files
 
@@ -109,8 +111,35 @@ fn main() {
 
 1. `process::exit()` appears ONLY in `main()`. Helpers return `Result`.
 2. Exit codes: 0 = success, 1 = refusal or failure, 2 = wrong arguments.
-3. Complex binaries (4+ flags) use clap derive. Simple ones stay manual.
+3. A tool takes only what it operates on; a choice the caller would otherwise make is fixed into the tool or becomes a separate tool (`HOW_A_NORNIR_TOOL_IS_MADE.md` § A different behaviour is a different tool). Arguments are parsed with clap derive where there are named options.
 4. `.unwrap()` and `.expect()` are prohibited in production code (gleipnir enforces). Exemptions: `static`/`LazyLock` initializers, `const` contexts, test code.
+
+---
+
+## Tool Structure — one tool, two faces
+
+A built tool is one crate. The tool is a function in the crate's library, defined once; each face is a thin adapter that calls it and nothing else. The worked example is `readers/read_toml_validate_json/`.
+
+```
+readers/read_toml_validate_json/
+  Cargo.toml              [lib] cdylib + rlib; [[bin]]; feature "python" = ["dep:pyo3"]
+  src/lib.rs              pub fn read(...) -> Result<String, ReaderError>   — the tool
+                          #[cfg(feature = "python")] the PyO3 face           — calls read()
+  src/main.rs             the CLI face, under the Binary Structure above     — calls read()
+  tests/cli_contract.rs   the CLI face through the three outcomes of the CLI contract
+```
+
+```toml
+[features]
+python = ["dep:pyo3"]
+
+[dependencies]
+pyo3 = { workspace = true, optional = true }
+```
+
+The PyO3 face sits behind the `python` feature because the workspace builds PyO3 as an extension module: its Python symbols are supplied by the interpreter that loads it, so a program containing PyO3 code cannot link on its own. With the feature off, the crate is an ordinary Rust crate — the CLI binary links, and `cargo test` runs. `nornir_deploy` builds the PyO3 face with the feature on and the CLI face without it, reading which faces a crate has from its own `Cargo.toml`.
+
+Both faces carry the same information under their contracts (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces): the CLI for a shell and a pipe, the PyO3 module for a Python program that branches on `error.type`.
 
 ---
 
@@ -254,8 +283,8 @@ After schema changes (draupnir regeneration): `nornir_deploy --build gates`
 ## Testing
 
 - All tests must pass before committing. Run `cargo test -p {crate}` per crate.
-- PyO3 crates (`cdylib+rlib`) fail to link without Python headers — use `nornir_deploy --build <category>` for those.
-- Full workspace (excluding PyO3 crates): `cargo test --workspace $(for d in gates/*/ readers/*/ text_writers/*/ binary_readers/*/ binary_writers/*/; do echo "--exclude $(basename $d)"; done) --exclude intercept_io --exclude traffic_interceptor_rewriter`
+- A two-faced tool tests like any crate: the feature is off by default, so its library and CLI face link. A crate whose PyO3 code is not behind the feature cannot link a test binary; `nornir_deploy --build <category>` verifies those by import.
+- Full workspace (excluding crates whose PyO3 code is not behind the feature): `cargo test --workspace $(for d in gates/*/ readers/*/ text_writers/*/ binary_readers/*/ binary_writers/*/; do grep -q '^python = ' $d/Cargo.toml || echo "--exclude $(basename $d)"; done) --exclude intercept_io --exclude traffic_interceptor_rewriter`
 - Security hooks require dual-direction tests: malicious input IS detected, benign input is NOT flagged.
 - Tests verify specification, not implementation. "Does `severity_rank("error")` return 2?" not "Does the internal BTreeMap have 4 entries?"
 - Pure logic must be testable: takes parameters, returns `Result`, no side effects.
