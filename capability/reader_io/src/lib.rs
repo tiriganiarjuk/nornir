@@ -235,6 +235,14 @@ pub fn read_validate_json(
 /// Read `file_path` as `format`, convert to JSON, validate against `schema`,
 /// return the validated JSON string.
 pub fn read_validate(format: SourceFormat, file_path: &str, schema: &SchemaSource<'_>) -> Result<String, ReaderError> {
+    let (json_str, data) = read_converted(format, file_path)?;
+    validate_against(&data, &json_str, schema)?;
+    Ok(json_str)
+}
+
+/// Read `file_path` as `format` and convert it to JSON — its text and its parsed value —
+/// without validating it. For a tool that transforms the data before it is validated.
+pub fn read_converted(format: SourceFormat, file_path: &str) -> Result<(String, Value), ReaderError> {
     let content = read_file(file_path)?;
 
     let json_str = format.to_json(&content).map_err(|format_err| ReaderError::ParseFailed {
@@ -248,8 +256,7 @@ pub fn read_validate(format: SourceFormat, file_path: &str, schema: &SchemaSourc
         message: json_err.to_string(),
     })?;
 
-    validate_against(&data, &json_str, schema)?;
-    Ok(json_str)
+    Ok((json_str, data))
 }
 
 /// Validate parsed JSON — `data`, whose text is `json_str` — against `schema`.

@@ -1,13 +1,14 @@
 //! Read TOML, apply conditional defaults, validate, write TOML.
 //!
-//! Composes `default_apply_core` (pure logic) with `format_core` (TOML↔JSON)
-//! and `schema_core` (validation). This is the capability layer — it performs IO.
+//! Composes `default_apply_core` (pure logic) with the one read and write engines:
+//! `reader_io` reads and converts the file, the defaults are applied, and
+//! `text_writer_io` validates against the embedded schema and writes the result.
+//! A failure is the engines' own, as a `gate_io::GateError`.
 
-use std::fs;
-use std::path::Path;
-
-use error_core::{IoError, NornirError, SchemaError};
+use gate_io::GateError;
+use reader_io::{ReaderError, SchemaSource, SourceFormat};
 use schema_core::EmbeddedValidator;
+use text_writer_io::TextFormat;
 
 /// Read raw TOML, apply conditional defaults, validate, write clean TOML.
 /// Returns the modified JSON string for downstream use.
@@ -15,59 +16,52 @@ pub fn read_apply_validate_write(
     schema: &EmbeddedValidator,
     input_path: &str,
     output_path: &str,
-) -> Result<String, NornirError> {
-    let toml_str = read_file(input_path)?;
-    let json_str = format_core::toml_to_json(&toml_str)?;
+) -> Result<String, GateError> {
+    let (_, mut data) = reader_io::read_converted(SourceFormat::Toml, input_path)?;
+    let unusable = |message: String| ReaderError::EmbeddedSchemaInvalid { name: schema.schema_name().to_string(), message };
 
-    let mut data: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| SchemaError::InvalidInput(format!("Invalid JSON: {}", e)))?;
-    let schema_value: serde_json::Value = serde_json::from_str(schema.schema_json())
-        .map_err(|e| SchemaError::InvalidInput(format!("Invalid schema JSON: {}", e)))?;
-
+    let schema_value: serde_json::Value =
+        serde_json::from_str(schema.schema_json()).map_err(|json_err| unusable(json_err.to_string()))?;
     default_apply_core::apply_conditional_defaults(&schema_value, &mut data);
 
-    let modified_json = serde_json::to_string(&data)
-        .map_err(|e| SchemaError::InvalidInput(format!("Serialization failed: {}", e)))?;
+    let modified_json = serde_json::to_string(&data).map_err(|json_err| ReaderError::ConvertedJsonInvalid {
+        format: "JSON",
+        message: json_err.to_string(),
+    })?;
 
-    let result = schema.validate(&modified_json)?;
-    if !result.valid {
-        return Err(SchemaError::ValidationFailed(result.message).into());
-    }
-
-    let output_toml = format_core::json_to_toml(&modified_json)?;
-    write_file(output_path, &output_toml)?;
-
+    let embedded = SchemaSource::Embedded { validator: schema, verify_paths: false };
+    text_writer_io::validate_write_with(TextFormat::Toml, &modified_json, output_path, &embedded)?;
     Ok(modified_json)
 }
 
-fn read_file(path: &str) -> Result<String, NornirError> {
-    fs::read_to_string(path).map_err(|e| {
-        IoError::ReadFailed {
-            path: path.to_string(),
-            message: e.to_string(),
-        }
-        .into()
-    })
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
 
-fn write_file(path: &str, content: &str) -> Result<(), NornirError> {
-    let target = Path::new(path);
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| IoError::WriteFailed {
-            path: path.to_string(),
-            message: format!("Cannot create parent directory: {}", e),
-        })?;
+    static SCHEMA: EmbeddedValidator = EmbeddedValidator::new(
+        r#"{"type": "object", "required": ["name", "mode"], "properties": {"name": {"type": "string"}, "mode": {"type": "string", "default": "plain"}}}"#,
+        "test-defaults",
+    );
+
+    #[test]
+    fn defaults_are_applied_before_validation_and_written() {
+        let dir = std::env::temp_dir().join(format!("nornir_default_apply_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("raw.toml");
+        let output = dir.join("out").join("defaulted.toml");
+        fs::write(&input, "name = \"agent\"\n").unwrap();
+
+        let json = read_apply_validate_write(&SCHEMA, input.to_str().unwrap(), output.to_str().unwrap()).unwrap();
+        let data: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(data["mode"], "plain");
+        assert!(fs::read_to_string(&output).unwrap().contains("mode = \"plain\""));
+        fs::remove_dir_all(&dir).ok();
     }
-    let with_newline = if content.ends_with('\n') {
-        content.to_string()
-    } else {
-        format!("{}\n", content)
-    };
-    fs::write(path, &with_newline).map_err(|e| {
-        IoError::WriteFailed {
-            path: path.to_string(),
-            message: e.to_string(),
-        }
-        .into()
-    })
+
+    #[test]
+    fn a_missing_input_is_a_read_error() {
+        let error = read_apply_validate_write(&SCHEMA, "/absolutely/not/here.toml", "/tmp/unused.toml").unwrap_err();
+        assert_eq!(error.error_type(), "read_error");
+    }
 }

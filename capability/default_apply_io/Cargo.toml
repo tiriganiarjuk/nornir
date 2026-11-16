@@ -9,6 +9,7 @@ crate-type = ["rlib"]
 [dependencies]
 serde_json = { workspace = true }
 default_apply_core = { path = "../../core/default_apply_core" }
-format_core = { path = "../../core/format_core" }
+gate_io = { path = "../gate_io" }
+reader_io = { path = "../reader_io" }
 schema_core = { path = "../../core/schema_core" }
-error_core = { path = "../../core/error_core" }
+text_writer_io = { path = "../text_writer_io" }

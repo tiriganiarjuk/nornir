@@ -911,10 +911,11 @@ name = "default_apply_io"
 version = "0.1.0"
 dependencies = [
  "default_apply_core",
- "error_core",
- "format_core",
+ "gate_io",
+ "reader_io",
  "schema_core",
  "serde_json",
+ "text_writer_io",
 ]
 
 [[package]]
