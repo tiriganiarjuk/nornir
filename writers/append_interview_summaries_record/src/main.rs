@@ -3,7 +3,7 @@ use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfi
 
 fn main() {
     let base = write_engine::ai_home();
-    match write_engine::run(&WriterConfig {
+    std::process::exit(write_engine::run_cli(&WriterConfig {
         name: "append_interview_summaries_record",
         schema: &SUMMARIES,
         schema_source_path: base.join("spaces/bragi/schemas/summaries.schema.json").display().to_string(),
@@ -15,11 +15,5 @@ fn main() {
         },
         batch_size: None,
         stamps: Stamps::NONE,
-    }) {
-        Ok(msg) => println!("{msg}"),
-        Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(1);
-        }
-    }
+    }));
 }

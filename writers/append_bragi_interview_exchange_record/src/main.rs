@@ -3,7 +3,7 @@ use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfi
 
 fn main() {
     let base = write_engine::ai_home();
-    match write_engine::run(&WriterConfig {
+    std::process::exit(write_engine::run_cli(&WriterConfig {
         name: "append_bragi_interview_exchange_record",
         schema: &INTERVIEW_EXCHANGE,
         schema_source_path: base.join("smidja/nornir/schemas/tools/interview-exchange.schema.json").display().to_string(),
@@ -18,11 +18,5 @@ fn main() {
             timestamp: Some("ts"),
             session: Some("session"),
         },
-    }) {
-        Ok(msg) => println!("{msg}"),
-        Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(1);
-        }
-    }
+    }));
 }

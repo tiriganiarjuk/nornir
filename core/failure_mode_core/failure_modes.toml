@@ -155,13 +155,13 @@ adversarial = "stop"
 [record_absent]
 class       = "read_error"
 standard    = "Nothing arrived on stdin."
-route       = "Pipe the JSON record into {tool}. For data with quotes or apostrophes, use a quoted heredoc: {tool} <<'RECORD', then the record, then RECORD."
+route       = "Pipe the JSON record into {invocation}. For data with quotes or apostrophes, use a quoted heredoc: {invocation} <<'RECORD', then the record, then RECORD."
 adversarial = "stop"
 
 [record_not_json]
 class       = "parse_error"
 standard    = "The record handed to {tool} is not valid JSON: {reason}."
-route       = "Pipe one JSON record on stdin. For data with quotes or apostrophes, use a quoted heredoc: {tool} <<'RECORD', then the record, then RECORD."
+route       = "Pipe one JSON record on stdin. For data with quotes or apostrophes, use a quoted heredoc: {invocation} <<'RECORD', then the record, then RECORD."
 adversarial = "stop"
 
 [record_name_not_plain]
@@ -210,6 +210,54 @@ adversarial = "stop"
 class       = "validation_error"
 standard    = "{reason}."
 route       = "This writer stamps {fields} itself; leave those fields out of the record."
+adversarial = "stop"
+
+[arguments_invalid]
+class       = "argument_error"
+standard    = "{reason}."
+route       = "Run {tool} --help for the arguments it takes."
+adversarial = "stop"
+
+[store_open_file_missing]
+class       = "read_error"
+standard    = "The open file '{path}' does not exist, so there is nothing to store."
+route       = "Store a session only after its writer has written to the open file; ask the user if the file should be there."
+adversarial = "stop"
+
+[store_open_file_empty]
+class       = "validation_error"
+standard    = "The open file '{path}' is empty, so there is nothing to store."
+route       = "Write at least one record before storing a session."
+adversarial = "stop"
+
+[store_first_record_unstamped]
+class       = "validation_error"
+standard    = "The open file's first record has no usable session stamp: {reason}."
+route       = "An open file begins with a record its writer stamped. Report this message to the user."
+adversarial = "stop"
+
+[store_sessions_directory_absent]
+class       = "write_error"
+standard    = "The sessions directory '{path}' does not exist; this tool stores only into a directory that is already there."
+route       = "Ask the user to create it."
+adversarial = "stop"
+
+[store_session_already_stored]
+class       = "write_error"
+standard    = "A session is already stored at '{path}'; nothing was overwritten, and the open file was left untouched."
+route       = "Report the session to the user; a stored session is never replaced."
+adversarial = "stop"
+
+[store_copy_mismatch]
+class       = "write_error"
+standard    = "The stored copy '{copy}' did not match the open file '{source}', so it was removed; the open file was left untouched."
+route       = "Report this message to the user; the store is run again once the cause is known."
+adversarial = "stop"
+
+[store_index_record_invalid]
+class       = "validation_error"
+standard    = "The session record does not match the index schema: {reason}. The session copy exists; the index was not written, and the open file was left untouched."
+route       = "Report this message to the user; the session copy is in place and the index needs its record."
 adversarial = "stop"
 
 [writer_engine_fault]

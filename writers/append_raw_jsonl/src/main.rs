@@ -3,7 +3,7 @@ use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfi
 
 fn main() {
     let base = write_engine::ai_home();
-    match write_engine::run(&WriterConfig {
+    std::process::exit(write_engine::run_cli(&WriterConfig {
         name: "append_raw_jsonl",
         schema: &RAW_JSONL_RECORD,
         schema_source_path: "schemas/tools/raw-jsonl.schema.json".into(),
@@ -15,11 +15,5 @@ fn main() {
         },
         batch_size: None,
         stamps: Stamps::NONE,
-    }) {
-        Ok(msg) => println!("{msg}"),
-        Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(1);
-        }
-    }
+    }));
 }

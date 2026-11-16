@@ -10,6 +10,7 @@ crate-type = ["rlib"]
 serde_json = { workspace = true }
 error_core = { path = "../../core/error_core" }
 failure_mode_core = { path = "../../core/failure_mode_core" }
+tool_face_io = { path = "../tool_face_io" }
 schema_core = { path = "../../core/schema_core" }
 path_core = { path = "../../core/path_core" }
 stamp_core = { path = "../../core/stamp_core" }

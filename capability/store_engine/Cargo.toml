@@ -7,7 +7,9 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
+failure_mode_core = { path = "../../core/failure_mode_core" }
 serde_json = { workspace = true }
+tool_face_io = { path = "../tool_face_io" }
 sha2 = { workspace = true }
 schema_core = { path = "../../core/schema_core" }
 stamp_core = { path = "../../core/stamp_core" }

@@ -18,6 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use failure_mode_core::Failure;
 use schema_core::EmbeddedValidator;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -72,42 +73,19 @@ enum StoreError {
 }
 
 impl StoreError {
-    fn format(&self, config: &StoreConfig) -> String {
+    /// The registry's failure mode for this error, its slots filled.
+    fn failure(&self, config: &StoreConfig) -> Failure {
+        use failure_mode_core as modes;
         match self {
-            StoreError::Usage(msg) => format!("FAIL:usage — {msg}\n\nRun: {} --help", config.name),
-            StoreError::OpenFileMissing(path) => format!(
-                "FAIL:open file does not exist — nothing to store.\n\nExpected: {}",
-                path.display()
-            ),
-            StoreError::OpenFileEmpty(path) => format!(
-                "FAIL:open file is empty — nothing to store.\n\nFile: {}\n\
-                 Write at least one record before storing a session.",
-                path.display()
-            ),
-            StoreError::FirstRecord(msg) => format!(
-                "FAIL:first record — {msg}\n\n\
-                 The open file must begin with a record stamped by its writer."
-            ),
-            StoreError::SessionsDirMissing(path) => format!(
-                "FAIL:sessions directory does not exist.\n\nExpected: {}\nRun: mkdir -p {}",
-                path.display(),
-                path.display()
-            ),
-            StoreError::AlreadyStored(path) => format!(
-                "FAIL:a session with this id is already stored — refusing to overwrite.\n\n\
-                 Path: {}\nThe open file was left untouched.",
-                path.display()
-            ),
-            StoreError::CopyMismatch { source, copy } => format!(
-                "FAIL:copy verification failed — the stored copy does not match the open file.\n\n\
-                 Source: {}\nCopy:   {} (removed)\nThe open file was left untouched.",
-                source.display(),
-                copy.display()
-            ),
-            StoreError::IndexRecordInvalid(msg) => format!(
-                "FAIL:session record — {msg}\n\nThe session copy exists; the index was not written and the open file was left untouched."
-            ),
-            StoreError::IoFailed(msg) => format!("FAIL:IO error — {msg}"),
+            StoreError::Usage(reason) => modes::arguments_invalid(reason, config.name),
+            StoreError::OpenFileMissing(path) => modes::store_open_file_missing(path.display()),
+            StoreError::OpenFileEmpty(path) => modes::store_open_file_empty(path.display()),
+            StoreError::FirstRecord(reason) => modes::store_first_record_unstamped(reason),
+            StoreError::SessionsDirMissing(path) => modes::store_sessions_directory_absent(path.display()),
+            StoreError::AlreadyStored(path) => modes::store_session_already_stored(path.display()),
+            StoreError::CopyMismatch { source, copy } => modes::store_copy_mismatch(copy.display(), source.display()),
+            StoreError::IndexRecordInvalid(reason) => modes::store_index_record_invalid(reason),
+            StoreError::IoFailed(reason) => modes::writer_io_failed(reason),
         }
     }
 }
@@ -283,13 +261,13 @@ fn format_help(config: &StoreConfig) -> String {
          \x20 Nothing is removed before the copy is proven identical.\n\
          \n\
          OUTPUT:\n\
-         \x20 OK:<id>         Session stored\n\
-         \x20 FAIL:<reason>   Nothing stored — see reason\n\
+         \x20 success   the stored session's id on stdout\n\
+         \x20 refusal   stderr: the failure class on the first line, then the message; nothing is stored\n\
          \n\
          EXIT CODES:\n\
-         \x20 0  success\n\
-         \x20 1  failure\n\
-         \x20 2  usage error",
+         \x20 0  stored\n\
+         \x20 1  refused or failed\n\
+         \x20 2  wrong arguments",
         name = config.name,
         open = config.open_file.display(),
         sessions = config.sessions_dir.display(),
@@ -309,24 +287,22 @@ pub fn ai_home() -> PathBuf {
     write_engine::ai_home()
 }
 
-/// Outcome of a run, so the binary can pick the exit code.
-pub enum StoreOutcome {
-    Stored(String),
-    Help(String),
-}
-
-/// Main entry point for store binaries. Parses args, stores the session.
-///
-/// Returns `Err((exit_code, message))` on failure: 2 for usage, 1 otherwise.
-pub fn run(config: &StoreConfig) -> Result<StoreOutcome, (i32, String)> {
+/// Main entry point for store binaries: parses the arguments, stores the session, and
+/// presents the outcome under the CLI contract (`MUST_READ_BEFORE_BUILDING.md`
+/// § Approved interfaces) — the session id on stdout, a refusal's class and message on
+/// stderr, the usage on wrong arguments. Returns the exit code; a store's `main()` exits with it.
+pub fn run_cli(config: &StoreConfig) -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        return Ok(StoreOutcome::Help(format_help(config)));
+        return tool_face_io::cli_report(Ok::<_, Failure>(Some(format_help(config))), Failure::error_type);
     }
-    let note = parse_note(&args).map_err(|e| (2, e.format(config)))?;
-    store(config, &note)
-        .map(StoreOutcome::Stored)
-        .map_err(|e| (1, e.format(config)))
+    match parse_note(&args) {
+        Err(error) => tool_face_io::cli_usage(&error.failure(config).standard_message()),
+        Ok(note) => tool_face_io::cli_report(
+            store(config, &note).map(Some).map_err(|error| error.failure(config)),
+            Failure::error_type,
+        ),
+    }
 }
 
 /// Store the open file as a session. Returns the session id.
@@ -341,7 +317,7 @@ fn store(config: &StoreConfig, note: &ClosingNote) -> Result<String, StoreError>
     append_index_record(config, &record)?;
 
     write_engine::write_truncate_fsync(&config.open_file, "").map_err(StoreError::IoFailed)?;
-    Ok(format!("OK:{}", identity.id))
+    Ok(identity.id)
 }
 
 #[cfg(test)]
@@ -460,7 +436,7 @@ mod tests {
         let config = config_in(&dir);
         fs::write(&config.open_file, RECORDS).unwrap();
 
-        assert_eq!(store(&config, &note()).unwrap(), "OK:20261110T045515Z");
+        assert_eq!(store(&config, &note()).unwrap(), "20261110T045515Z");
 
         let stored = dir.join("sessions/20261110T045515Z.jsonl");
         assert_eq!(fs::read_to_string(&stored).unwrap(), RECORDS);

@@ -111,9 +111,10 @@ impl WriteError {
     /// The registry's failure mode for this error, its slots filled.
     fn failure(&self, config: &WriterConfig) -> Failure {
         let tool = config.name;
+        let invocation = invocation(config);
         match self {
-            WriteError::StdinEmpty => failure_mode_core::record_absent(tool),
-            WriteError::InvalidJson(detail) => failure_mode_core::record_not_json(tool, detail),
+            WriteError::StdinEmpty => failure_mode_core::record_absent(&invocation),
+            WriteError::InvalidJson(detail) => failure_mode_core::record_not_json(tool, detail, &invocation),
             WriteError::SchemaValidation(report) => failure_mode_core::data_not_matching_schema(report),
             WriteError::PathTraversal(name) => failure_mode_core::record_name_not_plain(name),
             WriteError::FileExists(path) => failure_mode_core::output_exists(path),
@@ -134,10 +135,6 @@ impl WriteError {
         }
     }
 
-    /// The refusal as the writers present it: `FAIL:` and the full message with its route.
-    fn format(&self, config: &WriterConfig) -> String {
-        format!("FAIL:{}", self.failure(config).standard_message())
-    }
 }
 
 // =============================================================================
@@ -194,9 +191,14 @@ fn resolve_output_path(
 // --help output
 // =============================================================================
 
-fn format_help(config: &WriterConfig) -> String {
+/// How the writer is called: its name, and `<name>` when its output path takes one.
+fn invocation(config: &WriterConfig) -> String {
     let needs_arg = !matches!(config.output, OutputPath::FixedFile(_));
-    let arg_str = if needs_arg { " <name>" } else { "" };
+    format!("{}{}", config.name, if needs_arg { " <name>" } else { "" })
+}
+
+fn format_help(config: &WriterConfig) -> String {
+    let invocation = invocation(config);
 
     let mut lines = Vec::new();
     lines.push(format!("{} — Validated enforcement output tool\n", config.name));
@@ -204,10 +206,10 @@ fn format_help(config: &WriterConfig) -> String {
 
     lines.push(String::new());
     lines.push("USAGE:".into());
-    lines.push(format!("  echo '<json>' | {}{}", config.name, arg_str));
+    lines.push(format!("  echo '<json>' | {invocation}"));
     lines.push(String::new());
     lines.push("  For data with quotes or apostrophes, use heredoc:".into());
-    lines.push(format!("  {}{} <<'RECORD'", config.name, arg_str));
+    lines.push(format!("  {invocation} <<'RECORD'"));
     lines.push("  {\"uid\":\"...\",\"assessment\":\"...\"}".into());
     lines.push("  RECORD".into());
 
@@ -270,18 +272,21 @@ fn format_stamps(stamps: &Stamps) -> String {
     parts.join("; ")
 }
 
-/// Format the OUTPUT and EXIT CODES sections of --help output.
+/// Format the OUTPUT and EXIT CODES sections of --help output — the CLI contract
+/// (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces).
 fn format_help_output(config: &WriterConfig, lines: &mut Vec<String>) {
+    let written = match config.frequency {
+        WriteFrequency::Record => "the record is written",
+        WriteFrequency::Batch => "every record of the batch is written",
+    };
     lines.push("OUTPUT:".into());
-    match config.frequency {
-        WriteFrequency::Record => lines.push("  OK              Record written successfully".into()),
-        WriteFrequency::Batch => lines.push("  OK:<count>      Records written successfully".into()),
-    }
-    lines.push("  FAIL:<reason>   Validation or write failed — see reason".into());
+    lines.push(format!("  success   nothing on stdout; {written}"));
+    lines.push("  refusal   stderr: the failure class on the first line, then the message; nothing is written".into());
     lines.push(String::new());
     lines.push("EXIT CODES:".into());
-    lines.push("  0  success".into());
-    lines.push("  1  failure".into());
+    lines.push("  0  written".into());
+    lines.push("  1  refused or failed".into());
+    lines.push("  2  wrong arguments".into());
 }
 
 // =============================================================================
@@ -503,52 +508,53 @@ pub fn append_line_fsync(path: &Path, line: &str) -> Result<(), String> {
 
 /// Main entry point for all writer binaries.
 ///
-/// Reads config, parses args, reads stdin, validates, writes.
-/// Returns `Ok(message)` on success or `Err(message)` on failure.
-/// The caller is responsible for printing and calling `process::exit`.
-///
-pub fn run(config: &WriterConfig) -> Result<String, String> {
+/// Reads the arguments and stdin, validates, writes, and presents the outcome under the
+/// CLI contract (`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces): nothing on stdout
+/// on success, the failure class and message on stderr on a refusal, the usage on wrong
+/// arguments. Returns the exit code; a writer's `main()` exits with it.
+pub fn run_cli(config: &WriterConfig) -> i32 {
+    match run_tool(config) {
+        Err(WriteError::MissingArg(argument)) => {
+            tool_face_io::cli_usage(&failure_mode_core::argument_missing(argument, config.name).standard_message())
+        }
+        outcome => tool_face_io::cli_report(outcome.map_err(|error| error.failure(config)), Failure::error_type),
+    }
+}
+
+/// The writer's one behaviour: `Some(text)` for --help and --dump-schema, `None` once the
+/// record or batch is written.
+fn run_tool(config: &WriterConfig) -> Result<Option<String>, WriteError> {
     let args: Vec<String> = std::env::args().collect();
 
-    // --help
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        return Ok(format_help(config));
+        return Ok(Some(format_help(config)));
     }
-
-    // --dump-schema: return embedded schema JSON
     if args.iter().any(|a| a == "--dump-schema") {
-        return Ok(config.schema.schema_json().to_string());
+        return Ok(Some(config.schema.schema_json().to_string()));
     }
 
-    // CLI arg (filename component) if needed
+    // CLI arg (filename component) if needed; resolving it validates against traversal.
     let cli_arg = args.get(1).map(|s| s.as_str());
+    let output_path = resolve_output_path(config, cli_arg)?;
 
-    // Resolve output path (includes traversal validation)
-    let output_path = resolve_output_path(config, cli_arg)
-        .map_err(|e| e.format(config))?;
-
-    // Read stdin
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
-        .map_err(|e| WriteError::IoFailed(format!("reading stdin: {}", e)).format(config))?;
+        .map_err(|e| WriteError::IoFailed(format!("reading stdin: {}", e)))?;
     let input = input.trim();
-
     if input.is_empty() {
-        return Err(WriteError::StdinEmpty.format(config));
+        return Err(WriteError::StdinEmpty);
     }
 
-    // Parse and validate based on frequency
-    let result = match config.frequency {
-        WriteFrequency::Record => run_record(config, &output_path, input),
-        WriteFrequency::Batch => run_batch(config, &output_path, input),
-    };
-
-    result.map_err(|e| e.format(config))
+    match config.frequency {
+        WriteFrequency::Record => run_record(config, &output_path, input)?,
+        WriteFrequency::Batch => run_batch(config, &output_path, input)?,
+    }
+    Ok(None)
 }
 
 /// Handle single-record writes.
-fn run_record(config: &WriterConfig, output_path: &Path, input: &str) -> Result<String, WriteError> {
+fn run_record(config: &WriterConfig, output_path: &Path, input: &str) -> Result<(), WriteError> {
     // Stamp first: the stamps are part of the record the schema sees
     let stamped;
     let input = if config.stamps.is_none() {
@@ -609,7 +615,7 @@ fn run_record(config: &WriterConfig, output_path: &Path, input: &str) -> Result<
         }
     }
 
-    Ok("OK".to_string())
+    Ok(())
 }
 
 fn validate_batch_lines(config: &WriterConfig, lines: &[&str]) -> Result<Vec<String>, WriteError> {
@@ -687,7 +693,7 @@ fn write_json_array(output_path: &Path, validated: &[String]) -> Result<(), Writ
 }
 
 /// Handle batch writes (multiple JSONL lines, all-or-nothing).
-fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<String, WriteError> {
+fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<(), WriteError> {
     let lines = batch_lines(config, input)?;
 
     let stamped_lines;
@@ -706,7 +712,7 @@ fn run_batch(config: &WriterConfig, output_path: &Path, input: &str) -> Result<S
         OutputFormat::Json => write_json_array(output_path, &validated)?,
     }
 
-    Ok(format!("OK:{}", validated.len()))
+    Ok(())
 }
 
 // =============================================================================
@@ -928,7 +934,7 @@ mod tests {
 
         let err = run_record(&config, &path, r#"{"exchange": 9, "stt": "x"}"#).unwrap_err();
         assert!(matches!(err, WriteError::Stamp(_)));
-        assert!(err.format(&config).contains("exchange, ts, session"));
+        assert!(err.failure(&config).to_string().contains("exchange, ts, session"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -955,7 +961,7 @@ mod tests {
         config.frequency = WriteFrequency::Batch;
 
         let input = "{\"stt\": \"a\"}\n{\"stt\": \"b\"}\n{\"stt\": \"c\"}";
-        assert_eq!(run_batch(&config, &path, input).unwrap(), "OK:3");
+        run_batch(&config, &path, input).unwrap();
 
         let records = records_in(&path);
         let numbers: Vec<_> = records.iter().map(|r| r["exchange"].as_u64().unwrap()).collect();

@@ -63,13 +63,7 @@ from loguru import logger
 
 NORNIR_DIR = Path(__file__).resolve().parent
 
-MAIN_TAIL = """    }) {
-        Ok(msg) => println!("{msg}"),
-        Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(1);
-        }
-    }
+MAIN_TAIL = """    }));
 }
 """
 
@@ -152,7 +146,7 @@ def build_writer_main_rs(config: argparse.Namespace) -> str:
         "\n"
         "fn main() {\n"
         "    let base = write_engine::ai_home();\n"
-        "    match write_engine::run(&WriterConfig {\n"
+        "    std::process::exit(write_engine::run_cli(&WriterConfig {\n"
         f'        name: "{config.name}",\n'
         f"        schema: &{config.schema_const},\n"
         f'        schema_source_path: base.join("{config.schema_path}").display().to_string(),\n'
@@ -177,11 +171,11 @@ def build_store_main_rs(config: argparse.Namespace) -> str:
         sys.exit(1)
     return (
         f"use schemas_embedded::{config.schema_const};\n"
-        "use store_engine::{StoreConfig, StoreOutcome};\n"
+        "use store_engine::StoreConfig;\n"
         "\n"
         "fn main() {\n"
         "    let base = store_engine::ai_home();\n"
-        "    match store_engine::run(&StoreConfig {\n"
+        "    std::process::exit(store_engine::run_cli(&StoreConfig {\n"
         f'        name: "{config.name}",\n'
         f'        open_file: base.join("{config.open_file}"),\n'
         f'        sessions_dir: base.join("{config.sessions_dir}"),\n'
@@ -190,13 +184,7 @@ def build_store_main_rs(config: argparse.Namespace) -> str:
         f'        index_schema_source_path: base.join("{config.schema_path}").display().to_string(),\n'
         f'        session_field: "{config.session_field}",\n'
         f'        timestamp_field: "{config.timestamp_field}",\n'
-        "    }) {\n"
-        "        Ok(StoreOutcome::Stored(msg)) | Ok(StoreOutcome::Help(msg)) => println!(\"{msg}\"),\n"
-        "        Err((code, msg)) => {\n"
-        "            eprintln!(\"{msg}\");\n"
-        "            std::process::exit(code);\n"
-        "        }\n"
-        "    }\n"
+        "    }));\n"
         "}\n"
     )
 

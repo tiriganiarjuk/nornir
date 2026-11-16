@@ -4079,11 +4079,13 @@ dependencies = [
 name = "store_engine"
 version = "0.1.0"
 dependencies = [
+ "failure_mode_core",
  "schema_core",
  "serde_json",
  "sha2",
  "stamp_core",
  "time_core",
+ "tool_face_io",
  "write_engine",
 ]
 
@@ -5636,6 +5638,7 @@ dependencies = [
  "schema_core",
  "serde_json",
  "stamp_core",
+ "tool_face_io",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@ use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfi
 
 fn main() {
     let base = write_engine::ai_home();
-    match write_engine::run(&WriterConfig {
+    std::process::exit(write_engine::run_cli(&WriterConfig {
         name: "append_embedding_normalize_batch_20",
         schema: &EMBEDDING_TARGET,
         schema_source_path: base.join("spaces/bragi/definitions/schemas/embedding-target.schema.json").display().to_string(),
@@ -14,11 +14,5 @@ fn main() {
         ),
         batch_size: Some(20),
         stamps: Stamps::NONE,
-    }) {
-        Ok(msg) => println!("{msg}"),
-        Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(1);
-        }
-    }
+    }));
 }
