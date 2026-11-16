@@ -8,6 +8,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 binary_format_core = { path = "../../core/binary_format_core" }
+failure_mode_core = { path = "../../core/failure_mode_core" }
 write_engine = { path = "../write_engine" }
 flate2 = { workspace = true }
 thiserror = { workspace = true }

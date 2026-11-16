@@ -218,6 +218,150 @@ standard    = "The writer failed after validating the record: {reason}."
 route       = "This is a fault in the writer, not in the record. Report this message to the user."
 adversarial = "stop"
 
+[png_signature_missing]
+class       = "parse_error"
+standard    = "The bytes are not a PNG: the first 8 bytes are not the PNG signature."
+route       = "Hand over PNG bytes."
+adversarial = "stop"
+
+[png_chunk_truncated]
+class       = "parse_error"
+standard    = "The PNG is cut short: a chunk starting at byte {offset} runs past the end of the data."
+route       = "The bytes are incomplete; hand over the whole file."
+adversarial = "stop"
+
+[png_chunk_corrupt]
+class       = "parse_error"
+standard    = "PNG chunk '{kind}' is corrupt: its CRC does not match its content."
+route       = "The bytes are damaged; re-encode the image, or fetch it again."
+adversarial = "stop"
+
+[png_chunk_not_accepted]
+class       = "verification_error"
+standard    = "PNG chunk '{kind}' is not accepted: only image data and fixed-size colour facts pass (IHDR, PLTE, IDAT, IEND, tRNS, gAMA, cHRM, sRGB, sBIT, bKGD, pHYs)."
+route       = "Re-encode the image without text, metadata or profile chunks."
+adversarial = "stop"
+
+[png_chunk_too_large]
+class       = "verification_error"
+standard    = "PNG chunk '{kind}' holds {length} bytes; that kind holds at most {limit}."
+route       = "Re-encode the image so each chunk carries only what its kind holds."
+adversarial = "stop"
+
+[png_chunks_out_of_order]
+class       = "parse_error"
+standard    = "The PNG's chunks are out of order: {reason}."
+route       = "Re-encode the image with a PNG encoder."
+adversarial = "stop"
+
+[png_trailing_data]
+class       = "verification_error"
+standard    = "The PNG has {bytes} bytes after its end chunk; a passing file ends at the end chunk."
+route       = "Hand over the PNG alone, ending at its end chunk."
+adversarial = "stop"
+
+[png_header_invalid]
+class       = "parse_error"
+standard    = "The PNG header is invalid: {reason}."
+route       = "Re-encode the image with a PNG encoder."
+adversarial = "stop"
+
+[png_shape_mismatch]
+class       = "verification_error"
+standard    = "The PNG's {field} is {found}; the stated shape has {expected}."
+route       = "Report the mismatch to the user; the image or the stated shape is corrected before the call is made again."
+adversarial = "stop"
+
+[png_pixel_data_invalid]
+class       = "parse_error"
+standard    = "The PNG's pixel data is invalid: {reason}."
+route       = "Re-encode the image with a PNG encoder."
+adversarial = "stop"
+
+[png_pixel_data_excess]
+class       = "verification_error"
+standard    = "The PNG's pixel data holds more than the image: {reason}."
+route       = "Re-encode the image so its pixel data is exactly the image."
+adversarial = "stop"
+
+[png_undecodable]
+class       = "parse_error"
+standard    = "The PNG cannot be decoded: {reason}."
+route       = "Re-encode the image with a PNG encoder."
+adversarial = "stop"
+
+[mesh_truncated]
+class       = "parse_error"
+standard    = "The quantized-mesh tile is cut short: the {section} needs {needed} more bytes but {remaining} remain."
+route       = "The bytes are incomplete; hand over the whole tile."
+adversarial = "stop"
+
+[mesh_header_invalid]
+class       = "parse_error"
+standard    = "The quantized-mesh header is invalid: {reason}."
+route       = "Re-encode the tile with a quantized-mesh encoder."
+adversarial = "stop"
+
+[mesh_vertex_data_invalid]
+class       = "parse_error"
+standard    = "The quantized-mesh vertex data is invalid: {reason}."
+route       = "Re-encode the tile with a quantized-mesh encoder."
+adversarial = "stop"
+
+[mesh_indices_invalid]
+class       = "parse_error"
+standard    = "The quantized-mesh triangle indices are invalid: {reason}."
+route       = "Re-encode the tile with a quantized-mesh encoder."
+adversarial = "stop"
+
+[mesh_edges_invalid]
+class       = "parse_error"
+standard    = "The quantized-mesh {edge} edge list is invalid: {reason}."
+route       = "Re-encode the tile with a quantized-mesh encoder."
+adversarial = "stop"
+
+[mesh_extension_not_accepted]
+class       = "verification_error"
+standard    = "The quantized-mesh extension is not accepted: {reason}."
+route       = "Re-encode the tile without extensions."
+adversarial = "stop"
+
+[height_rules_invalid]
+class       = "rules_error"
+standard    = "The height rules are invalid: {reason}."
+route       = "Correct the height rules passed in the call; the message names what is wrong."
+adversarial = "stop"
+
+[height_grid_size_mismatch]
+class       = "rules_error"
+standard    = "The grid is {width} by {height} but holds {found} heights, not {expected}."
+route       = "Pass a grid of exactly width × height heights."
+adversarial = "stop"
+
+[heights_unrepairable]
+class       = "repair_error"
+standard    = "{unrepaired} pixels could not be repaired: no good pixel is connected to them, so the tile holds no usable heights under these rules."
+route       = "Report the tile to the user; it is replaced, or the height rules are reviewed."
+adversarial = "stop"
+
+[height_encoding_unknown]
+class       = "rules_error"
+standard    = "Height encoding '{name}' is not known; the encodings are: {known}."
+route       = "Pass one of the encodings named."
+adversarial = "stop"
+
+[shape_not_terrarium]
+class       = "rules_error"
+standard    = "Terrarium heights are stored in 3 channels of 8 bits; the shape given has {channels} channels of {bit_depth} bits."
+route       = "State the shape of a terrarium tile: 3 channels of 8 bits."
+adversarial = "stop"
+
+[compression_failed]
+class       = "compression_error"
+standard    = "Cannot compress '{path}': {reason}."
+route       = "This is a fault in the writer, not in the bytes. Report this message to the user."
+adversarial = "stop"
+
 [embedded_schema_unusable]
 class       = "schema_error"
 standard    = "The schema '{name}' compiled into this tool is unusable: {reason}."

@@ -47,37 +47,42 @@ pub struct HeightGrid {
     pub highest_m: f32,
 }
 
-#[derive(Debug, PartialEq, thiserror::Error)]
+/// Class and message come from the error registry (`failure_mode_core`): `rules_error`
+/// when the rules or grid size the caller stated cannot be used, `repair_error` when the
+/// heights hold nothing to repair from.
+#[derive(Debug, PartialEq)]
 pub enum ElevationError {
-    #[error("height rules are invalid: {0}")]
     RulesInvalid(String),
-
-    #[error("the grid is {width} by {height} but holds {found} heights, not {expected}")]
-    SizeMismatch {
-        width: usize,
-        height: usize,
-        expected: usize,
-        found: usize,
-    },
-
-    #[error(
-        "{unrepaired} pixels could not be repaired: no good pixel is connected to them. \
-         The tile holds no usable heights under these rules."
-    )]
+    SizeMismatch { width: usize, height: usize, expected: usize, found: usize },
     NothingToRepairFrom { unrepaired: usize },
 }
 
 impl ElevationError {
-    /// The failure class a caller branches on — the `error.type` of a result.
-    /// `rules_error`: the rules or grid size the caller stated cannot be used.
-    /// `repair_error`: the heights hold nothing to repair from.
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled.
+    pub fn failure(&self) -> failure_mode_core::Failure {
+        use failure_mode_core as modes;
         match self {
-            ElevationError::RulesInvalid(_) | ElevationError::SizeMismatch { .. } => "rules_error",
-            ElevationError::NothingToRepairFrom { .. } => "repair_error",
+            ElevationError::RulesInvalid(reason) => modes::height_rules_invalid(reason),
+            ElevationError::SizeMismatch { width, height, expected, found } => {
+                modes::height_grid_size_mismatch(width, height, found, expected)
+            }
+            ElevationError::NothingToRepairFrom { unrepaired } => modes::heights_unrepairable(unrepaired),
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of a result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+impl std::fmt::Display for ElevationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for ElevationError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flaw {

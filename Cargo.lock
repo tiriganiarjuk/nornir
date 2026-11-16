@@ -246,6 +246,7 @@ dependencies = [
 name = "binary_format_core"
 version = "0.1.0"
 dependencies = [
+ "failure_mode_core",
  "flate2",
  "png",
  "thiserror 2.0.18",
@@ -257,6 +258,7 @@ version = "0.1.0"
 dependencies = [
  "binary_format_core",
  "elevation_core",
+ "failure_mode_core",
  "png",
  "serde_json",
  "thiserror 2.0.18",
@@ -267,6 +269,7 @@ name = "binary_writer_io"
 version = "0.1.0"
 dependencies = [
  "binary_format_core",
+ "failure_mode_core",
  "flate2",
  "thiserror 2.0.18",
  "write_engine",
@@ -973,6 +976,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 name = "elevation_core"
 version = "0.1.0"
 dependencies = [
+ "failure_mode_core",
  "thiserror 2.0.18",
 ]
 

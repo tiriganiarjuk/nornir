@@ -23,6 +23,7 @@ use serde_json::json;
 
 use binary_format_core::png::{decode_png, PngError};
 use elevation_core::{decode_terrarium, repair_heights, ElevationError, HeightGrid};
+use failure_mode_core::Failure;
 
 pub use binary_format_core::png::PngExpectation;
 pub use elevation_core::HeightRules;
@@ -34,54 +35,74 @@ pub enum HeightEncoding {
     Terrarium,
 }
 
+/// Every height encoding, by the name callers spell it with.
+const HEIGHT_ENCODINGS: [(&str, HeightEncoding); 1] = [("terrarium", HeightEncoding::Terrarium)];
+
 impl HeightEncoding {
     /// The encoding with this name, as callers spell it.
     pub fn from_name(name: &str) -> Result<Self, BinaryReadError> {
-        match name {
-            "terrarium" => Ok(HeightEncoding::Terrarium),
-            other => Err(BinaryReadError::EncodingUnknown { name: other.to_string() }),
-        }
+        HEIGHT_ENCODINGS
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map(|(_, encoding)| *encoding)
+            .ok_or_else(|| BinaryReadError::EncodingUnknown { name: name.to_string() })
+    }
+
+    /// The names of every encoding, for a refusal that lists them.
+    fn known_names() -> String {
+        HEIGHT_ENCODINGS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
     }
 }
 
-/// Every failure a binary reader can produce. Display strings are what the
-/// Python caller sees as the `ValueError` text.
-#[derive(Debug, thiserror::Error)]
+/// Every failure a binary reader can produce. Class and message come from the error
+/// registry (`failure_mode_core`); a refused PNG or unusable heights carry the core
+/// crate's own mode, with the file named first.
+#[derive(Debug)]
 pub enum BinaryReadError {
-    #[error("Cannot read '{path}': {message}")]
     ReadFailed { path: String, message: String },
-
-    #[error("Refused to read '{path}': {source}")]
     PngRefused { path: String, source: PngError },
-
-    #[error("Height encoding '{name}' is not known; the encodings are: terrarium")]
     EncodingUnknown { name: String },
-
-    #[error(
-        "Terrarium heights are stored in 3 channels of 8 bits; \
-         the shape given has {channels} channels of {bit_depth} bits"
-    )]
     ShapeNotTerrarium { channels: u8, bit_depth: u8 },
-
-    #[error("Cannot use the heights in '{path}': {source}")]
     HeightsRefused { path: String, source: ElevationError },
 }
 
 impl BinaryReadError {
-    /// The failure class a caller branches on — the `error.type` of the reader result.
-    /// `read_error`: the file could not be read. `parse_error` / `verification_error`:
-    /// the class of the PNG error underneath. `rules_error`: the encoding, shape or
-    /// height rules the caller stated cannot be used. `repair_error`: the tile holds
-    /// no usable heights under those rules.
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled.
+    pub fn failure(&self) -> Failure {
         match self {
-            BinaryReadError::ReadFailed { .. } => "read_error",
-            BinaryReadError::PngRefused { source, .. } => source.error_type(),
-            BinaryReadError::EncodingUnknown { .. } | BinaryReadError::ShapeNotTerrarium { .. } => "rules_error",
-            BinaryReadError::HeightsRefused { source, .. } => source.error_type(),
+            BinaryReadError::ReadFailed { path, message } => failure_mode_core::file_unreadable(path, message),
+            BinaryReadError::PngRefused { path, source } => named(source.failure(), format!("Refused to read '{path}'")),
+            BinaryReadError::EncodingUnknown { name } => {
+                failure_mode_core::height_encoding_unknown(name, HeightEncoding::known_names())
+            }
+            BinaryReadError::ShapeNotTerrarium { channels, bit_depth } => {
+                failure_mode_core::shape_not_terrarium(channels, bit_depth)
+            }
+            BinaryReadError::HeightsRefused { path, source } => {
+                named(source.failure(), format!("Cannot use the heights in '{path}'"))
+            }
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of the reader result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+/// A core crate's failure, with where it happened named first.
+fn named(mut failure: Failure, place: String) -> Failure {
+    failure.standard = format!("{place}: {}", failure.standard);
+    failure
+}
+
+impl std::fmt::Display for BinaryReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for BinaryReadError {}
 
 /// How the heights payload stores each number.
 const PAYLOAD_FORMAT: &str = "float32_le";

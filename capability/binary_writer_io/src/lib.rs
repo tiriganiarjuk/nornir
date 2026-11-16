@@ -20,40 +20,49 @@ use flate2::Compression;
 
 use binary_format_core::png::{verify_png, PngError};
 use binary_format_core::quantized_mesh::{verify_quantized_mesh, MeshError};
+use failure_mode_core::Failure;
 
 pub use binary_format_core::png::PngExpectation;
 
-/// Every failure a binary writer can produce. Display strings are the
-/// `error.message` the Python caller receives.
-#[derive(Debug, thiserror::Error)]
+/// Every failure a binary writer can produce. Class and message come from the error
+/// registry (`failure_mode_core`); a refusal carries the format's own mode, with the
+/// file named first.
+#[derive(Debug)]
 pub enum BinaryWriteError {
-    #[error("Refused to write '{path}': {source}")]
     PngRefused { path: String, source: PngError },
-
-    #[error("Refused to write '{path}': {source}")]
     QuantizedMeshRefused { path: String, source: MeshError },
-
-    #[error("Cannot compress '{path}': {message}")]
     CompressFailed { path: String, message: String },
-
-    #[error("Cannot write '{path}': {message}")]
     WriteFailed { path: String, message: String },
 }
 
 impl BinaryWriteError {
-    /// The failure class a caller branches on — the `error.type` of the writer result.
-    /// A refusal carries the class of the format error underneath it:
-    /// `parse_error` (the bytes are not a well-formed file of the format) or
-    /// `verification_error` (well-formed, but not exactly the stated shape).
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled.
+    pub fn failure(&self) -> Failure {
+        let refused = |mut failure: Failure, path: &str| {
+            failure.standard = format!("Refused to write '{path}': {}", failure.standard);
+            failure
+        };
         match self {
-            BinaryWriteError::PngRefused { source, .. } => source.error_type(),
-            BinaryWriteError::QuantizedMeshRefused { source, .. } => source.error_type(),
-            BinaryWriteError::CompressFailed { .. } => "compression_error",
-            BinaryWriteError::WriteFailed { .. } => "write_error",
+            BinaryWriteError::PngRefused { path, source } => refused(source.failure(), path),
+            BinaryWriteError::QuantizedMeshRefused { path, source } => refused(source.failure(), path),
+            BinaryWriteError::CompressFailed { path, message } => failure_mode_core::compression_failed(path, message),
+            BinaryWriteError::WriteFailed { path, message } => failure_mode_core::file_unwritable(path, message),
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of the writer result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+impl std::fmt::Display for BinaryWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for BinaryWriteError {}
 
 /// Create the parent directory if needed, then write `bytes` to `file_path` atomically.
 fn write_verified_bytes(file_path: &str, bytes: &[u8]) -> Result<usize, BinaryWriteError> {

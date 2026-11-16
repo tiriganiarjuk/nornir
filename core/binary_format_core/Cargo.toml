@@ -7,6 +7,7 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
+failure_mode_core = { path = "../failure_mode_core" }
 flate2 = { workspace = true }
 png = { workspace = true }
 thiserror = { workspace = true }

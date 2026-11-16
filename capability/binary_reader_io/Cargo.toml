@@ -9,6 +9,7 @@ crate-type = ["rlib"]
 [dependencies]
 binary_format_core = { path = "../../core/binary_format_core" }
 elevation_core = { path = "../../core/elevation_core" }
+failure_mode_core = { path = "../../core/failure_mode_core" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 

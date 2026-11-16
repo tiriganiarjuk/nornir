@@ -39,77 +39,59 @@ pub struct PngExpectation {
     pub bit_depth: u8,
 }
 
-/// Why bytes were refused as a PNG. Each message says what was found and what a
-/// passing file has instead.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+/// Why bytes were refused as a PNG. Class and message come from the error registry
+/// (`failure_mode_core`): `parse_error` when the bytes are not a whole, well-formed
+/// PNG; `verification_error` when a well-formed PNG is not exactly the stated shape,
+/// or carries something beyond it.
+#[derive(Debug, PartialEq, Eq)]
 pub enum PngError {
-    #[error("not a PNG: the first 8 bytes are not the PNG signature")]
     SignatureMissing,
-
-    #[error("PNG is cut short: a chunk starting at byte {offset} runs past the end of the data")]
     ChunkTruncated { offset: usize },
-
-    #[error("PNG chunk '{kind}' is corrupt: its CRC does not match its content")]
     ChunkCrcMismatch { kind: String },
-
-    #[error(
-        "PNG chunk '{kind}' is not accepted: only image data and fixed-size colour facts may be written \
-         (IHDR, PLTE, IDAT, IEND, tRNS, gAMA, cHRM, sRGB, sBIT, bKGD, pHYs). \
-         Re-encode the image without text, metadata or profile chunks."
-    )]
     ChunkNotAccepted { kind: String },
-
-    #[error("PNG chunk '{kind}' holds {length} bytes; that kind holds at most {limit}")]
     ChunkTooLarge { kind: String, length: usize, limit: usize },
-
-    #[error("PNG chunks are out of order: {0}")]
     ChunkOrder(String),
-
-    #[error("PNG has {bytes} bytes after its end chunk; a passing file ends at the end chunk")]
     TrailingData { bytes: usize },
-
-    #[error("PNG header is invalid: {0}")]
     HeaderInvalid(String),
-
-    #[error("PNG {field} is {found}; this writer was told to expect {expected}")]
-    ExpectationMismatch {
-        field: &'static str,
-        expected: u32,
-        found: u32,
-    },
-
-    #[error("PNG pixel data is invalid: {0}")]
+    ExpectationMismatch { field: &'static str, expected: u32, found: u32 },
     PixelData(String),
-
-    #[error("PNG pixel data holds more than the image: {0}")]
     PixelDataExcess(String),
-
-    #[error("PNG cannot be decoded: {0}")]
     DecodeFailed(String),
 }
 
 impl PngError {
-    /// The failure class a caller branches on — the `error.type` of a result.
-    /// `parse_error`: the bytes are not a whole, well-formed PNG.
-    /// `verification_error`: a well-formed PNG that is not exactly the stated
-    /// shape, or carries something beyond it.
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled.
+    pub fn failure(&self) -> failure_mode_core::Failure {
+        use failure_mode_core as modes;
         match self {
-            PngError::SignatureMissing
-            | PngError::ChunkTruncated { .. }
-            | PngError::ChunkCrcMismatch { .. }
-            | PngError::ChunkOrder(_)
-            | PngError::HeaderInvalid(_)
-            | PngError::PixelData(_)
-            | PngError::DecodeFailed(_) => "parse_error",
-            PngError::ChunkNotAccepted { .. }
-            | PngError::ChunkTooLarge { .. }
-            | PngError::TrailingData { .. }
-            | PngError::ExpectationMismatch { .. }
-            | PngError::PixelDataExcess(_) => "verification_error",
+            PngError::SignatureMissing => modes::png_signature_missing(),
+            PngError::ChunkTruncated { offset } => modes::png_chunk_truncated(offset),
+            PngError::ChunkCrcMismatch { kind } => modes::png_chunk_corrupt(kind),
+            PngError::ChunkNotAccepted { kind } => modes::png_chunk_not_accepted(kind),
+            PngError::ChunkTooLarge { kind, length, limit } => modes::png_chunk_too_large(kind, length, limit),
+            PngError::ChunkOrder(reason) => modes::png_chunks_out_of_order(reason),
+            PngError::TrailingData { bytes } => modes::png_trailing_data(bytes),
+            PngError::HeaderInvalid(reason) => modes::png_header_invalid(reason),
+            PngError::ExpectationMismatch { field, expected, found } => modes::png_shape_mismatch(field, found, expected),
+            PngError::PixelData(reason) => modes::png_pixel_data_invalid(reason),
+            PngError::PixelDataExcess(reason) => modes::png_pixel_data_excess(reason),
+            PngError::DecodeFailed(reason) => modes::png_undecodable(reason),
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of a result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+impl std::fmt::Display for PngError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for PngError {}
 
 struct Chunk<'a> {
     kind: [u8; 4],

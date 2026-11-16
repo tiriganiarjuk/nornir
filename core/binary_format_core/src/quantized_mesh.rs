@@ -27,48 +27,46 @@ pub struct MeshFacts {
     pub has_water_mask: bool,
 }
 
-/// Why bytes were refused as a quantized-mesh tile.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+/// Why bytes were refused as a quantized-mesh tile. Class and message come from the
+/// error registry (`failure_mode_core`): `parse_error` when the bytes are not a whole,
+/// well-formed tile; `verification_error` for a well-formed tile carrying an extension.
+#[derive(Debug, PartialEq, Eq)]
 pub enum MeshError {
-    #[error("quantized-mesh tile is cut short: the {section} needs {needed} more bytes but {remaining} remain")]
-    Truncated {
-        section: &'static str,
-        needed: usize,
-        remaining: usize,
-    },
-
-    #[error("quantized-mesh header is invalid: {0}")]
+    Truncated { section: &'static str, needed: usize, remaining: usize },
     HeaderInvalid(String),
-
-    #[error("quantized-mesh vertex data is invalid: {0}")]
     VertexData(String),
-
-    #[error("quantized-mesh triangle indices are invalid: {0}")]
     IndexData(String),
-
-    #[error("quantized-mesh {edge} edge list is invalid: {reason}")]
     EdgeData { edge: &'static str, reason: String },
-
-    #[error("quantized-mesh extension is not accepted: {0}")]
     Extension(String),
 }
 
 impl MeshError {
-    /// The failure class a caller branches on — the `error.type` of a result.
-    /// `parse_error`: the bytes are not a whole, well-formed tile.
-    /// `verification_error`: a well-formed tile carrying an extension that may
-    /// not be written.
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled.
+    pub fn failure(&self) -> failure_mode_core::Failure {
+        use failure_mode_core as modes;
         match self {
-            MeshError::Truncated { .. }
-            | MeshError::HeaderInvalid(_)
-            | MeshError::VertexData(_)
-            | MeshError::IndexData(_)
-            | MeshError::EdgeData { .. } => "parse_error",
-            MeshError::Extension(_) => "verification_error",
+            MeshError::Truncated { section, needed, remaining } => modes::mesh_truncated(section, needed, remaining),
+            MeshError::HeaderInvalid(reason) => modes::mesh_header_invalid(reason),
+            MeshError::VertexData(reason) => modes::mesh_vertex_data_invalid(reason),
+            MeshError::IndexData(reason) => modes::mesh_indices_invalid(reason),
+            MeshError::EdgeData { edge, reason } => modes::mesh_edges_invalid(edge, reason),
+            MeshError::Extension(reason) => modes::mesh_extension_not_accepted(reason),
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of a result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+impl std::fmt::Display for MeshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for MeshError {}
 
 /// Reads little-endian values off the front of the data, naming the section on a short read.
 struct ByteReader<'a> {
