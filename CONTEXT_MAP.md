@@ -56,7 +56,7 @@ A Rust monorepo of compiled validators, tools and hooks for the `ai` ecosystem �
 | how a tool is made, and the checklists before and after a build | `HOW_A_NORNIR_TOOL_IS_MADE.md` |
 | what a gate is / the call patterns / what it checks | `~/ai/smidja/galdr/context/NORNIR_GATES_ELEMENT.md` |
 | the output tool builder — registry, generator, write engine | `~/ai/smidja/galdr/context/NORNIR_GATES_ELEMENT.md` § The output tool builder, then `tool_registry.toml` and `generate_writer.py` |
-| which schema a gate embeds | the gate's `src/lib.rs` — one `include_str!` through a symlink into Verdandi's output |
+| which schema a gate embeds | the gate's recipe in `gates/gate_recipes.toml` and the `schemas_embedded` constant its `src/lib.rs` imports; the `include_str!` lives in `capability/schemas_embedded/src/lib.rs`, through symlinks into Verdandi's output |
 | what a schema allows | `~/ai/smidja/verdandi/{project}/output/*.schema.json` |
 | the tomlx format — annotations, unit and path conversion, derived schemas | `core/format_core/TOMLX_SPEC.md` |
 | what calls the gates | `~/ai/smidja/galdr/context/REGIN_ELEMENT.md`, `~/ai/smidja/galdr/context/GALDR_ELEMENT.md` |
