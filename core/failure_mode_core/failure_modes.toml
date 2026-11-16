@@ -86,6 +86,60 @@ standard    = "'{path}' has no type annotations, so no schema can be derived fro
 route       = "Annotate at least one section with a type, or read the file with read_tomlx_json, which derives no schema."
 adversarial = "stop"
 
+[data_not_expressible]
+class       = "conversion_error"
+standard    = "'{path}' cannot hold this data in its format: {reason}."
+route       = "Change the data to what the format can express; the message names what it cannot hold."
+adversarial = "stop"
+
+[directory_request_not_json]
+class       = "parse_error"
+standard    = "The request to write directory '{directory}' is not valid JSON: {reason}."
+route       = "Hand over the request as JSON text, serialized by a JSON library."
+adversarial = "stop"
+
+[directory_request_invalid]
+class       = "validation_error"
+standard    = "The request to write directory '{directory}' does not match directory-write-request: {reason}."
+route       = "Correct the request to the shape in schemas/tools/directory-write-request.schema.json."
+adversarial = "stop"
+
+[directory_paths_refused]
+class       = "validation_error"
+standard    = "Refused to write directory '{directory}' — {count} path(s) refused:\n  {report}"
+route       = "Each file path is relative to the directory and names a file inside it: plain segments, no hidden files, and never the marker."
+adversarial = "stop"
+
+[directory_not_generated]
+class       = "write_error"
+standard    = "Refused to write directory '{directory}': the folder exists and holds no {marker}, so this tool did not write it, and it may hold authored work."
+route       = "Write to a folder this tool owns, or ask the user. The marker is placed only by this tool, on a folder it creates."
+adversarial = "stop"
+
+[directory_files_refused]
+class       = "validation_error"
+standard    = "Refused to write directory '{directory}' — {count} file(s) refused:\n  {report}"
+route       = "Each refused file is named with its reason; correct those entries."
+adversarial = "stop"
+
+[directory_unlistable]
+class       = "read_error"
+standard    = "Cannot list the directory '{directory}': {reason}."
+route       = "Check that the path is right; if it is, ask the user why it cannot be listed."
+adversarial = "stop"
+
+[directory_unwritable]
+class       = "write_error"
+standard    = "Cannot write directory '{directory}': {reason}."
+route       = "Check that the path is the one you were given to write; if it is, ask the user why it cannot be written."
+adversarial = "stop"
+
+[directory_report_invalid]
+class       = "validation_error"
+standard    = "The report for directory '{directory}' does not match directory-write-report: {reason}."
+route       = "This is a fault in the writer, not in the request. Report this message to the user."
+adversarial = "stop"
+
 [embedded_schema_unusable]
 class       = "schema_error"
 standard    = "The schema '{name}' compiled into this tool is unusable: {reason}."

@@ -51,7 +51,7 @@ fn entry_function(name: &str, entry: &toml::Table) -> Result<String, String> {
     let parameters: Vec<String> = ordered.iter().map(|slot| format!("{slot}: impl std::fmt::Display")).collect();
 
     let mut function = String::new();
-    let _ = writeln!(function, "/// `{class}` — {}", standard.replace('`', "'"));
+    let _ = writeln!(function, "/// `{class}` — {}", standard.replace('`', "'").replace('\n', " "));
     let _ = writeln!(function, "pub fn {name}({}) -> Failure {{", parameters.join(", "));
     let _ = writeln!(function, "    Failure {{");
     let _ = writeln!(function, "        mode: \"{name}\",");

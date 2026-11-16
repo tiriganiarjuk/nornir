@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use directory_read_io::{list_directory, EntryKind, ListOptions};
+use failure_mode_core::Failure;
 use path_core::validate_path_segment;
 use schemas_embedded::{DIRECTORY_WRITE_REPORT, DIRECTORY_WRITE_REQUEST};
 use text_writer_io::{validate_render, TextFormat};
@@ -53,51 +54,67 @@ pub struct DirectoryWriteReport {
     pub removed: usize,
 }
 
-/// Every failure a directory write can produce. `error_type()` is the `error.type` the
-/// writer returns to Python; the Display string is the `error.message`.
-#[derive(Debug, thiserror::Error)]
+/// Every failure a directory write can produce. Its class and message come from the
+/// error registry (`failure_mode_core`): `error_type()` is the `error.type` the writer
+/// returns, the Display string is the `error.message`.
+#[derive(Debug)]
 pub enum DirectoryWriteError {
-    #[error("Refused to write directory '{directory}': the request is not valid JSON: {message}")]
     RequestNotJson { directory: String, message: String },
-
-    #[error("Refused to write directory '{directory}': {message}")]
     RequestInvalid { directory: String, message: String },
-
     /// Every path the request may not name, at once.
-    #[error("Refused to write directory '{directory}' — {count} path(s) refused:\n  {}", .problems.join("\n  "), count = .problems.len())]
     PathsRefused { directory: String, problems: Vec<String> },
-
-    #[error("Refused to write directory '{directory}': the folder exists and holds no {DIRECTORY_MARKER}, so it is not a generated directory")]
     NotGenerated { directory: String },
-
-    /// Every file that could not be rendered or read, at once; `error_type` is the first one's class.
-    #[error("Refused to write directory '{directory}' — {count} file(s) refused:\n  {}", .failures.join("\n  "), count = .failures.len())]
+    /// Every file that could not be rendered or read, at once; its class is the first one's.
     FilesRefused { directory: String, first_type: &'static str, failures: Vec<String> },
-
-    #[error("Cannot list the directory '{directory}': {message}")]
     DirectoryUnreadable { directory: String, message: String },
-
-    #[error("Cannot write directory '{directory}': {message}")]
     WriteFailed { directory: String, message: String },
-
-    #[error("Directory '{directory}' report does not match directory-write-report: {message}")]
     ReportInvalid { directory: String, message: String },
 }
 
 impl DirectoryWriteError {
-    /// The failure class a caller branches on — the `error.type` of the writer result.
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled.
+    pub fn failure(&self) -> Failure {
         match self {
-            DirectoryWriteError::RequestNotJson { .. } => "parse_error",
-            DirectoryWriteError::RequestInvalid { .. }
-            | DirectoryWriteError::PathsRefused { .. }
-            | DirectoryWriteError::ReportInvalid { .. } => "validation_error",
-            DirectoryWriteError::FilesRefused { first_type, .. } => first_type,
-            DirectoryWriteError::DirectoryUnreadable { .. } => "read_error",
-            DirectoryWriteError::NotGenerated { .. } | DirectoryWriteError::WriteFailed { .. } => "write_error",
+            DirectoryWriteError::RequestNotJson { directory, message } => {
+                failure_mode_core::directory_request_not_json(directory, message)
+            }
+            DirectoryWriteError::RequestInvalid { directory, message } => {
+                failure_mode_core::directory_request_invalid(directory, message)
+            }
+            DirectoryWriteError::PathsRefused { directory, problems } => {
+                failure_mode_core::directory_paths_refused(directory, problems.len(), problems.join("\n  "))
+            }
+            DirectoryWriteError::NotGenerated { directory } => {
+                failure_mode_core::directory_not_generated(directory, DIRECTORY_MARKER)
+            }
+            DirectoryWriteError::FilesRefused { directory, first_type, failures } => {
+                let mut failure = failure_mode_core::directory_files_refused(directory, failures.len(), failures.join("\n  "));
+                failure.class = first_type;
+                failure
+            }
+            DirectoryWriteError::DirectoryUnreadable { directory, message } => {
+                failure_mode_core::directory_unlistable(directory, message)
+            }
+            DirectoryWriteError::WriteFailed { directory, message } => failure_mode_core::directory_unwritable(directory, message),
+            DirectoryWriteError::ReportInvalid { directory, message } => {
+                failure_mode_core::directory_report_invalid(directory, message)
+            }
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of the writer result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+impl std::fmt::Display for DirectoryWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for DirectoryWriteError {}
 
 /// Replace the directory at `directory_root` with exactly the files `request_json` lists.
 pub fn write_directory(

@@ -21,6 +21,7 @@ use serde_json::Value;
 
 use format_core::convert::json_to_toml;
 use format_core::serialize::{to_markdown_document, to_toon, to_xml, to_yaml};
+use failure_mode_core::Failure;
 use reader_io::{validate_against, ReaderError, SchemaSource};
 
 /// Which file format a text writer writes — the writing twin of `reader_io::SourceFormat`.
@@ -52,38 +53,50 @@ impl TextFormat {
     }
 }
 
-/// Every failure a text writer can produce. `error_type()` is the `error.type`
-/// a writer returns to Python; the Display string is the `error.message`.
-#[derive(Debug, thiserror::Error)]
+/// Every failure a text writer can produce. Its class and message come from the error
+/// registry (`failure_mode_core`): `error_type()` is the `error.type` a writer returns,
+/// the Display string is the `error.message`.
+#[derive(Debug)]
 pub enum TextWriteError {
-    #[error("Refused to write '{path}': the text is not valid JSON: {message}")]
     NotJson { path: String, message: String },
-
-    /// The schema could not be loaded, or the data does not match it. Carries
-    /// the readers' error, so both directions report these failures alike.
-    #[error("Refused to write '{path}': {source}")]
+    /// The schema could not be loaded, or the data does not match it. Carries the
+    /// readers' error, so both directions report these failures alike.
     SchemaRefused { path: String, source: ReaderError },
-
     /// Valid, schema-conforming data the file's format cannot express — a null in TOML,
     /// an XML document without its one root key, a markdown envelope without its parts.
-    #[error("Refused to write '{path}': {message}")]
     NotExpressible { path: String, message: String },
-
-    #[error("Cannot write '{path}': {message}")]
     WriteFailed { path: String, message: String },
 }
 
 impl TextWriteError {
-    /// The failure class a caller branches on — the `error.type` of the writer result.
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled. A schema refusal is
+    /// the reader engine's own mode, with the file it would have written named first.
+    pub fn failure(&self) -> Failure {
         match self {
-            TextWriteError::NotJson { .. } => "parse_error",
-            TextWriteError::SchemaRefused { source, .. } => source.error_type(),
-            TextWriteError::NotExpressible { .. } => "conversion_error",
-            TextWriteError::WriteFailed { .. } => "write_error",
+            TextWriteError::NotJson { path, message } => failure_mode_core::text_not_json(path, message),
+            TextWriteError::SchemaRefused { path, source } => {
+                let mut failure = source.failure();
+                failure.standard = format!("Refused to write '{path}': {}", failure.standard);
+                failure
+            }
+            TextWriteError::NotExpressible { path, message } => failure_mode_core::data_not_expressible(path, message),
+            TextWriteError::WriteFailed { path, message } => failure_mode_core::file_unwritable(path, message),
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of the writer result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+impl std::fmt::Display for TextWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for TextWriteError {}
 
 /// The text to write: the JSON exactly as given, or the data in the file's format.
 fn rendered(format: TextFormat, json_data: &str, data: &Value) -> Result<String, String> {
