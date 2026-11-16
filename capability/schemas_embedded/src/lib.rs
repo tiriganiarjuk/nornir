@@ -185,6 +185,11 @@ static DIRECTORY_LISTING_JSON: &str =
 pub static DIRECTORY_LISTING: EmbeddedValidator =
     EmbeddedValidator::new(DIRECTORY_LISTING_JSON, "directory-listing");
 
+static DIRECTORY_PERMITTED_LISTING_JSON: &str =
+    include_str!("../../../schemas/tools/directory-permitted-listing.schema.json");
+pub static DIRECTORY_PERMITTED_LISTING: EmbeddedValidator =
+    EmbeddedValidator::new(DIRECTORY_PERMITTED_LISTING_JSON, "directory-permitted-listing");
+
 static DIRECTORY_WRITE_REQUEST_JSON: &str =
     include_str!("../../../schemas/tools/directory-write-request.schema.json");
 pub static DIRECTORY_WRITE_REQUEST: EmbeddedValidator =
@@ -425,6 +430,21 @@ mod tests {
 
         let short_hash = r#"{"root":"/r","entries":[{"path":"a","kind":"file","size":0,"sha256":"abc"}]}"#;
         assert!(!DIRECTORY_LISTING.is_valid(short_hash).unwrap());
+
+        let permitted_marker = r#"{"root":"/r","entries":[{"path":"a","kind":"directory","permitted":false}]}"#;
+        assert!(!DIRECTORY_LISTING.is_valid(permitted_marker).unwrap());
+    }
+
+    #[test]
+    fn test_directory_permitted_listing_shape() {
+        let listing = r#"{"root":"/r","entries":[{"path":"a","kind":"directory","permitted":false},{"path":"b.md","kind":"file","size":3}],"vanished":["c.tmp"]}"#;
+        assert!(DIRECTORY_PERMITTED_LISTING.is_valid(listing).unwrap());
+
+        let without_vanished = r#"{"root":"/r","entries":[]}"#;
+        assert!(!DIRECTORY_PERMITTED_LISTING.is_valid(without_vanished).unwrap());
+
+        let permitted_true = r#"{"root":"/r","entries":[{"path":"a","kind":"directory","permitted":true}],"vanished":[]}"#;
+        assert!(!DIRECTORY_PERMITTED_LISTING.is_valid(permitted_true).unwrap());
     }
 
     #[test]

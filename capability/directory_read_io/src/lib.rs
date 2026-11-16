@@ -1,29 +1,35 @@
 //! Directory reading — the one directory walker.
 //!
 //! Lists every entry under a root directory: its path relative to the root, its
-//! kind, a file's size, and — when asked — a file's sha256. The walk never skips
-//! what it could not read: an unreadable directory, an entry the system cannot
-//! report, a name that is not UTF-8 and a file that cannot be hashed are each a
-//! failure, all of them named in one error. A symlink is listed as a link and
-//! never followed, so the walk cannot leave the root or loop. What to keep from
-//! the listing is the caller's to decide; the walk applies no skip list of its own.
+//! kind, a file's size, and — when asked — a file's sha256. A symlink is listed as a
+//! link and never followed, so the walk cannot leave the root or loop. What to keep
+//! from the listing is the caller's to decide; the walk applies no skip list of its own.
 //!
-//! `read_directory_json` returns the listing as JSON validated against
-//! `schemas/tools/directory-listing.schema.json`; `list_directory` returns it typed,
-//! for Rust callers.
+//! What a path the walk cannot read means is the caller's choice too:
+//! - **strict** (the default) — every unreadable path is a failure, all of them named in
+//!   one error; a listing comes back only when the whole tree could be read.
+//! - **permitted only** — the listing is what the caller is permitted to see. A
+//!   directory it may not look into is listed with `permitted: false` and nothing beneath
+//!   it; a path named and then gone is left out and named in `vanished`. Every other
+//!   failure — a disk fault, a name that is not UTF-8 — is a failure, as in the strict walk.
+//!
+//! `read_directory_json` returns the listing as JSON validated against its schema
+//! (`schemas/tools/directory-listing.schema.json`, or `directory-permitted-listing` for
+//! the permitted walk); `list_directory` returns it typed, for Rust callers.
 
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use failure_mode_core::Failure;
-use schemas_embedded::DIRECTORY_LISTING;
+use schemas_embedded::{DIRECTORY_LISTING, DIRECTORY_PERMITTED_LISTING};
 
 /// What to list: how deep, whether hidden entries count, whether files are hashed,
-/// and which directories the walk stays out of. The default enters everything.
+/// which directories the walk stays out of, and what an unreadable path means. The
+/// default enters everything and fails on any path it cannot read.
 #[derive(Debug, Clone, Default)]
 pub struct ListOptions {
     /// `None` lists the whole tree; `Some(1)` lists the root's own entries only.
@@ -37,6 +43,9 @@ pub struct ListOptions {
     /// The walk neither lists nor enters a directory whose name starts with `.`,
     /// while `include_hidden` still governs hidden files.
     pub prune_hidden_directories: bool,
+    /// The listing is what the caller is permitted to see: a path it may not look into is
+    /// marked `permitted: false`, a path gone mid-walk is named in `vanished`.
+    pub permitted_only: bool,
 }
 
 /// One entry, by its path relative to the root.
@@ -48,6 +57,9 @@ pub struct DirectoryEntry {
     pub size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// `Some(false)` on an entry the caller may not look into, in the permitted walk only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permitted: Option<bool>,
 }
 
 /// What an entry is. A symlink is never followed.
@@ -59,11 +71,13 @@ pub enum EntryKind {
     Symlink,
 }
 
-/// Every entry under the root, sorted by path.
+/// Every entry under the root, sorted by path; in the permitted walk, also every path that vanished.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DirectoryListing {
     pub root: String,
     pub entries: Vec<DirectoryEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vanished: Option<Vec<String>>,
 }
 
 /// Every failure a directory read can produce. Its class and message come from the error
@@ -106,102 +120,231 @@ impl std::fmt::Display for DirectoryReadError {
 
 impl std::error::Error for DirectoryReadError {}
 
-/// The walk's working state: the root it lists from, what it found, and what it could not read.
+/// The walk's working state: the root it lists from, what it found, what vanished, and what it could not read.
 struct Walk<'a> {
     root: &'a Path,
     options: ListOptions,
     entries: Vec<DirectoryEntry>,
+    vanished: Vec<String>,
     failures: Vec<String>,
 }
 
-/// List the tree under `root`, typed. Fails naming every path it could not read.
+/// What a path the walk could not read means, under the caller's choice.
+#[derive(Debug, PartialEq, Eq)]
+enum Unreadable {
+    /// The caller may not look into it.
+    NotPermitted,
+    /// It was named, and is gone.
+    Vanished,
+    /// Anything else, and every unreadable path in the strict walk.
+    Failure,
+}
+
+/// What opening one directory came to.
+#[derive(Debug, PartialEq, Eq)]
+enum Opened {
+    Entered,
+    NotPermitted,
+    Vanished,
+    /// A failure was recorded; the directory stays listed.
+    Failed,
+}
+
+/// What visiting one entry came to: listed (or recorded), or the directory holding it
+/// turned out to be one the caller may not look into.
+#[derive(Debug, PartialEq, Eq)]
+enum Visited {
+    Done,
+    ParentNotPermitted,
+}
+
+/// What hashing one file came to.
+enum Hashed {
+    Hash(Option<String>),
+    NotPermitted,
+    Vanished,
+}
+
+/// List the tree under `root`, typed. The strict walk fails naming every path it could not read.
 pub fn list_directory(root: &str, options: ListOptions) -> Result<DirectoryListing, DirectoryReadError> {
     let root_path = Path::new(root);
-    let unreadable = |message: String| DirectoryReadError::RootUnreadable { path: root.to_string(), message };
-    let metadata = fs::symlink_metadata(root_path).map_err(|io_err| unreadable(io_err.to_string()))?;
+    let unreadable = |message: &str| DirectoryReadError::RootUnreadable { path: root.to_string(), message: message.to_string() };
+    let metadata = fs::symlink_metadata(root_path).map_err(|io_err| unreadable(&io_err.to_string()))?;
     if !metadata.is_dir() {
-        return Err(unreadable("not a directory".to_string()));
+        return Err(unreadable("not a directory"));
     }
-    let mut walk = Walk { root: root_path, options, entries: Vec::new(), failures: Vec::new() };
-    walk_level(&mut walk, root_path, 1);
+    let mut walk = Walk { root: root_path, options, entries: Vec::new(), vanished: Vec::new(), failures: Vec::new() };
+    match walk_level(&mut walk, root_path, 1) {
+        Opened::NotPermitted => return Err(unreadable("permission denied")),
+        Opened::Vanished => return Err(unreadable("it vanished while being listed")),
+        Opened::Entered | Opened::Failed => {}
+    }
     if !walk.failures.is_empty() {
         return Err(DirectoryReadError::EntriesUnreadable { root: root.to_string(), failures: walk.failures });
     }
     walk.entries.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(DirectoryListing { root: root.to_string(), entries: walk.entries })
+    walk.vanished.sort();
+    let vanished = walk.options.permitted_only.then_some(walk.vanished);
+    Ok(DirectoryListing { root: root.to_string(), entries: walk.entries, vanished })
 }
 
-/// List the tree under `root` as JSON validated against `directory-listing`.
+/// List the tree under `root` as JSON validated against its listing schema.
 pub fn read_directory_json(root: &str, options: ListOptions) -> Result<String, DirectoryReadError> {
+    let schema = if options.permitted_only { &DIRECTORY_PERMITTED_LISTING } else { &DIRECTORY_LISTING };
     let listing = list_directory(root, options)?;
     let invalid = |message: String| DirectoryReadError::ListingInvalid { root: root.to_string(), message };
     let json = serde_json::to_string_pretty(&listing).map_err(|json_err| invalid(json_err.to_string()))?;
-    let result = DIRECTORY_LISTING.validate(&json).map_err(|schema_err| invalid(schema_err.to_string()))?;
+    let result = schema.validate(&json).map_err(|schema_err| invalid(schema_err.to_string()))?;
     if !result.valid {
         return Err(invalid(result.message));
     }
     Ok(json)
 }
 
+/// In the permitted walk, a denial and a vanishing are part of the listing; every other
+/// unreadable path, and every one in the strict walk, is a failure.
+fn classify(options: &ListOptions, io_err: &std::io::Error) -> Unreadable {
+    if !options.permitted_only {
+        return Unreadable::Failure;
+    }
+    match io_err.kind() {
+        ErrorKind::PermissionDenied => Unreadable::NotPermitted,
+        ErrorKind::NotFound => Unreadable::Vanished,
+        _ => Unreadable::Failure,
+    }
+}
+
 /// One directory's entries at `depth` (1 = the root's own), descending while depth allows.
-fn walk_level(walk: &mut Walk<'_>, directory: &Path, depth: u32) {
+/// A directory whose entries cannot be looked at, in the permitted walk, keeps none of them.
+fn walk_level(walk: &mut Walk<'_>, directory: &Path, depth: u32) -> Opened {
     let read_dir = match fs::read_dir(directory) {
         Ok(read_dir) => read_dir,
-        Err(io_err) => return walk.failures.push(format!("{}: {io_err}", directory.display())),
+        Err(io_err) => return unopened(walk, directory, &io_err),
     };
+    let entries_before = walk.entries.len();
+    let vanished_before = walk.vanished.len();
     for dir_entry in read_dir {
-        match dir_entry {
+        let visited = match dir_entry {
             Ok(dir_entry) => visit_entry(walk, &dir_entry.path(), depth),
-            Err(io_err) => walk.failures.push(format!("{}: an entry could not be read: {io_err}", directory.display())),
+            Err(io_err) => {
+                walk.failures.push(format!("{}: an entry could not be read: {io_err}", directory.display()));
+                Visited::Done
+            }
+        };
+        if visited == Visited::ParentNotPermitted {
+            walk.entries.truncate(entries_before);
+            walk.vanished.truncate(vanished_before);
+            return Opened::NotPermitted;
+        }
+    }
+    Opened::Entered
+}
+
+/// A directory that could not be opened, by what that means.
+fn unopened(walk: &mut Walk<'_>, directory: &Path, io_err: &std::io::Error) -> Opened {
+    match classify(&walk.options, io_err) {
+        Unreadable::NotPermitted => Opened::NotPermitted,
+        Unreadable::Vanished => Opened::Vanished,
+        Unreadable::Failure => {
+            walk.failures.push(format!("{}: {io_err}", directory.display()));
+            Opened::Failed
         }
     }
 }
 
 /// One entry: listed, hashed when asked, and entered when it is a directory within depth.
-fn visit_entry(walk: &mut Walk<'_>, path: &Path, depth: u32) {
+fn visit_entry(walk: &mut Walk<'_>, path: &Path, depth: u32) -> Visited {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return walk.failures.push(format!("{}: the name is not UTF-8", path.display()));
+        walk.failures.push(format!("{}: the name is not UTF-8", path.display()));
+        return Visited::Done;
     };
     if name.starts_with('.') && !walk.options.include_hidden {
-        return;
+        return Visited::Done;
     }
     let Some(relative) = path.strip_prefix(walk.root).ok().and_then(|relative| relative.to_str()) else {
-        return walk.failures.push(format!("{}: the path is not UTF-8", path.display()));
+        walk.failures.push(format!("{}: the path is not UTF-8", path.display()));
+        return Visited::Done;
     };
     let relative = relative.to_string();
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(io_err) => return walk.failures.push(format!("{}: {io_err}", path.display())),
+        Err(io_err) => return uninspected(walk, path, relative, &io_err),
     };
     if metadata.file_type().is_symlink() {
-        walk.entries.push(DirectoryEntry { path: relative, kind: EntryKind::Symlink, size: None, sha256: None });
+        walk.entries.push(entry(relative, EntryKind::Symlink, None, None));
     } else if metadata.is_dir() {
-        let pruned = (walk.options.prune_hidden_directories && name.starts_with('.'))
-            || walk.options.prune_directories.iter().any(|pruned_name| pruned_name == name);
-        if pruned {
-            return;
-        }
-        walk.entries.push(DirectoryEntry { path: relative, kind: EntryKind::Directory, size: None, sha256: None });
-        if walk.options.max_depth.map_or(true, |max_depth| depth < max_depth) {
-            walk_level(walk, path, depth + 1);
-        }
+        visit_directory(walk, path, name, relative, depth);
     } else {
-        let sha256 = file_hash(walk, path);
-        walk.entries.push(DirectoryEntry { path: relative, kind: EntryKind::File, size: Some(metadata.len()), sha256 });
+        visit_file(walk, path, relative, metadata.len());
+    }
+    Visited::Done
+}
+
+/// An entry whose kind could not be looked at, by what that means: a denial here says the
+/// directory holding it cannot be looked into.
+fn uninspected(walk: &mut Walk<'_>, path: &Path, relative: String, io_err: &std::io::Error) -> Visited {
+    match classify(&walk.options, io_err) {
+        Unreadable::NotPermitted => return Visited::ParentNotPermitted,
+        Unreadable::Vanished => walk.vanished.push(relative),
+        Unreadable::Failure => walk.failures.push(format!("{}: {io_err}", path.display())),
+    }
+    Visited::Done
+}
+
+/// A directory: left out when pruned; listed, then entered within depth.
+fn visit_directory(walk: &mut Walk<'_>, path: &Path, name: &str, relative: String, depth: u32) {
+    let pruned = (walk.options.prune_hidden_directories && name.starts_with('.'))
+        || walk.options.prune_directories.iter().any(|pruned_name| pruned_name == name);
+    if pruned {
+        return;
+    }
+    let index = walk.entries.len();
+    walk.entries.push(entry(relative, EntryKind::Directory, None, None));
+    if walk.options.max_depth.is_some_and(|max_depth| depth >= max_depth) {
+        return;
+    }
+    match walk_level(walk, path, depth + 1) {
+        Opened::NotPermitted => walk.entries[index].permitted = Some(false),
+        Opened::Vanished => {
+            let gone = walk.entries.remove(index);
+            walk.vanished.push(gone.path);
+        }
+        Opened::Entered | Opened::Failed => {}
     }
 }
 
-/// The file's sha256 when hashes were asked for; a file that cannot be read is a failure.
-fn file_hash(walk: &mut Walk<'_>, path: &Path) -> Option<String> {
+/// A file: listed with its size, and its hash when asked.
+fn visit_file(walk: &mut Walk<'_>, path: &Path, relative: String, size: u64) {
+    match file_hash(walk, path) {
+        Hashed::Hash(sha256) => walk.entries.push(entry(relative, EntryKind::File, Some(size), sha256)),
+        Hashed::NotPermitted => {
+            let mut not_permitted = entry(relative, EntryKind::File, Some(size), None);
+            not_permitted.permitted = Some(false);
+            walk.entries.push(not_permitted);
+        }
+        Hashed::Vanished => walk.vanished.push(relative),
+    }
+}
+
+fn entry(path: String, kind: EntryKind, size: Option<u64>, sha256: Option<String>) -> DirectoryEntry {
+    DirectoryEntry { path, kind, size, sha256, permitted: None }
+}
+
+/// The file's sha256 when hashes were asked for; a file that cannot be read, by what that means.
+fn file_hash(walk: &mut Walk<'_>, path: &Path) -> Hashed {
     if !walk.options.with_hashes {
-        return None;
+        return Hashed::Hash(None);
     }
     match sha256_of(path) {
-        Ok(digest) => Some(digest),
-        Err(io_err) => {
-            walk.failures.push(format!("{}: cannot be hashed: {io_err}", path.display()));
-            None
-        }
+        Ok(digest) => Hashed::Hash(Some(digest)),
+        Err(io_err) => match classify(&walk.options, &io_err) {
+            Unreadable::NotPermitted => Hashed::NotPermitted,
+            Unreadable::Vanished => Hashed::Vanished,
+            Unreadable::Failure => {
+                walk.failures.push(format!("{}: cannot be hashed: {io_err}", path.display()));
+                Hashed::Hash(None)
+            }
+        },
     }
 }
 
@@ -245,6 +388,10 @@ mod tests {
         listing.entries.iter().map(|entry| entry.path.as_str()).collect()
     }
 
+    fn permitted_only() -> ListOptions {
+        ListOptions { permitted_only: true, ..ListOptions::default() }
+    }
+
     #[test]
     fn lists_the_whole_tree_sorted_with_kinds_and_sizes() {
         let dir = temp_tree("whole");
@@ -253,6 +400,7 @@ mod tests {
         assert_eq!(listing.entries[0].kind, EntryKind::Directory);
         assert_eq!(listing.entries[2].size, Some(3));
         assert_eq!(listing.entries[3].size, Some(0));
+        assert_eq!(listing.vanished, None);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -357,6 +505,67 @@ mod tests {
         let json = read_directory_json(dir.to_str().unwrap(), options).unwrap();
         assert!(DIRECTORY_LISTING.is_valid(&json).unwrap());
         assert!(json.contains("\"kind\": \"directory\""), "{json}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_locked_directory_is_listed_not_permitted_with_nothing_beneath_it() {
+        let dir = temp_tree("permitted_locked");
+        let locked = dir.join("people/Ada");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let listing = list_directory(dir.to_str().unwrap(), permitted_only());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let listing = listing.unwrap();
+        assert_eq!(paths(&listing), ["people", "people/Ada", "top.txt"]);
+        let ada = listing.entries.iter().find(|entry| entry.path == "people/Ada").unwrap();
+        assert_eq!(ada.permitted, Some(false));
+        assert_eq!(listing.vanished, Some(vec![]));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_directory_whose_entries_cannot_be_looked_at_keeps_none_of_them() {
+        let dir = temp_tree("permitted_no_search");
+        let readable_only = dir.join("people");
+        fs::set_permissions(&readable_only, fs::Permissions::from_mode(0o444)).unwrap();
+        let listing = list_directory(dir.to_str().unwrap(), permitted_only());
+        fs::set_permissions(&readable_only, fs::Permissions::from_mode(0o755)).unwrap();
+        let listing = listing.unwrap();
+        assert_eq!(paths(&listing), ["people", "top.txt"]);
+        assert_eq!(listing.entries[0].permitted, Some(false));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_root_the_caller_may_not_enter_is_a_read_error_in_the_permitted_walk() {
+        let dir = temp_tree("permitted_root");
+        let locked = dir.join("people/Ada");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let error = list_directory(locked.to_str().unwrap(), permitted_only());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(error.unwrap_err().error_type(), "read_error");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn only_the_permitted_walk_reads_a_denial_or_a_vanishing_as_part_of_the_listing() {
+        let denied = std::io::Error::from(ErrorKind::PermissionDenied);
+        let gone = std::io::Error::from(ErrorKind::NotFound);
+        let fault = std::io::Error::from(ErrorKind::Other);
+        assert_eq!(classify(&permitted_only(), &denied), Unreadable::NotPermitted);
+        assert_eq!(classify(&permitted_only(), &gone), Unreadable::Vanished);
+        assert_eq!(classify(&permitted_only(), &fault), Unreadable::Failure);
+        for io_err in [&denied, &gone, &fault] {
+            assert_eq!(classify(&ListOptions::default(), io_err), Unreadable::Failure);
+        }
+    }
+
+    #[test]
+    fn the_permitted_json_matches_its_schema() {
+        let dir = temp_tree("permitted_json");
+        let json = read_directory_json(dir.to_str().unwrap(), permitted_only()).unwrap();
+        assert!(DIRECTORY_PERMITTED_LISTING.is_valid(&json).unwrap());
+        assert!(json.contains("\"vanished\": []"), "{json}");
         fs::remove_dir_all(&dir).ok();
     }
 }

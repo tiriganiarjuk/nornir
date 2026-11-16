@@ -63,6 +63,7 @@ members = [
     "readers/read_tomlx_json_schema",
     "readers/read_tomlx_validate_json",
     "readers/read_directory_json",
+    "readers/read_directory_permitted_json",
     "core/binary_format_core",
     "capability/binary_writer_io",
     "binary_writers/write_bytes_verify_png",

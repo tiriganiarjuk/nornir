@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "directory-permitted-listing",
+  "description": "What read_directory_permitted_json returns: every entry under a root directory that the caller is permitted to see, by its path relative to the root, sorted by path. A symlink is listed as a link and never followed. size is a file's length in bytes; sha256 is present only when hashes were asked for. An entry the caller may not look into carries permitted: false and nothing beneath it is listed. vanished names every path the walk saw named and then found gone — the tree changed while it was being read — and is empty when nothing vanished.",
+  "type": "object",
+  "required": ["root", "entries", "vanished"],
+  "additionalProperties": false,
+  "properties": {
+    "root": {"type": "string", "minLength": 1},
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["file", "directory", "symlink"]},
+          "size": {"type": "integer", "minimum": 0},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "permitted": {
+            "const": false,
+            "description": "This entry exists and is outside your access: nothing beneath it is listed. If the work needs what is in it, ask the user for access; do not change its permissions yourself."
+          }
+        }
+      }
+    },
+    "vanished": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}
