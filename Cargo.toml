@@ -11,6 +11,7 @@ members = [
     "capability/io_check",
     "capability/gate_io",
     "capability/reader_io",
+    "capability/tool_face_io",
     "capability/directory_read_io",
     "capability/directory_write_io",
     "capability/intercept_io",

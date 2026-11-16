@@ -2,44 +2,28 @@
 //! Reads a TOML file, validates it against `{schema_dir}/{schema_name}.schema.json`
 //! (loaded at call time, compiled once per process), and returns the validated JSON.
 //!
-//! One tool, two faces. `read` is the tool; the CLI face (`main.rs`) and the
-//! PyO3 face (below, feature "python") call it and nothing else.
+//! One tool, two faces (`NORNIR_CONVENTIONS.md` § Tool Structure). `read` is the tool;
+//! the CLI face (`main.rs`) and the PyO3 face (below, feature "python") hand its result
+//! to `tool_face_io`.
 
 pub use reader_io::ReaderError;
 use reader_io::{read_validate_json, SourceFormat};
 
+pub const USAGE: &str = "usage: read_toml_validate_json <file_path> <schema_name> <schema_dir>\n\
+                         Pass the three arguments in that order; schema_dir is an absolute path.";
+
 /// Read a TOML file and validate it against the named schema. Pass an absolute schema_dir.
-pub fn read(file_path: &str, schema_name: &str, schema_dir: &str) -> Result<String, ReaderError> {
-    read_validate_json(SourceFormat::Toml, file_path, schema_name, schema_dir)
+pub fn read(file_path: &str, schema_name: &str, schema_dir: &str) -> Result<Option<String>, ReaderError> {
+    read_validate_json(SourceFormat::Toml, file_path, schema_name, schema_dir).map(Some)
 }
 
-/// PyO3 face. Returns the gate contract:
-/// `{"ok": bool, "data": str | None, "error": {"type": str, "message": str} | None}`;
-/// `error.type` is one of `ReaderError::error_type()`. It never raises for a failed read.
 #[cfg(feature = "python")]
 mod python_face {
     use pyo3::prelude::*;
-    use pyo3::types::PyDict;
 
     #[pyfunction]
     fn read(py: Python<'_>, file_path: &str, schema_name: &str, schema_dir: &str) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
-        match super::read(file_path, schema_name, schema_dir) {
-            Ok(json) => {
-                dict.set_item("ok", true)?;
-                dict.set_item("data", &json)?;
-                dict.set_item("error", py.None())?;
-            }
-            Err(e) => {
-                let err = PyDict::new_bound(py);
-                err.set_item("type", e.error_type())?;
-                err.set_item("message", e.to_string())?;
-                dict.set_item("ok", false)?;
-                dict.set_item("data", py.None())?;
-                dict.set_item("error", err)?;
-            }
-        }
-        Ok(dict.into())
+        tool_face_io::py_contract(py, super::read(file_path, schema_name, schema_dir), super::ReaderError::error_type)
     }
 
     #[pymodule]
