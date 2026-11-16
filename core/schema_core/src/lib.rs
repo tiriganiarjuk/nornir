@@ -18,7 +18,8 @@ use error_core::{
 /// The schema is baked into the binary at compile time. The `Validator` is
 /// compiled on first use and cached for the process lifetime.
 pub struct EmbeddedValidator {
-    validator: OnceLock<Validator>,
+    /// The compiled validator, or why the embedded schema would not compile.
+    validator: OnceLock<Result<Validator, String>>,
     schema_json: &'static str,
     schema_name: &'static str,
 }
@@ -44,14 +45,13 @@ impl EmbeddedValidator {
         self.schema_json
     }
 
-    /// Get or compile the validator.
-    fn get_validator(&self) -> &Validator {
-        self.validator.get_or_init(|| {
-            let schema: Value = serde_json::from_str(self.schema_json)
-                .expect("embedded schema must be valid JSON");
-            Validator::new(&schema)
-                .expect("embedded schema must be valid JSON Schema")
-        })
+    /// Get or compile the validator. An embedded schema that is not valid JSON, or not
+    /// valid JSON Schema, is a `SchemaCompilation` error on every call, never a panic.
+    fn get_validator(&self) -> Result<&Validator, SchemaError> {
+        self.validator
+            .get_or_init(|| compile(self.schema_name, self.schema_json))
+            .as_ref()
+            .map_err(|message| SchemaError::SchemaCompilation(message.clone()))
     }
 
     /// Validate JSON data and return a full result with educational errors.
@@ -59,7 +59,7 @@ impl EmbeddedValidator {
         let data: Value = serde_json::from_str(data_json)
             .map_err(|e| SchemaError::InvalidInput(format!("Invalid JSON: {}", e)))?;
 
-        let validator = self.get_validator();
+        let validator = self.get_validator()?;
         let errors: Vec<_> = validator.iter_errors(&data).collect();
 
         if errors.is_empty() {
@@ -90,8 +90,15 @@ impl EmbeddedValidator {
     pub fn is_valid(&self, data_json: &str) -> Result<bool, SchemaError> {
         let data: Value = serde_json::from_str(data_json)
             .map_err(|e| SchemaError::InvalidInput(format!("Invalid JSON: {}", e)))?;
-        Ok(self.get_validator().is_valid(&data))
+        Ok(self.get_validator()?.is_valid(&data))
     }
+}
+
+/// Compile an embedded schema, or say why it does not compile.
+fn compile(schema_name: &str, schema_json: &str) -> Result<Validator, String> {
+    let schema: Value = serde_json::from_str(schema_json)
+        .map_err(|e| format!("embedded schema '{schema_name}' is not valid JSON: {e}"))?;
+    Validator::new(&schema).map_err(|e| format!("embedded schema '{schema_name}' is not valid JSON Schema: {e}"))
 }
 
 /// Result from validation.
@@ -183,5 +190,30 @@ mod tests {
         let json = VALIDATOR.schema_json();
         assert!(json.contains("\"name\""));
         assert!(json.contains("\"type\""));
+    }
+
+    static NOT_JSON: EmbeddedValidator = EmbeddedValidator::new("{ not json", "broken-json");
+    static NOT_JSON_SCHEMA: EmbeddedValidator = EmbeddedValidator::new(r#"{"type": 12}"#, "broken-schema");
+
+    #[test]
+    fn test_embedded_schema_that_is_not_json_is_a_compilation_error() {
+        match NOT_JSON.validate(r#"{"name": "test"}"#) {
+            Err(SchemaError::SchemaCompilation(msg)) => assert!(msg.contains("broken-json")),
+            other => panic!("Expected SchemaCompilation, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_embedded_schema_that_is_not_json_schema_is_a_compilation_error() {
+        match NOT_JSON_SCHEMA.validate(r#"{"name": "test"}"#) {
+            Err(SchemaError::SchemaCompilation(msg)) => assert!(msg.contains("not valid JSON Schema")),
+            other => panic!("Expected SchemaCompilation, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_a_broken_schema_reports_on_every_call() {
+        assert!(NOT_JSON_SCHEMA.is_valid("{}").is_err());
+        assert!(NOT_JSON_SCHEMA.is_valid("{}").is_err());
     }
 }

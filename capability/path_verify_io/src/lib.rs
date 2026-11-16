@@ -5,13 +5,14 @@
 
 use std::path::Path;
 
-use error_core::{PathError, PathField, SchemaError};
+use error_core::{NornirError, PathError, PathField};
 
 /// Verify that all `path_exists_absolute` fields in the data reference
 /// files that exist on the filesystem.
 ///
-/// Returns `Ok(())` if all paths exist, `Err(PathError)` if any are missing.
-pub fn verify_paths(schema_json: &str, data_json: &str) -> Result<(), SchemaError> {
+/// Returns `Ok(())` if all paths exist; `NornirError::Path` — the `path_error`
+/// class — naming every missing one if any are missing.
+pub fn verify_paths(schema_json: &str, data_json: &str) -> Result<(), NornirError> {
     let fields = path_core::extract_path_fields(schema_json, data_json)?;
 
     let missing: Vec<PathField> = fields
@@ -22,9 +23,7 @@ pub fn verify_paths(schema_json: &str, data_json: &str) -> Result<(), SchemaErro
     if missing.is_empty() {
         Ok(())
     } else {
-        Err(SchemaError::ValidationFailed(
-            PathError { missing }.to_string(),
-        ))
+        Err(NornirError::Path(PathError { missing }))
     }
 }
 
@@ -69,8 +68,9 @@ mod tests {
             }
         }"#;
         let data = r#"{"path": "/absolutely/does/not/exist/file.txt"}"#;
-        let result = verify_paths(schema, data);
-        assert!(result.is_err());
+        let error = verify_paths(schema, data).unwrap_err();
+        assert_eq!(error.error_type(), "path_error");
+        assert!(error.to_string().contains("/absolutely/does/not/exist/file.txt"));
     }
 
     #[test]
