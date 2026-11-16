@@ -79,6 +79,22 @@ description = "Post-tool hook source code"
 pattern = "/saga_core/"
 description = "Enforcement runner source code"
 
+[[probing]]
+pattern = "/saga_runner/"
+description = "Enforcement runner and check routing source code"
+
+[[probing]]
+pattern = "/syn_core/"
+description = "Quality policy source code"
+
+[[probing]]
+pattern = "/syn_cli/"
+description = "Quality policy gate source code"
+
+[[probing]]
+pattern = "/.syn/"
+description = "Syn policy configuration (what is visible, what blocks)"
+
 # Removed: /gleipnir/src/ — stale, old location (now /gleipnir_core/)
 # Removed: /test_guardrails — stale, old Python guardrails
 # Removed: /rules.toml — too broad, needed during development
