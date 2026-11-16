@@ -130,6 +130,7 @@ fn run_directory(search_dir: &Path, force: bool, kind: Kind) -> Result<(), Strin
     let mut generated = 0usize;
     let mut skipped = 0usize;
     let mut failed = 0usize;
+    let mut faulted = 0usize;
 
     for file in &files {
         let sidecar = saga_runner::qa_path(file);
@@ -139,6 +140,12 @@ fn run_directory(search_dir: &Path, force: bool, kind: Kind) -> Result<(), Strin
         }
 
         let report = saga_runner::generate_report(file, Some(&project_root));
+        if !report.faults.is_empty() {
+            faulted += 1;
+            for fault in &report.faults {
+                eprintln!("  FAULT {}: {}: {}", file.display(), fault.tool, fault.message);
+            }
+        }
         match saga_runner::save_sidecar(&report) {
             Ok(path) => {
                 let rel = path.strip_prefix(&project_root)
@@ -155,8 +162,8 @@ fn run_directory(search_dir: &Path, force: bool, kind: Kind) -> Result<(), Strin
     }
 
     eprintln!(
-        "[saga] {} generated, {} skipped, {} failed (of {} {} files)",
-        generated, skipped, failed, files.len(), kind_label(kind)
+        "[saga] {} generated, {} skipped, {} failed, {} not fully examined (of {} {} files)",
+        generated, skipped, failed, faulted, files.len(), kind_label(kind)
     );
     Ok(())
 }

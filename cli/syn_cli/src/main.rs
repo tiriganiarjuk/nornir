@@ -26,7 +26,7 @@ use std::process;
 use saga_runner::SanityReport;
 use syn_core::{FilterOverrides, PolicyMode, SynConfig};
 
-use report_render_core::{OutputMode, total_issues, groups_to_json, format_output};
+use report_render_core::{LocatedFault, OutputMode, total_issues, groups_to_json, format_output};
 
 // =============================================================================
 // Config loading (.syn/warn.toml, .syn/deny.toml)
@@ -258,6 +258,26 @@ fn find_qa_files(path: &Path, target: Target, kind: Kind) -> Vec<PathBuf> {
     results
 }
 
+/// The reports of the sidecars that load, and a fault for each one that does not:
+/// a sidecar syn cannot read says nothing about its file.
+fn load_sidecars(qa_files: &[PathBuf]) -> (Vec<SanityReport>, Vec<LocatedFault>) {
+    let mut reports = Vec::new();
+    let mut unloaded = Vec::new();
+    for qa_file in qa_files {
+        match saga_runner::load_qa_file(qa_file) {
+            Ok(report) => reports.push(report),
+            Err(failure) => unloaded.push(LocatedFault {
+                file: qa_file.display().to_string(),
+                tool: "syn".to_string(),
+                mode: failure.mode.to_string(),
+                class: failure.class.to_string(),
+                message: failure.standard_message(),
+            }),
+        }
+    }
+    (reports, unloaded)
+}
+
 fn load_reports_from_stdin() -> Result<Vec<SanityReport>, String> {
     let mut buf = String::new();
     io::stdin().read_to_string(&mut buf)
@@ -331,27 +351,18 @@ fn run(args: &Args) -> Result<i32, String> {
 
     let config = load_config(project_dir)?;
 
-    let reports = if args.stdin {
-        load_reports_from_stdin()?
+    let (reports, unloaded) = if args.stdin {
+        (load_reports_from_stdin()?, Vec::new())
     } else {
         let path = args.path.as_deref().unwrap_or_else(|| Path::new("."));
-        let qa_files = find_qa_files(path, args.target, args.kind);
-        if qa_files.is_empty() {
-            println!("{}", format_output(&[], args.output));
-            return Ok(0);
-        }
-        qa_files.iter().filter_map(|qf| saga_runner::load_qa_file(qf)).collect()
+        load_sidecars(&find_qa_files(path, args.target, args.kind))
     };
-
-    if reports.is_empty() {
-        println!("{}", format_output(&[], args.output));
-        return Ok(0);
-    }
 
     let overrides = build_overrides(args);
     let result = syn_core::apply_filters(reports, &config, args.mode.into(), &overrides);
+    let faults: Vec<LocatedFault> = unloaded.into_iter().chain(result.faults).collect();
 
-    let output = format_output(&result.warn_groups, args.output);
+    let output = format_output(&result.warn_groups, &faults, args.output);
     if !output.is_empty() {
         println!("{}", output);
     }
@@ -359,8 +370,8 @@ fn run(args: &Args) -> Result<i32, String> {
     if args.mode == Mode::Gate {
         let total = total_issues(&result.warn_groups);
         eprintln!(
-            "[syn] {} — {} visible, {} deny",
-            result.decision.to_uppercase(), total, result.deny_issues
+            "[syn] {} — {} visible, {} deny, {} faults",
+            result.decision.to_uppercase(), total, result.deny_issues, faults.len()
         );
     }
 

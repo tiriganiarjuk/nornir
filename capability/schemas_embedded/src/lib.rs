@@ -195,6 +195,11 @@ static DIRECTORY_WRITE_REPORT_JSON: &str =
 pub static DIRECTORY_WRITE_REPORT: EmbeddedValidator =
     EmbeddedValidator::new(DIRECTORY_WRITE_REPORT_JSON, "directory-write-report");
 
+static SANITY_REPORT_JSON: &str =
+    include_str!("../../../schemas/tools/sanity-report.schema.json");
+pub static SANITY_REPORT: EmbeddedValidator =
+    EmbeddedValidator::new(SANITY_REPORT_JSON, "sanity-report");
+
 #[cfg(test)]
 mod tests {
     use super::*;

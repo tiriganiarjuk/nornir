@@ -374,14 +374,16 @@ pub fn check_no_disallowed_stdlib(
 const NO_READER_YET: &str = "no reader gate exists for it yet — the violation stands until one does";
 const READ_REPLACEMENT: &str = "a read_*_validate_json reader for structured data";
 const WRITE_REPLACEMENT: &str = "a nornir writer tool";
+/// A TOML parser import does not say which kind of file it reads, so both readers are named.
+const TOML_READERS: &str = "read_toml_validate_json, or read_tomlx_validate_json for a .tomlx file";
 
 /// Structured-file parsers that bypass the reader gates. (top-level module, replacement)
 const GATE_BYPASS_PARSERS: &[(&str, &str)] = &[
-    ("tomllib", "read_toml_validate_json"),
-    ("tomli", "read_toml_validate_json"),
-    ("toml", "read_toml_validate_json"),
-    ("tomlkit", "read_toml_validate_json"),
-    ("configparser", "read_toml_validate_json"),
+    ("tomllib", TOML_READERS),
+    ("tomli", TOML_READERS),
+    ("toml", TOML_READERS),
+    ("tomlkit", TOML_READERS),
+    ("configparser", TOML_READERS),
     ("tomli_w", WRITE_REPLACEMENT),
     ("yaml", "read_yaml_validate_json"),
     ("ruamel", "read_yaml_validate_json"),

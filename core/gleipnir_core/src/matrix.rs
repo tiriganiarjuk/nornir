@@ -11,89 +11,130 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::checks_py::{architecture, imports, prohibited, style, suppression, type_safety};
-use crate::structures::{CheckEntry, CheckFn, FileKind, Level, Severity, V2Classification, Zone};
+use crate::messages;
+use crate::structures::{CheckEntry, CheckFn, CheckMessages, FileKind, Level, Severity, V2Classification, Zone};
 
 // =========================================================================
-// Check registry: name → function pointer
+// Check registry: messages entry → function pointer
 // =========================================================================
-// This is the ONLY place where check names are tied to function pointers.
-// The TOML matrix references checks by these names.
+// This is the ONLY place where a check's name is tied to its function pointer.
+// A check is named through its constant in `crate::messages`; the TOML matrix
+// references checks by the names those constants carry.
 
-static CHECK_REGISTRY: &[(&str, CheckFn)] = &[
+const CHECK_REGISTRY: &[(&CheckMessages, CheckFn)] = &[
     // TYPE SAFETY
-    ("no_any_types", type_safety::check_no_any_types),
-    ("no_any_type_aliases", type_safety::check_no_any_type_aliases),
-    ("no_object", type_safety::check_no_object),
-    ("no_json_value", type_safety::check_no_json_value),
-    ("no_bare_collections", type_safety::check_no_bare_collections),
-    ("no_implicit_type_aliases", type_safety::check_no_implicit_type_aliases),
-    ("union_member_count", type_safety::check_union_member_count),
-    ("no_string_annotations", type_safety::check_no_string_annotations),
-    ("no_callable_params", type_safety::check_no_callable_params),
-    ("no_callable_type_aliases", type_safety::check_no_callable_type_aliases),
+    (&messages::NO_ANY_TYPES, type_safety::check_no_any_types),
+    (&messages::NO_ANY_TYPE_ALIASES, type_safety::check_no_any_type_aliases),
+    (&messages::NO_OBJECT, type_safety::check_no_object),
+    (&messages::NO_JSON_VALUE, type_safety::check_no_json_value),
+    (&messages::NO_BARE_COLLECTIONS, type_safety::check_no_bare_collections),
+    (&messages::NO_IMPLICIT_TYPE_ALIASES, type_safety::check_no_implicit_type_aliases),
+    (&messages::UNION_MEMBER_COUNT, type_safety::check_union_member_count),
+    (&messages::NO_STRING_ANNOTATIONS, type_safety::check_no_string_annotations),
+    (&messages::NO_CALLABLE_PARAMS, type_safety::check_no_callable_params),
+    (&messages::NO_CALLABLE_TYPE_ALIASES, type_safety::check_no_callable_type_aliases),
     // IMPORTS
-    ("no_unsafe_imports", imports::check_no_unsafe_imports),
-    ("no_relative_imports", imports::check_no_relative_imports),
-    ("impure_module_quarantine", imports::check_impure_module_quarantine),
-    ("no_type_checking_imports", imports::check_no_type_checking_imports),
-    ("no_parent_imports", imports::check_no_parent_imports),
-    ("no_disallowed_stdlib", imports::check_no_disallowed_stdlib),
-    ("no_direct_file_io", imports::check_no_direct_file_io),
-    ("no_sys_path_mutation", imports::check_no_sys_path_mutation),
-    ("no_deferred_imports", imports::check_no_deferred_imports),
-    ("v2_import_boundaries", imports::check_v2_import_boundaries),
-    ("no_before_validators", imports::check_no_before_validators),
+    (&messages::NO_UNSAFE_IMPORTS, imports::check_no_unsafe_imports),
+    (&messages::NO_RELATIVE_IMPORTS, imports::check_no_relative_imports),
+    (&messages::IMPURE_MODULE_QUARANTINE, imports::check_impure_module_quarantine),
+    (&messages::NO_TYPE_CHECKING_IMPORTS, imports::check_no_type_checking_imports),
+    (&messages::NO_PARENT_IMPORTS, imports::check_no_parent_imports),
+    (&messages::NO_DISALLOWED_STDLIB, imports::check_no_disallowed_stdlib),
+    (&messages::NO_DIRECT_FILE_IO, imports::check_no_direct_file_io),
+    (&messages::NO_SYS_PATH_MUTATION, imports::check_no_sys_path_mutation),
+    (&messages::NO_DEFERRED_IMPORTS, imports::check_no_deferred_imports),
+    (&messages::V2_IMPORT_BOUNDARIES, imports::check_v2_import_boundaries),
+    (&messages::NO_BEFORE_VALIDATORS, imports::check_no_before_validators),
     // PROHIBITED
-    ("no_cast", prohibited::check_no_cast),
-    ("no_overload", prohibited::check_no_overload),
-    ("no_bare_except", prohibited::check_no_bare_except),
-    ("no_broad_exceptions", prohibited::check_no_broad_exceptions),
-    ("no_print", prohibited::check_no_print),
-    ("no_model_dump", prohibited::check_no_model_dump),
-    ("no_future_annotations", prohibited::check_no_future_annotations),
-    ("init_files_empty", prohibited::check_init_files_empty),
-    ("no_dunder_all", prohibited::check_no_dunder_all),
-    ("no_nested_functions", prohibited::check_no_nested_functions),
-    ("no_general_lambda", prohibited::check_no_general_lambda),
-    ("no_default_factory", prohibited::check_no_default_factory),
-    ("no_partial", prohibited::check_no_partial),
-    ("no_re_sub", prohibited::check_no_re_sub),
-    ("no_recursion", prohibited::check_no_recursion),
+    (&messages::NO_CAST, prohibited::check_no_cast),
+    (&messages::NO_OVERLOAD, prohibited::check_no_overload),
+    (&messages::NO_BARE_EXCEPT, prohibited::check_no_bare_except),
+    (&messages::NO_BROAD_EXCEPTIONS, prohibited::check_no_broad_exceptions),
+    (&messages::NO_PRINT, prohibited::check_no_print),
+    (&messages::NO_MODEL_DUMP, prohibited::check_no_model_dump),
+    (&messages::NO_FUTURE_ANNOTATIONS, prohibited::check_no_future_annotations),
+    (&messages::INIT_FILES_EMPTY, prohibited::check_init_files_empty),
+    (&messages::NO_DUNDER_ALL, prohibited::check_no_dunder_all),
+    (&messages::NO_NESTED_FUNCTIONS, prohibited::check_no_nested_functions),
+    (&messages::NO_GENERAL_LAMBDA, prohibited::check_no_general_lambda),
+    (&messages::NO_DEFAULT_FACTORY, prohibited::check_no_default_factory),
+    (&messages::NO_PARTIAL, prohibited::check_no_partial),
+    (&messages::NO_RE_SUB, prohibited::check_no_re_sub),
+    (&messages::NO_RECURSION, prohibited::check_no_recursion),
     // SUPPRESSION
-    ("no_suppression_comments", suppression::check_no_suppression_comments),
+    (&messages::NO_SUPPRESSION_COMMENTS, suppression::check_no_suppression_comments),
     // ARCHITECTURE
-    ("no_methods_in_classes", architecture::check_no_methods_in_classes),
-    ("pydantic_only", architecture::check_pydantic_only),
-    ("god_classes", architecture::check_god_classes),
-    ("no_callable_protocol", architecture::check_no_callable_protocol),
-    ("no_inline_dispatch", architecture::check_no_inline_dispatch),
-    ("no_reexport_shims", architecture::check_no_reexport_shims),
-    ("hardcoded_config", architecture::check_hardcoded_config),
-    ("classes_only_in_structures", architecture::check_classes_only_in_structures),
-    ("structures_no_functions", architecture::check_structures_no_functions),
-    ("structures_import_boundary", architecture::check_structures_import_boundary),
-    ("import_count", architecture::check_import_count),
-    ("max_functions_outside_zones", architecture::check_max_functions_outside_zones),
-    ("v2_structure_no_logic", architecture::check_v2_structure_no_logic),
-    ("v2_structure_bases", architecture::check_v2_structure_bases),
-    ("v2_structure_import_boundary", architecture::check_v2_structure_import_boundary),
-    ("v2_logic_no_constants", architecture::check_v2_logic_no_constants),
-    ("v2_dispatch_only_tables", architecture::check_v2_dispatch_only_tables),
-    ("v2_classes_only_in_structure", architecture::check_v2_classes_only_in_structure),
-    ("unknown_file_in_zone", architecture::check_unknown_file_in_zone),
+    (&messages::NO_METHODS_IN_CLASSES, architecture::check_no_methods_in_classes),
+    (&messages::PYDANTIC_ONLY, architecture::check_pydantic_only),
+    (&messages::GOD_CLASSES, architecture::check_god_classes),
+    (&messages::NO_CALLABLE_PROTOCOL, architecture::check_no_callable_protocol),
+    (&messages::NO_INLINE_DISPATCH, architecture::check_no_inline_dispatch),
+    (&messages::NO_REEXPORT_SHIMS, architecture::check_no_reexport_shims),
+    (&messages::HARDCODED_CONFIG, architecture::check_hardcoded_config),
+    (&messages::CLASSES_ONLY_IN_STRUCTURES, architecture::check_classes_only_in_structures),
+    (&messages::STRUCTURES_NO_FUNCTIONS, architecture::check_structures_no_functions),
+    (&messages::STRUCTURES_IMPORT_BOUNDARY, architecture::check_structures_import_boundary),
+    (&messages::IMPORT_COUNT, architecture::check_import_count),
+    (&messages::MAX_FUNCTIONS_OUTSIDE_ZONES, architecture::check_max_functions_outside_zones),
+    (&messages::V2_STRUCTURE_NO_LOGIC, architecture::check_v2_structure_no_logic),
+    (&messages::V2_STRUCTURE_BASES, architecture::check_v2_structure_bases),
+    (&messages::V2_STRUCTURE_IMPORT_BOUNDARY, architecture::check_v2_structure_import_boundary),
+    (&messages::V2_LOGIC_NO_CONSTANTS, architecture::check_v2_logic_no_constants),
+    (&messages::V2_DISPATCH_ONLY_TABLES, architecture::check_v2_dispatch_only_tables),
+    (&messages::V2_CLASSES_ONLY_IN_STRUCTURE, architecture::check_v2_classes_only_in_structure),
+    (&messages::UNKNOWN_FILE_IN_ZONE, architecture::check_unknown_file_in_zone),
     // STYLE
-    ("function_length", style::check_function_length),
-    ("param_count", style::check_param_count),
-    ("nesting_depth", style::check_nesting_depth),
-    ("no_underscore_prefix", style::check_no_underscore_prefix),
-    ("no_none_returns", style::check_no_none_returns),
-    ("no_throwaway_assignment", style::check_no_throwaway_assignment),
-    ("no_single_letter_names", style::check_no_single_letter_names),
-    ("no_numbered_suffixes", style::check_no_numbered_suffixes),
-    ("short_param_names", style::check_short_param_names),
-    ("short_local_names", style::check_short_local_names),
-    ("v2_cc_level", style::check_v2_cc_level),
+    (&messages::FUNCTION_LENGTH, style::check_function_length),
+    (&messages::PARAM_COUNT, style::check_param_count),
+    (&messages::NESTING_DEPTH, style::check_nesting_depth),
+    (&messages::NO_UNDERSCORE_PREFIX, style::check_no_underscore_prefix),
+    (&messages::NO_NONE_RETURNS, style::check_no_none_returns),
+    (&messages::NO_THROWAWAY_ASSIGNMENT, style::check_no_throwaway_assignment),
+    (&messages::NO_SINGLE_LETTER_NAMES, style::check_no_single_letter_names),
+    (&messages::NO_NUMBERED_SUFFIXES, style::check_no_numbered_suffixes),
+    (&messages::SHORT_PARAM_NAMES, style::check_short_param_names),
+    (&messages::SHORT_LOCAL_NAMES, style::check_short_local_names),
+    (&messages::V2_CC_LEVEL, style::check_v2_cc_level),
 ];
+
+// Every check the matrix names is in the registry, proven when the crate compiles.
+
+const fn same_text(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+const fn is_registered(check_name: &str) -> bool {
+    let mut index = 0;
+    while index < CHECK_REGISTRY.len() {
+        if same_text(CHECK_REGISTRY[index].0.name, check_name) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+const _: () = {
+    let mut index = 0;
+    while index < messages::MATRIX_CHECK_NAMES.len() {
+        assert!(
+            is_registered(messages::MATRIX_CHECK_NAMES[index]),
+            "gleipnir_matrix.toml names a check that CHECK_REGISTRY does not hold"
+        );
+        index += 1;
+    }
+};
 
 // =========================================================================
 // Matrix parsing (from embedded TOML)
@@ -106,9 +147,9 @@ struct ParsedMatrix {
 }
 
 static MATRIX: LazyLock<ParsedMatrix> = LazyLock::new(|| {
-    let registry: HashMap<&str, (&'static str, CheckFn)> = CHECK_REGISTRY
+    let registry: HashMap<&str, (&'static CheckMessages, CheckFn)> = CHECK_REGISTRY
         .iter()
-        .map(|&(name, func)| (name, (name, func)))
+        .map(|&(check, func)| (check.name, (check, func)))
         .collect();
 
     let raw: toml::Value =
@@ -142,14 +183,14 @@ static MATRIX: LazyLock<ParsedMatrix> = LazyLock::new(|| {
                                 "gleipnir_matrix.toml: {key}.{severity_name} contains non-string"
                             )
                         });
-                        let &(static_name, check_fn) =
+                        let &(check, check_fn) =
                             registry.get(name).unwrap_or_else(|| {
                                 panic!(
                                     "gleipnir_matrix.toml: {key} references unknown check '{name}'"
                                 )
                             });
                         check_list.push(CheckEntry {
-                            name: static_name,
+                            messages: check,
                             severity,
                             check_fn,
                         });

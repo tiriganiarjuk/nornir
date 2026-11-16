@@ -5,6 +5,7 @@
 //! no_dunder_all, no_nested_functions (+ no_closures),
 //! no_general_lambda, no_default_factory, no_recursion.
 
+use crate::messages;
 use crate::parsing::{find_nodes_by_type, node_field, node_line, node_text};
 use crate::structures::{CheckConfig, ParsedSource, Severity, Violation};
 
@@ -348,27 +349,15 @@ fn collect_nested_functions(
             let is_closure = inner_refs.iter().any(|name| outer_names.contains(name.as_str()));
 
             if is_closure {
-                violations.push(Violation {
-                    line: node_line(node),
-                    check_name: "no_closures".to_string(),
-                    severity: Severity::Error,
-                    message: format!("closure '{inner_name}' captures from enclosing scope"),
-                    detail: String::new(),
-                    signal: String::new(),
-                    direction: String::new(),
-                    canary: String::new(),
-                });
+                violations.push(messages::NO_CLOSURES.violation(
+                    node_line(node),
+                    format!("closure '{inner_name}' captures from enclosing scope"),
+                ));
             } else {
-                violations.push(Violation {
-                    line: node_line(node),
-                    check_name: "no_nested_functions".to_string(),
-                    severity: Severity::Error,
-                    message: format!("nested function '{inner_name}'"),
-                    detail: String::new(),
-                    signal: String::new(),
-                    direction: String::new(),
-                    canary: String::new(),
-                });
+                violations.push(messages::NO_NESTED_FUNCTIONS.violation(
+                    node_line(node),
+                    format!("nested function '{inner_name}'"),
+                ));
             }
         }
     }
@@ -480,15 +469,9 @@ pub fn check_no_general_lambda(source: &ParsedSource, _config: &CheckConfig) -> 
     find_nodes_by_type(source.tree.root_node(), "lambda")
         .iter()
         .filter(|node| !is_default_factory_lambda(**node, source.source_bytes))
-        .map(|node| Violation {
-            line: node_line(*node),
-            check_name: "no_general_lambda".to_string(),
-            severity: Severity::Error,
-            message: "lambda expression — extract to a named function".to_string(),
-            detail: String::new(),
-            signal: String::new(),
-            direction: String::new(),
-            canary: String::new(),
+        .map(|node| {
+            messages::NO_GENERAL_LAMBDA
+                .violation(node_line(*node), "lambda expression — extract to a named function".to_string())
         })
         .collect()
 }
@@ -505,15 +488,11 @@ pub fn check_no_default_factory(source: &ParsedSource, _config: &CheckConfig) ->
     find_nodes_by_type(source.tree.root_node(), "lambda")
         .iter()
         .filter(|node| is_default_factory_lambda(**node, source.source_bytes))
-        .map(|node| Violation {
-            line: node_line(*node),
-            check_name: "no_default_factory".to_string(),
-            severity: Severity::Error,
-            message: "default_factory=lambda — use a named function or class default".to_string(),
-            detail: String::new(),
-            signal: String::new(),
-            direction: String::new(),
-            canary: String::new(),
+        .map(|node| {
+            messages::NO_DEFAULT_FACTORY.violation(
+                node_line(*node),
+                "default_factory=lambda — use a named function or class default".to_string(),
+            )
         })
         .collect()
 }

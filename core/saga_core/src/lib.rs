@@ -26,6 +26,8 @@ pub struct Issue {
     #[serde(default)]
     pub fixable: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signal: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub direction: String,
@@ -33,12 +35,27 @@ pub struct Issue {
     pub canary: String,
 }
 
+/// An instrument that could not do its work on a file. The file is then not
+/// known to be clean, whatever the issues say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fault {
+    /// The instrument that did not do its work.
+    pub tool: String,
+    /// The failure mode, by its name in the error registry.
+    pub mode: String,
+    /// The failure class of that mode.
+    pub class: String,
+    /// The mode's standard message with its route.
+    pub message: String,
+}
+
+/// The shape of this type on disk is `schemas/tools/sanity-report.schema.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SanityReport {
     pub file: String,
     #[serde(default)]
     pub relative_path: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content_hash: String,
     #[serde(default)]
     pub generated_at: String,
@@ -46,6 +63,8 @@ pub struct SanityReport {
     pub elapsed_ms: u64,
     #[serde(default)]
     pub issues: Vec<Issue>,
+    #[serde(default)]
+    pub faults: Vec<Fault>,
     #[serde(default)]
     pub total: usize,
     #[serde(default)]

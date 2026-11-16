@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sanity-report",
+  "description": "What saga records for one source file, and the content of its .qa sidecar: every issue the instruments found, and every fault — an instrument that could not do its work on this file. A report with no issues and no faults says the file was fully examined and nothing was found. A report with a fault says part of the examination did not happen; its issues are then what the remaining instruments found.",
+  "type": "object",
+  "required": ["file", "relative_path", "generated_at", "elapsed_ms", "issues", "faults", "total", "by_tool", "by_severity", "by_category"],
+  "additionalProperties": false,
+  "properties": {
+    "file": {"type": "string", "minLength": 1, "description": "The source file's absolute path."},
+    "relative_path": {"type": "string", "minLength": 1, "description": "The path a report shows for the file."},
+    "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 of the source as examined. Absent when the source could not be hashed; a fault then says why."},
+    "generated_at": {"type": "string", "pattern": "^[0-9]+Z$", "description": "Seconds since the Unix epoch, UTC."},
+    "elapsed_ms": {"type": "integer", "minimum": 0},
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool", "code", "severity", "line", "message", "category", "fixable"],
+        "additionalProperties": false,
+        "properties": {
+          "tool": {"enum": ["gleipnir", "ruff", "basedpyright"]},
+          "code": {"type": "string", "minLength": 1, "description": "The check or rule that fired."},
+          "severity": {"enum": ["blocked", "error", "warning", "info"]},
+          "line": {"type": "integer", "minimum": 0},
+          "column": {"type": "integer", "minimum": 0},
+          "message": {"type": "string", "description": "What was found, at this line."},
+          "category": {"type": "string", "minLength": 1},
+          "fixable": {"type": "boolean"},
+          "detail": {"type": "string", "minLength": 1, "description": "A gleipnir check's detail, as gleipnir_messages.toml defines it."},
+          "signal": {"type": "string", "minLength": 1, "description": "A gleipnir check's signal."},
+          "direction": {"type": "string", "minLength": 1, "description": "A gleipnir check's direction."},
+          "canary": {"type": "string", "minLength": 1, "description": "A gleipnir check's canary."}
+        }
+      }
+    },
+    "faults": {
+      "type": "array",
+      "description": "Every instrument that could not do its work on this file. Empty when all of them ran.",
+      "items": {
+        "type": "object",
+        "required": ["tool", "mode", "class", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "tool": {"enum": ["saga", "gleipnir", "ruff", "basedpyright"], "description": "The instrument that did not do its work."},
+          "mode": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "The failure mode, by its name in the error registry (failure_modes.toml)."},
+          "class": {"type": "string", "pattern": "^[a-z_]+_error$", "description": "The failure class of that mode."},
+          "message": {"type": "string", "minLength": 1, "description": "The mode's standard message with its route."}
+        }
+      }
+    },
+    "total": {"type": "integer", "minimum": 0, "description": "The number of issues."},
+    "by_tool": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "by_severity": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "by_category": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+  }
+}

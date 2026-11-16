@@ -338,7 +338,7 @@ pub type CheckFn = fn(&ParsedSource, &CheckConfig) -> Vec<Violation>;
 /// Registry entry for a single check.
 #[derive(Clone)]
 pub struct CheckEntry {
-    pub name: &'static str,
+    pub messages: &'static CheckMessages,
     pub severity: Severity,
     pub check_fn: CheckFn,
 }
@@ -530,15 +530,29 @@ mod tests {
     }
 }
 
-/// Static message fields for a check, loaded from gleipnir_messages.toml.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+/// One check's entry in gleipnir_messages.toml, compiled in by the build script.
+/// The only values of this type are the constants in `crate::messages`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckMessages {
-    #[serde(default)]
-    pub detail: String,
-    #[serde(default)]
-    pub signal: String,
-    #[serde(default)]
-    pub direction: String,
-    #[serde(default)]
-    pub canary: String,
+    pub name: &'static str,
+    pub detail: &'static str,
+    pub signal: &'static str,
+    pub direction: &'static str,
+    pub canary: &'static str,
+}
+
+impl CheckMessages {
+    /// A violation of this check, carrying the check's name and its four message fields.
+    pub fn violation(&self, line: usize, message: String) -> Violation {
+        Violation {
+            line,
+            check_name: self.name.to_string(),
+            severity: Severity::Error,
+            message,
+            detail: self.detail.to_string(),
+            signal: self.signal.to_string(),
+            direction: self.direction.to_string(),
+            canary: self.canary.to_string(),
+        }
+    }
 }

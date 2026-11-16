@@ -13,3 +13,5 @@ sha2 = { workspace = true }
 toml = { workspace = true }
 saga_core = { path = "../../core/saga_core" }
 gleipnir_core = { path = "../../core/gleipnir_core" }
+failure_mode_core = { path = "../../core/failure_mode_core" }
+schemas_embedded = { path = "../schemas_embedded" }

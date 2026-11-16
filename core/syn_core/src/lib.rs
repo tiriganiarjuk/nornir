@@ -4,7 +4,7 @@
 //! library returns filtered output with a policy decision.
 
 use jaq_interpret::{Ctx, FilterT, ParseCtx, RcIter, Val};
-use report_render_core::{CheckGroup, group_issues, severity_rank};
+use report_render_core::{CheckGroup, LocatedFault, collect_faults, group_issues, severity_rank};
 use saga_core::{Issue, SanityReport};
 
 // =============================================================================
@@ -85,6 +85,8 @@ impl Default for FilterOverrides {
 
 pub struct FilteredOutput {
     pub warn_groups: Vec<CheckGroup>,
+    /// Every fault the reports carry. No filter hides a fault.
+    pub faults: Vec<LocatedFault>,
     pub deny_issues: usize,
     pub decision: &'static str,
 }
@@ -132,6 +134,7 @@ pub fn apply_filters(
     mode: PolicyMode,
     overrides: &FilterOverrides,
 ) -> FilteredOutput {
+    let faults = collect_faults(&reports);
     let mut visible_reports: Vec<SanityReport> = Vec::new();
     let mut deny_count: usize = 0;
 
@@ -163,7 +166,7 @@ pub fn apply_filters(
     let warn_groups = group_issues(&visible_reports);
     let decision = if deny_count > 0 && mode == PolicyMode::Gate {
         "deny"
-    } else if !warn_groups.is_empty() {
+    } else if !warn_groups.is_empty() || !faults.is_empty() {
         "warn"
     } else {
         "allow"
@@ -171,6 +174,7 @@ pub fn apply_filters(
 
     FilteredOutput {
         warn_groups,
+        faults,
         deny_issues: deny_count,
         decision,
     }
@@ -194,6 +198,7 @@ mod tests {
             message: String::new(),
             category: String::new(),
             fixable: false,
+            detail: String::new(),
             signal: String::new(),
             direction: String::new(),
             canary: String::new(),
@@ -635,5 +640,26 @@ mod tests {
         ])];
         let result = apply_filters(reports, &config, PolicyMode::Report, &overrides);
         assert_eq!(report_render_core::total_issues(&result.warn_groups), 1);
+    }
+
+    // =========================================================================
+    // faults
+    // =========================================================================
+
+    #[test]
+    fn a_fault_is_reported_whatever_the_filters_hide() {
+        let config = make_config(r#".tool == "no-such-tool""#, r#".tool == "no-such-tool""#);
+        let mut report = make_report("a.py", vec![make_issue("ruff", "E501", "warning", 1)]);
+        report.faults.push(saga_core::Fault {
+            tool: "basedpyright".into(),
+            mode: "instrument_not_runnable".into(),
+            class: "instrument_error".into(),
+            message: "why".into(),
+        });
+        let result = apply_filters(vec![report], &config, PolicyMode::Report, &no_overrides());
+        assert!(result.warn_groups.is_empty());
+        assert_eq!(result.faults.len(), 1);
+        assert_eq!(result.faults[0].file, "a.py");
+        assert_eq!(result.decision, "warn");
     }
 }

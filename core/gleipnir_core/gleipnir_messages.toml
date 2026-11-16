@@ -1,10 +1,18 @@
 # Gleipnir check messages — embedded at compile time.
 #
-# Each section maps to a check name. Four fields per check:
-#   detail    — what to fix
-#   signal    — why this matters
-#   direction — how to fix it
-#   canary    — what LLM behavior this catches
+# Each section maps to a check name. This header is the one definition of the
+# fields; every other document points here.
+#
+# A violation reaches its reader as five texts. The check writes the first for
+# the line it fired on; this file holds the other four, per check:
+#   message   — what was found, at this line (written by the check itself)
+#   detail    — the rule that was broken
+#   signal    — why the rule exists
+#   direction — the one way forward: a single path, stated as what to do
+#   canary    — for the operator: the gaming move this check has been met with
+#
+# {readers} in a text is filled at build time with the readers nornir deploys
+# (deploy_categories.toml, [readers]).
 #
 # FUZZY RETURNS POLICY: Messages MUST NOT reveal thresholds, counts,
 # or exact limits. The LLM must not reverse-engineer passing criteria.
@@ -120,7 +128,7 @@ direction = "The violation message tells you exactly what to use instead. For CL
 canary = "LLM imports familiar stdlib modules from training data instead of using the project's standardized alternatives."
 
 [no_direct_file_io]
-detail = "Python touched the filesystem directly — a structured-file parser import or a raw file handle. Structured data enters this codebase through compiled reader gates (read_toml_validate_json, read_yaml_validate_json, read_json_validate_json, read_toon_validate_json, read_xml_validate_json, read_tomlx_json) and leaves through compiled writer tools. The violation message names the gate that replaces what you wrote."
+detail = "Python touched the filesystem directly — a structured-file parser import or a raw file handle. Structured data enters this codebase through compiled readers ({readers}) and leaves through compiled writer tools. The violation message names the reader that replaces what you wrote."
 signal = "A gate fuses IO and validation into one step: the bytes on disk are checked against their schema before Python sees them, and what Python receives is JSON already known to be valid for its Pydantic model. tomllib.load, yaml.safe_load, path.read_text and open() hand Python raw, unvalidated content — each one is the workaround the gate layer exists to prevent. The same holds on the way out: a write_text is an artifact no schema has seen. The violation is the signal that this boundary was crossed; it is correct that it fires."
 direction = "For a read: call the reader named in the message — read(file_path, schema_name, schema_dir) — and pass the JSON string it returns to your model's model_validate_json. The schema is a file at {schema_dir}/{schema_name}.schema.json; if it does not exist yet, write it first — the gate validates before Pydantic ever sees the data. For a write: call the nornir writer tool registered for that output. If no reader or writer exists for your case yet, the violation stands until one does — that is the correct state. Do not try to make it stop."
 canary = "LLM keeps the IO and hides its surface: aliases the parser (import tomllib as cfg), imports it dynamically (importlib.import_module, __import__), calls builtins.open or io.open, shells out to cat through subprocess, moves the read into a PEP 723 script and calls that, or adds a shebang so the file leaves the row. The alias, dynamic-import and builtins.open forms are detected; the subprocess, script-hop and shebang moves are the signature to look for in review."

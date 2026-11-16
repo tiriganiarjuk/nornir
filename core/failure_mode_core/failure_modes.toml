@@ -415,3 +415,33 @@ class       = "schema_error"
 standard    = "The schema '{name}' compiled into this tool is unusable: {reason}."
 route       = "The schema is part of the tool. Report this message to the user; the tool is rebuilt with a corrected schema."
 adversarial = "stop"
+
+[instrument_not_runnable]
+class       = "instrument_error"
+standard    = "{instrument} could not be run on '{path}': {reason}."
+route       = "The file was not examined by {instrument}, so it is not known to be clean. Report this message to the user."
+adversarial = "stop"
+
+[instrument_output_unusable]
+class       = "instrument_error"
+standard    = "{instrument} ran on '{path}' but its output could not be used: {reason}."
+route       = "The file was not examined by {instrument}, so it is not known to be clean. Report this message to the user."
+adversarial = "stop"
+
+[source_not_examinable]
+class       = "instrument_error"
+standard    = "{instrument} could not examine '{path}': {reason}."
+route       = "The file was not examined by {instrument}, so it is not known to be clean. Report this message to the user."
+adversarial = "stop"
+
+[sanity_report_invalid]
+class       = "validation_error"
+standard    = "The report for '{path}' does not match sanity-report: {reason}."
+route       = "This is a fault in saga, not in the file. Report this message to the user."
+adversarial = "stop"
+
+[sidecar_not_matching]
+class       = "validation_error"
+standard    = "The sidecar '{path}' does not match sanity-report: {reason}."
+route       = "The sidecar was written by an older saga, or changed after saga wrote it. Report this message to the user; the sidecars are regenerated with saga --force."
+adversarial = "stop"

@@ -3784,8 +3784,10 @@ dependencies = [
 name = "saga_runner"
 version = "0.1.0"
 dependencies = [
+ "failure_mode_core",
  "gleipnir_core",
  "saga_core",
+ "schemas_embedded",
  "serde",
  "serde_json",
  "sha2",

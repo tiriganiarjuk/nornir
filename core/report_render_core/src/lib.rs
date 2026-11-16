@@ -26,12 +26,39 @@ pub struct CheckGroup {
     pub tool: String,
     pub code: String,
     pub severity: String,
+    pub detail: String,
     pub signal: String,
     pub direction: String,
     pub canary: String,
     pub representative_message: String,
     pub issues: Vec<LocatedIssue>,
     pub file_count: usize,
+}
+
+/// A fault, with the file whose examination it interrupted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedFault {
+    pub file: String,
+    pub tool: String,
+    pub mode: String,
+    pub class: String,
+    pub message: String,
+}
+
+/// Every fault the reports carry, each with its report's file.
+pub fn collect_faults(reports: &[SanityReport]) -> Vec<LocatedFault> {
+    reports
+        .iter()
+        .flat_map(|report| {
+            report.faults.iter().map(|fault| LocatedFault {
+                file: report.relative_path.clone(),
+                tool: fault.tool.clone(),
+                mode: fault.mode.clone(),
+                class: fault.class.clone(),
+                message: fault.message.clone(),
+            })
+        })
+        .collect()
 }
 
 // =============================================================================
@@ -79,6 +106,7 @@ pub fn group_issues(reports: &[SanityReport]) -> Vec<CheckGroup> {
                 tool: rep.tool,
                 code: rep.code,
                 severity: rep.severity,
+                detail: rep.detail,
                 signal: rep.signal,
                 direction: rep.direction,
                 canary: rep.canary,
@@ -198,6 +226,65 @@ fn severity_color(severity: &str) -> &'static str {
 // Serialization
 // =============================================================================
 
+/// Who a rendered report is for. The canary is the operator's: it is left out of
+/// what a worker session is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    Worker,
+    Operator,
+}
+
+/// The report as JSON: the groups with each check's detail, and the faults.
+/// A worker's report carries no canary, and names its faults only when it has any.
+fn report_to_json(groups: &[CheckGroup], faults: &[LocatedFault], reader: Reader) -> serde_json::Value {
+    let mut report = groups_to_json(groups);
+    if let Some(json_groups) = report["groups"].as_array_mut() {
+        for (json_group, group) in json_groups.iter_mut().zip(groups) {
+            if let Some(fields) = json_group.as_object_mut() {
+                *fields = reader_fields(std::mem::take(fields), &group.detail, reader);
+            }
+        }
+    }
+    if reader == Reader::Operator || !faults.is_empty() {
+        let json_faults: Vec<serde_json::Value> = faults
+            .iter()
+            .map(|fault| {
+                serde_json::json!({
+                    "file": fault.file,
+                    "tool": fault.tool,
+                    "mode": fault.mode,
+                    "class": fault.class,
+                    "message": fault.message,
+                })
+            })
+            .collect();
+        report["faults"] = serde_json::Value::Array(json_faults);
+    }
+    report
+}
+
+/// One group's fields in reading order for a reader: the detail placed before the
+/// signal, and the canary left out of a worker's.
+fn reader_fields(
+    payload_fields: serde_json::Map<String, serde_json::Value>,
+    detail: &str,
+    reader: Reader,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut fields = serde_json::Map::new();
+    for (name, value) in payload_fields {
+        if name == "canary" && reader == Reader::Worker {
+            continue;
+        }
+        if name == "signal" {
+            fields.insert("detail".to_string(), serde_json::Value::String(detail.to_string()));
+        }
+        fields.insert(name, value);
+    }
+    fields
+}
+
+/// The groups as the quality payload of a Hlidskjalf datagram
+/// (`schemas/tools/validate.datagram.schema.json`, `quality_payload`).
 pub fn groups_to_json(groups: &[CheckGroup]) -> serde_json::Value {
     let json_groups: Vec<serde_json::Value> = groups
         .iter()
@@ -251,25 +338,35 @@ pub fn groups_to_json(groups: &[CheckGroup]) -> serde_json::Value {
 // Formatters
 // =============================================================================
 
-fn format_toon(groups: &[CheckGroup]) -> String {
-    if groups.is_empty() {
+const VIOLATIONS_CLOSING: &str =
+    "Who wrote this code? You did. Every violation above is yours to fix or explicitly defer with a reason.";
+const FAULTS_CLOSING: &str = "A fault above means part of the examination did not happen: that file is not \
+                              known to be clean. Report each fault to the user.";
+
+fn format_toon(groups: &[CheckGroup], faults: &[LocatedFault]) -> String {
+    if groups.is_empty() && faults.is_empty() {
         return "All checks passed.".to_string();
     }
 
-    let json = groups_to_json(groups);
+    let json = report_to_json(groups, faults, Reader::Worker);
     let body = match format_core::serialize::to_toon(&json) {
         Ok(toon) => toon,
         Err(_) => {
             serde_json::to_string_pretty(&json).unwrap_or_default()
         }
     };
-    format!(
-        "{body}\n\nWho wrote this code? You did. Every violation above is yours to fix or explicitly defer with a reason."
-    )
+    let mut closing: Vec<&str> = Vec::new();
+    if !groups.is_empty() {
+        closing.push(VIOLATIONS_CLOSING);
+    }
+    if !faults.is_empty() {
+        closing.push(FAULTS_CLOSING);
+    }
+    format!("{body}\n\n{}", closing.join("\n\n"))
 }
 
-fn format_colored(groups: &[CheckGroup]) -> String {
-    if groups.is_empty() {
+fn format_colored(groups: &[CheckGroup], faults: &[LocatedFault]) -> String {
+    if groups.is_empty() && faults.is_empty() {
         return format!(
             "\n{BOLD}{CYAN}{bar}{RESET}\n  All checks passed.\n{BOLD}{CYAN}{bar}{RESET}",
             bar = "━".repeat(MAX_WIDTH),
@@ -282,16 +379,40 @@ fn format_colored(groups: &[CheckGroup]) -> String {
     let bar = "━".repeat(MAX_WIDTH);
     sections.push(format!("\n{BOLD}{RED}{bar}{RESET}"));
     sections.push(format!(
-        "{BOLD}{WHITE}{BG_RED}  SYN  {RESET}  {BOLD}{WHITE}{total} violations{RESET} across {BOLD}{WHITE}{count} check types{RESET}",
+        "{BOLD}{WHITE}{BG_RED}  SYN  {RESET}  {BOLD}{WHITE}{total} violations{RESET} across {BOLD}{WHITE}{count} check types{RESET}, {BOLD}{WHITE}{fault_count} faults{RESET}",
         count = groups.len(),
+        fault_count = faults.len(),
     ));
     sections.push(format!("{BOLD}{RED}{bar}{RESET}"));
 
+    format_colored_faults(faults, &mut sections);
     for group in groups {
         format_colored_group(group, &mut sections);
     }
 
     sections.join("\n")
+}
+
+/// The faults block: each file that was not fully examined, the instrument, and why.
+fn format_colored_faults(faults: &[LocatedFault], sections: &mut Vec<String>) {
+    if faults.is_empty() {
+        return;
+    }
+    let color = severity_color("blocked");
+    sections.push(format!(
+        "\n{color}┌─ FAULTS{RESET}  {BOLD}{WHITE}{count}{RESET} — not fully examined, so not known to be clean",
+        count = faults.len(),
+    ));
+    let continuation = format!("{color}│{RESET}    ");
+    for fault in faults {
+        sections.push(format!("{color}│{RESET}"));
+        sections.push(format!("{color}│{RESET}  {DIM}{}{RESET}", fault.file));
+        let text = format!("{} ({}): {}", fault.tool, fault.mode, fault.message);
+        for line in wrap_adaptive(&text, MAX_WIDTH - 5, MAX_WIDTH - 5) {
+            sections.push(format!("{continuation}{line}"));
+        }
+    }
+    sections.push(format!("{color}└{bar}{RESET}", bar = "─".repeat(MAX_WIDTH - 1)));
 }
 
 fn format_colored_group(group: &CheckGroup, sections: &mut Vec<String>) {
@@ -311,6 +432,7 @@ fn format_colored_group(group: &CheckGroup, sections: &mut Vec<String>) {
     let cont_width = MAX_WIDTH - 5;
 
     let layout = GutterLayout { gutter: &gutter, continuation: &continuation, cont_width };
+    format_guidance_field(&group.detail, "Detail", CYAN, &layout, sections);
     format_guidance_field(&group.signal, "Signal", CYAN, &layout, sections);
     format_guidance_field(&group.direction, "Direction", CYAN, &layout, sections);
     format_guidance_field(&group.canary, "Canary", YELLOW, &layout, sections);
@@ -429,18 +551,20 @@ fn format_file_location(file: &str, lines: &[usize], color: &str, sections: &mut
     }
 }
 
-fn format_json(groups: &[CheckGroup]) -> String {
-    if groups.is_empty() {
-        return r#"{"total":0,"check_types":0,"groups":[]}"#.to_string();
+fn format_json(groups: &[CheckGroup], faults: &[LocatedFault]) -> String {
+    if groups.is_empty() && faults.is_empty() {
+        return r#"{"total":0,"check_types":0,"groups":[],"faults":[]}"#.to_string();
     }
-    serde_json::to_string_pretty(&groups_to_json(groups)).unwrap_or_default()
+    serde_json::to_string_pretty(&report_to_json(groups, faults, Reader::Operator)).unwrap_or_default()
 }
 
-pub fn format_output(groups: &[CheckGroup], output_mode: OutputMode) -> String {
+/// The report in one output mode. TOON is what a worker session is shown; colored
+/// and JSON are the operator's.
+pub fn format_output(groups: &[CheckGroup], faults: &[LocatedFault], output_mode: OutputMode) -> String {
     match output_mode {
-        OutputMode::Toon => format_toon(groups),
-        OutputMode::Colored => format_colored(groups),
-        OutputMode::Json => format_json(groups),
+        OutputMode::Toon => format_toon(groups, faults),
+        OutputMode::Colored => format_colored(groups, faults),
+        OutputMode::Json => format_json(groups, faults),
     }
 }
 
@@ -468,6 +592,7 @@ mod tests {
             message: message.into(),
             category: String::new(),
             fixable: false,
+            detail: String::new(),
             signal: String::new(),
             direction: String::new(),
             canary: String::new(),
@@ -629,6 +754,7 @@ mod tests {
                 tool: "ruff".into(),
                 code: "E501".into(),
                 severity: "warning".into(),
+                detail: String::new(),
                 signal: String::new(),
                 direction: String::new(),
                 canary: String::new(),
@@ -651,6 +777,7 @@ mod tests {
                 tool: "ruff".into(),
                 code: "F401".into(),
                 severity: "error".into(),
+                detail: String::new(),
                 signal: String::new(),
                 direction: String::new(),
                 canary: String::new(),
@@ -844,13 +971,13 @@ mod tests {
 
     #[test]
     fn format_output_json_empty() {
-        let output = format_output(&[], OutputMode::Json);
+        let output = format_output(&[], &[], OutputMode::Json);
         assert!(output.contains("\"total\":0"), "empty JSON should contain total:0");
     }
 
     #[test]
     fn format_output_colored_empty() {
-        let output = format_output(&[], OutputMode::Colored);
+        let output = format_output(&[], &[], OutputMode::Colored);
         assert!(
             output.contains("All checks passed"),
             "empty colored output should say all checks passed"
@@ -859,7 +986,7 @@ mod tests {
 
     #[test]
     fn format_output_toon_empty() {
-        let output = format_output(&[], OutputMode::Toon);
+        let output = format_output(&[], &[], OutputMode::Toon);
         assert!(
             output.contains("All checks passed"),
             "empty toon output should say all checks passed"
@@ -873,7 +1000,7 @@ mod tests {
             vec![make_issue("ruff", "E501", "warning", 1, "too long")],
         )];
         let groups = group_issues(&reports);
-        let output = format_output(&groups, OutputMode::Json);
+        let output = format_output(&groups, &[], OutputMode::Json);
         assert!(!output.is_empty());
         assert!(output.contains("\"total\""));
         assert!(output.contains("\"groups\""));
@@ -886,7 +1013,7 @@ mod tests {
             vec![make_issue("ruff", "E501", "warning", 1, "too long")],
         )];
         let groups = group_issues(&reports);
-        let output = format_output(&groups, OutputMode::Colored);
+        let output = format_output(&groups, &[], OutputMode::Colored);
         assert!(!output.is_empty());
         assert!(output.contains("violations"));
     }
@@ -898,7 +1025,80 @@ mod tests {
             vec![make_issue("ruff", "E501", "warning", 1, "too long")],
         )];
         let groups = group_issues(&reports);
-        let output = format_output(&groups, OutputMode::Toon);
+        let output = format_output(&groups, &[], OutputMode::Toon);
         assert!(!output.is_empty());
+    }
+
+    // =========================================================================
+    // detail, canary and faults — who is shown what
+    // =========================================================================
+
+    fn gleipnir_groups() -> Vec<CheckGroup> {
+        let mut issue = make_issue("gleipnir", "no_print", "error", 3, "print call");
+        issue.detail = "the-rule-text".into();
+        issue.direction = "the-way-forward".into();
+        issue.canary = "the-gaming-move".into();
+        group_issues(&[make_report("a.py", vec![issue])])
+    }
+
+    fn ruff_fault() -> LocatedFault {
+        LocatedFault {
+            file: "a.py".into(),
+            tool: "ruff".into(),
+            mode: "instrument_not_runnable".into(),
+            class: "instrument_error".into(),
+            message: "ruff could not be run on 'a.py': No such file or directory.".into(),
+        }
+    }
+
+    #[test]
+    fn the_worker_s_report_carries_the_detail_and_no_canary() {
+        let output = format_output(&gleipnir_groups(), &[], OutputMode::Toon);
+        assert!(output.contains("the-rule-text"));
+        assert!(output.contains("the-way-forward"));
+        assert!(!output.contains("the-gaming-move"));
+        assert!(!output.contains("canary"));
+    }
+
+    #[test]
+    fn the_operator_s_reports_carry_the_detail_and_the_canary() {
+        for mode in [OutputMode::Json, OutputMode::Colored] {
+            let output = format_output(&gleipnir_groups(), &[], mode);
+            assert!(output.contains("the-rule-text"));
+            assert!(output.contains("the-gaming-move"));
+        }
+    }
+
+    #[test]
+    fn a_fault_alone_is_never_reported_as_all_checks_passed() {
+        for mode in [OutputMode::Toon, OutputMode::Json, OutputMode::Colored] {
+            let output = format_output(&[], &[ruff_fault()], mode);
+            assert!(!output.contains("All checks passed"));
+            assert!(output.contains("ruff could not be run on 'a.py'"));
+        }
+    }
+
+    #[test]
+    fn collect_faults_names_each_fault_s_file() {
+        let mut report = make_report("src/a.py", Vec::new());
+        report.faults.push(saga_core::Fault {
+            tool: "ruff".into(),
+            mode: "instrument_not_runnable".into(),
+            class: "instrument_error".into(),
+            message: "why".into(),
+        });
+        let faults = collect_faults(&[report]);
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].file, "src/a.py");
+        assert_eq!(faults[0].tool, "ruff");
+    }
+
+    #[test]
+    fn the_datagram_payload_keeps_its_schema_s_fields() {
+        let payload = groups_to_json(&gleipnir_groups());
+        let group = payload["groups"][0].as_object().expect("a group object");
+        assert!(!group.contains_key("detail"));
+        assert!(group.contains_key("canary"));
+        assert!(payload.get("faults").is_none());
     }
 }
