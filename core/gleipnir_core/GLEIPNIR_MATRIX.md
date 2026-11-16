@@ -1,9 +1,21 @@
 # GLEIPNIR CHECK MATRIX
 
+This file is the one authored home of which Python check runs on which file
+classification, and at what severity. `gleipnir_matrix.toml` is generated from it
+and locked; the crate embeds the TOML.
+
+**To change the matrix:** edit this file, have the TOML unlocked, run
+`./generate_matrix_toml.py`, have it locked again, then rebuild
+(`nornir_deploy --build tools`). `./generate_matrix_toml.py --check` reports
+whether the TOML matches this file and changes nothing.
+
+A check in a row here must be in `CHECK_REGISTRY` (`src/matrix.rs`) and have its
+entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
+
 **Legend:** 🔴 = Blocked | 🟠 = Error | 🟡 = Warning | ⚫ = Not applied
 
 **Rows:** Check names (grouped by category)
-**Columns:** File classifications
+**Columns:** File classifications. `Out` is a file in a v2 project that lies in no zone.
 
 ---
 
@@ -44,6 +56,7 @@
 | no_dunder_all            |   🟠   |  ⚫  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_suppression_comments  |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_nested_functions      |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
+| no_closures              |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_general_lambda        |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_default_factory       |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_partial               |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
@@ -78,69 +91,70 @@
 
 ## V2 Classifications (zone architecture)
 
-| Check                    |  Str  |  Gen  | Model | Config |  Exm  | Pure  | PurDis |  Imp  | ImpDis | Trans | TrnDis |  Orch | OrchDis | Entry |
-|--------------------------|-------|-------|-------|--------|-------|-------|--------|-------|--------|-------|--------|-------|---------|-------|
-| **TYPE SAFETY**          |       |       |       |        |       |       |        |       |        |       |        |       |         |       |
-| no_any_types             |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_any_type_aliases      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_object                |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_json_value            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_bare_collections      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_implicit_type_aliases |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| union_member_count       |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| no_string_annotations    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_cast                  |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_callable_params       |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |
-| no_callable_type_aliases |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |
-| **IMPORTS**              |       |       |       |        |       |       |        |       |        |       |        |       |         |       |
-| no_type_checking_imports |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_disallowed_stdlib     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_direct_file_io        |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |
-| v2_import_boundaries     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_before_validators     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_sys_path_mutation     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |
-| no_deferred_imports      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| impure_module_quarantine |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |   🟠   |  ⚫  |  ⚫  |  🟠   |   🟠   |  ⚫  |  ⚫  |  ⚫  |
-| **PROHIBITED**           |       |       |       |        |       |       |        |       |        |       |        |       |         |       |
-| no_bare_except           |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_broad_exceptions      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_print                 |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_model_dump            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_overload              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_future_annotations    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| init_files_empty         |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_dunder_all            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_suppression_comments  |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_nested_functions      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_general_lambda        |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_default_factory       |  🟠   |  ⚫  |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_partial               |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_re_sub                |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_recursion             |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| **ARCHITECTURE**         |       |       |       |        |       |       |        |       |        |       |        |       |         |       |
-| pydantic_only            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| god_classes              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_callable_protocol     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |
-| no_inline_dispatch       |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |
-| hardcoded_config         |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| unknown_file_in_zone     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |
-| v2_cc_level              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_methods_in_classes    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
-| v2_structure_no_logic    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
-| v2_structure_bases       |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
-| v2_structure_import_boundary  |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
-| v2_logic_no_constants    |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| no_reexport_shims        |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |
-| v2_dispatch_only_tables  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |   🟠   |  ⚫  |   🟠   |  ⚫  |   🟠   |  ⚫  |   🟠    |  ⚫  |
-| v2_classes_only_in_structure   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| **STYLE**                |       |       |       |        |       |       |        |       |        |       |        |       |         |       |
-| function_length          |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| param_count              |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  ⚫  |
-| nesting_depth            |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| no_underscore_prefix     |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| no_none_returns          |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  ⚫  |
-| no_throwaway_assignment  |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| no_single_letter_names   |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| no_numbered_suffixes     |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| short_param_names        |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
-| short_local_names        |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |
+| Check                    |  Str  |  Gen  | Model | Config |  Exm  | Pure  | PurDis |  Imp  | ImpDis | Trans | TrnDis |  Orch | OrchDis | Entry |  Out  |
+|--------------------------|-------|-------|-------|--------|-------|-------|--------|-------|--------|-------|--------|-------|---------|-------|-------|
+| **TYPE SAFETY**          |       |       |       |        |       |       |        |       |        |       |        |       |         |       |       |
+| no_any_types             |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_any_type_aliases      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_object                |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_json_value            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_bare_collections      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_implicit_type_aliases |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| union_member_count       |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| no_string_annotations    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_cast                  |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_callable_params       |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
+| no_callable_type_aliases |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
+| **IMPORTS**              |       |       |       |        |       |       |        |       |        |       |        |       |         |       |       |
+| no_type_checking_imports |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_disallowed_stdlib     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_direct_file_io        |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
+| v2_import_boundaries     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_before_validators     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_sys_path_mutation     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
+| no_deferred_imports      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| impure_module_quarantine |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |   🟠   |  ⚫  |  ⚫  |  🟠   |   🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
+| **PROHIBITED**           |       |       |       |        |       |       |        |       |        |       |        |       |         |       |       |
+| no_bare_except           |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_broad_exceptions      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_print                 |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_model_dump            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_overload              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_future_annotations    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| init_files_empty         |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_dunder_all            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_suppression_comments  |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_nested_functions      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_closures              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_general_lambda        |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_default_factory       |  🟠   |  ⚫  |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_partial               |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_re_sub                |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_recursion             |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| **ARCHITECTURE**         |       |       |       |        |       |       |        |       |        |       |        |       |         |       |       |
+| pydantic_only            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| god_classes              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_callable_protocol     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
+| no_inline_dispatch       |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
+| hardcoded_config         |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| unknown_file_in_zone     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  ⚫  |
+| v2_cc_level              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  ⚫  |
+| no_methods_in_classes    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
+| v2_structure_no_logic    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
+| v2_structure_bases       |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
+| v2_structure_import_boundary  |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
+| v2_logic_no_constants    |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  ⚫  |
+| no_reexport_shims        |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  ⚫  |
+| v2_dispatch_only_tables  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |   🟠   |  ⚫  |   🟠   |  ⚫  |   🟠   |  ⚫  |   🟠    |  ⚫  |  ⚫  |
+| v2_classes_only_in_structure   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| **STYLE**                |       |       |       |        |       |       |        |       |        |       |        |       |         |       |       |
+| function_length          |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| param_count              |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  ⚫  |  ⚫  |
+| nesting_depth            |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| no_underscore_prefix     |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| no_none_returns          |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  ⚫  |  ⚫  |
+| no_throwaway_assignment  |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| no_single_letter_names   |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| no_numbered_suffixes     |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| short_param_names        |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| short_local_names        |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |

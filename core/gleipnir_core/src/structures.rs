@@ -84,6 +84,8 @@ pub enum Zone {
     Impure,
     Transform,
     Orchestrate,
+    /// The file lies in no zone of the layout.
+    Outside,
 }
 
 impl Zone {
@@ -108,7 +110,7 @@ impl Zone {
     pub fn can_reach(self, target: Zone) -> bool {
         use Zone::*;
         match self {
-            Structure | StructureGen | StructureModel | StructureConfig | StructureExample => false,
+            Structure | StructureGen | StructureModel | StructureConfig | StructureExample | Outside => false,
             Pure => matches!(target, Pure),
             Impure => matches!(target, Impure | Pure),
             Transform => matches!(target, Transform),

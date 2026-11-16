@@ -315,6 +315,38 @@ mod tests {
         assert_ne!(hit.direction, messages::NO_NESTED_FUNCTIONS.direction);
     }
 
+    const BRANCHING_FUNCTION: &[u8] = b"def choose(value: int) -> int:\n    if value > 1:\n        return 1\n    if value > 2:\n        return 2\n    if value > 3:\n        return 3\n    return 0\n";
+
+    fn check_names(file_path: &str, source: &[u8]) -> Vec<String> {
+        run_checks_v2(file_path, source)
+            .expect("the source parses")
+            .into_iter()
+            .map(|found| found.check_name)
+            .collect()
+    }
+
+    #[test]
+    fn a_file_in_no_zone_is_told_so_and_is_not_held_to_a_zone_s_rules() {
+        let names = check_names("/project/src/pkg/helpers.py", BRANCHING_FUNCTION);
+        assert!(names.contains(&"v2_import_boundaries".to_string()), "the layout finding: {names:?}");
+        for zone_rule in ["v2_structure_no_logic", "v2_structure_bases", "v2_cc_level", "unknown_file_in_zone"] {
+            assert!(!names.contains(&zone_rule.to_string()), "{zone_rule} is a zone's rule: {names:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_in_no_zone_still_gets_the_checks_that_need_no_zone() {
+        let source = b"from typing import Any\n\ndef load(value: Any) -> Any:\n    return value\n";
+        let names = check_names("/project/src/pkg/helpers.py", source);
+        assert!(names.contains(&"no_any_types".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn a_function_in_the_structure_zone_is_still_logic_in_structure() {
+        let names = check_names("/project/src/pkg/structure/model/order.py", BRANCHING_FUNCTION);
+        assert!(names.contains(&"v2_structure_no_logic".to_string()), "{names:?}");
+    }
+
     #[test]
     fn run_checks_v2_blocks_direct_file_io_in_impure_simple() {
         let source = b"import tomllib\n";

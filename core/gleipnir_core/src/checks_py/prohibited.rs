@@ -7,7 +7,7 @@
 
 use crate::messages;
 use crate::parsing::{find_nodes_by_type, node_field, node_line, node_text};
-use crate::structures::{CheckConfig, ParsedSource, Severity, Violation};
+use crate::structures::{CheckConfig, CheckMessages, ParsedSource, Severity, Violation};
 
 fn violation(line: usize, message: String) -> Violation {
     Violation {
@@ -304,20 +304,33 @@ pub fn check_init_files_empty(source: &ParsedSource, _config: &CheckConfig) -> V
 // no_nested_functions — any function_definition inside another
 // -------------------------------------------------------------------------
 
-/// Detect nested function definitions.
-///
-/// Walks the entire tree looking for function_definition nodes whose
-/// ancestor chain includes another function_definition. Distinguishes
-/// closures (inner function references names from outer scope) from
-/// plain nested definitions — each gets a different check name so
-/// gleipnir_messages.toml can provide targeted guidance.
-///
-/// Returns violations tagged either "no_nested_functions" or "no_closures".
-pub fn check_no_nested_functions(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+/// Every function_definition inside another, each tagged with the check it
+/// belongs to: `no_closures` when the inner function references names from the
+/// outer scope, `no_nested_functions` when it does not.
+fn nested_function_violations(source: &ParsedSource) -> Vec<Violation> {
     let mut violations = Vec::new();
     let root = source.tree.root_node();
     collect_nested_functions(root, None, source.source_bytes, &mut violations);
     violations
+}
+
+fn nested_function_violations_of(source: &ParsedSource, check: &CheckMessages) -> Vec<Violation> {
+    nested_function_violations(source)
+        .into_iter()
+        .filter(|found| found.check_name == check.name)
+        .collect()
+}
+
+/// Detect nested function definitions that capture nothing from the enclosing
+/// function. A nested function that does capture is `check_no_closures`'s.
+pub fn check_no_nested_functions(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    nested_function_violations_of(source, &messages::NO_NESTED_FUNCTIONS)
+}
+
+/// Detect closures: nested functions that reference names from the enclosing
+/// function's scope.
+pub fn check_no_closures(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    nested_function_violations_of(source, &messages::NO_CLOSURES)
 }
 
 fn collect_nested_functions(
@@ -850,10 +863,21 @@ mod tests {
     fn closure_caught_with_correct_check_name() {
         let code = "def outer(data):\n    x = 10\n    def inner():\n        return x + data\n    return inner()\n";
         let parsed = parse(code);
-        let violations = check_no_nested_functions(&parsed, &default_config());
+        let violations = check_no_closures(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].check_name, "no_closures");
         assert!(violations[0].message.contains("closure"));
+        assert!(
+            check_no_nested_functions(&parsed, &default_config()).is_empty(),
+            "a closure belongs to no_closures alone"
+        );
+    }
+
+    #[test]
+    fn nested_function_that_captures_nothing_is_not_a_closure() {
+        let code = "def outer():\n    def inner():\n        return 1\n    return inner()\n";
+        let parsed = parse(code);
+        assert!(check_no_closures(&parsed, &default_config()).is_empty());
     }
 
     #[test]

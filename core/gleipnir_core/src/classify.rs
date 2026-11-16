@@ -156,7 +156,7 @@ pub fn classify_file_v2(file_path: &str) -> V2Classification {
     let Some(zone) = zone else {
         return V2Classification {
             level: Level::Outside,
-            zone: Zone::Structure,
+            zone: Zone::Outside,
         };
     };
 

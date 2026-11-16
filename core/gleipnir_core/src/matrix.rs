@@ -1,11 +1,14 @@
 //! Check matrix — data-driven check dispatch.
 //!
-//! The matrix is defined in gleipnir_matrix.toml (embedded at compile time).
-//! Each classification maps to a flat list of checks with severities.
-//! No inheritance, no layers, no dedup — what's in the TOML is what runs.
+//! The matrix is authored in GLEIPNIR_MATRIX.md. generate_matrix_toml.py
+//! compiles it into gleipnir_matrix.toml, which is locked and embedded here at
+//! compile time. Each classification maps to a flat list of checks with
+//! severities. No inheritance, no layers, no dedup — what's in the TOML is
+//! what runs.
 //!
-//! To change which checks apply to a file type, edit gleipnir_matrix.toml.
-//! To add a new check, add it to the registry below AND to gleipnir_matrix.toml.
+//! To change which checks apply to a file type, edit GLEIPNIR_MATRIX.md and
+//! regenerate the TOML; that file's header gives the steps.
+//! To add a new check, add it to the registry below and give it a row there.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -56,6 +59,7 @@ const CHECK_REGISTRY: &[(&CheckMessages, CheckFn)] = &[
     (&messages::INIT_FILES_EMPTY, prohibited::check_init_files_empty),
     (&messages::NO_DUNDER_ALL, prohibited::check_no_dunder_all),
     (&messages::NO_NESTED_FUNCTIONS, prohibited::check_no_nested_functions),
+    (&messages::NO_CLOSURES, prohibited::check_no_closures),
     (&messages::NO_GENERAL_LAMBDA, prohibited::check_no_general_lambda),
     (&messages::NO_DEFAULT_FACTORY, prohibited::check_no_default_factory),
     (&messages::NO_PARTIAL, prohibited::check_no_partial),
@@ -251,5 +255,6 @@ fn v2_key(classification: &V2Classification) -> &'static str {
         Zone::Transform => "v2.transform",
         Zone::Orchestrate if is_dispatch => "v2.orchestrate_dispatch",
         Zone::Orchestrate => "v2.orchestrate",
+        Zone::Outside => "v2.outside",
     }
 }

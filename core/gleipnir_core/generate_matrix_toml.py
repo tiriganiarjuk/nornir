@@ -5,8 +5,9 @@
 # ///
 """Parse GLEIPNIR_MATRIX.md and generate gleipnir_matrix.toml.
 
-Run from the gleipnir_core directory:
-    ./generate_matrix_toml.py
+    ./generate_matrix_toml.py           write the TOML (it must be unlocked)
+    ./generate_matrix_toml.py --check   report whether the TOML matches the
+                                        markdown; write nothing; exit 1 if not
 """
 
 import sys
@@ -44,6 +45,7 @@ V2_COLUMNS = {
     "Orch": "orchestrate",
     "OrchDis": "orchestrate_dispatch",
     "Entry": "entry_point",
+    "Out": "outside",
 }
 
 
@@ -143,11 +145,8 @@ def generate_toml(all_entries: dict[str, dict[str, list[str]]]) -> str:
     return "\n".join(lines)
 
 
-def main() -> str:
-    """Parse the markdown matrix, write the TOML, return a summary message."""
-    matrix_path = Path(__file__).parent / "GLEIPNIR_MATRIX.md"
-    output_path = Path(__file__).parent / "gleipnir_matrix.toml"
-
+def matrix_entries(matrix_path: Path) -> dict[str, dict[str, list[str]]]:
+    """Parse the markdown matrix into {classification: {severity: [check_names]}}."""
     content = matrix_path.read_text()
     all_lines = content.split("\n")
 
@@ -169,17 +168,37 @@ def main() -> str:
     v1_entries = parse_table(v1_lines, V1_COLUMNS, "v1")
     v2_entries = parse_table(v2_lines, V2_COLUMNS, "v2")
 
-    all_entries = {**v1_entries, **v2_entries}
+    return {**v1_entries, **v2_entries}
+
+
+def main(arguments: list[str]) -> int:
+    """Write the TOML, or with --check compare it. Returns the exit code."""
+    if arguments not in ([], ["--check"]):
+        sys.stderr.write("usage: generate_matrix_toml.py [--check]\n")
+        return 2
+
+    matrix_path = Path(__file__).parent / "GLEIPNIR_MATRIX.md"
+    output_path = Path(__file__).parent / "gleipnir_matrix.toml"
+    all_entries = matrix_entries(matrix_path)
     toml_content = generate_toml(all_entries)
 
-    output_path.write_text(toml_content)
+    if arguments == ["--check"]:
+        if output_path.read_text() == toml_content:
+            sys.stdout.write(f"{output_path.name} matches {matrix_path.name}\n")
+            return 0
+        sys.stdout.write(f"{output_path.name} does not match {matrix_path.name}: regenerate it\n")
+        return 1
 
+    output_path.write_text(toml_content)
     total_checks = sum(
         len(entry["blocked"]) + len(entry["error"]) + len(entry["warning"])
         for entry in all_entries.values()
     )
-    return f"Generated {output_path.name}: {len(all_entries)} classifications, {total_checks} check assignments"
+    sys.stdout.write(
+        f"Generated {output_path.name}: {len(all_entries)} classifications, {total_checks} check assignments\n"
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    sys.stdout.write(main() + "\n")
+    sys.exit(main(sys.argv[1:]))

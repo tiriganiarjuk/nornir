@@ -1106,7 +1106,7 @@ const ORCHESTRATE_ZONE_FILENAMES: &[&str] = &[
 ];
 
 /// The valid filenames and the name of a zone that has a filename convention.
-/// Structure zones have none.
+/// Structure zones have none, and a file in no zone has none to follow.
 fn zone_filename_convention(zone: Zone) -> Option<(&'static [&'static str], &'static str)> {
     match zone {
         Zone::Pure => Some((LOGIC_ZONE_FILENAMES, "pure")),
@@ -1117,7 +1117,8 @@ fn zone_filename_convention(zone: Zone) -> Option<(&'static [&'static str], &'st
         | Zone::StructureGen
         | Zone::StructureModel
         | Zone::StructureConfig
-        | Zone::StructureExample => None,
+        | Zone::StructureExample
+        | Zone::Outside => None,
     }
 }
 
