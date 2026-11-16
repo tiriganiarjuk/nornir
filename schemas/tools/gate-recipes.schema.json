@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gate-recipes",
+  "description": "Every gate nornir builds, as the recipe generate_gates.py makes its crate from (gates/gate_recipes.toml). A gate is a generated variant: the read and write engines with its schema embedded and its format fixed to TOML. kind says which pattern; schema names the schemas_embedded constant; verify_paths says whether the paths the data names must exist (input and output gates only; a passthrough gate always verifies, a defaults gate never does).",
+  "type": "object",
+  "required": ["gate"],
+  "additionalProperties": false,
+  "properties": {
+    "gate": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "schema"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "pattern": "^gate_[a-z0-9_]+$"},
+          "kind": {"enum": ["input", "output", "passthrough", "defaults"]},
+          "schema": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "verify_paths": {"type": "boolean"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"enum": ["input", "output"]}}},
+            "then": {"required": ["verify_paths"]},
+            "else": {"not": {"required": ["verify_paths"]}}
+          }
+        ]
+      }
+    }
+  }
+}

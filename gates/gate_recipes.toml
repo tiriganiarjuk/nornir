@@ -1,0 +1,223 @@
+# Every gate nornir builds, one recipe each. generate_gates.py makes each crate under gates/
+# from its recipe, validated against schemas/tools/gate-recipes.schema.json. Edit a recipe
+# here and run the generator; never edit a gate crate by hand.
+
+[[gate]]
+name = "gate_anthropic_render_input"
+kind = "input"
+schema = "ANTHROPIC_RENDER"
+verify_paths = true
+
+[[gate]]
+name = "gate_anthropic_render_output"
+kind = "output"
+schema = "ANTHROPIC_RENDER"
+verify_paths = true
+
+[[gate]]
+name = "gate_criteria_merged_input"
+kind = "input"
+schema = "CRITERIA_MERGED"
+verify_paths = true
+
+[[gate]]
+name = "gate_criteria_merged_output"
+kind = "output"
+schema = "CRITERIA_MERGED"
+verify_paths = true
+
+[[gate]]
+name = "gate_examples_reduced_input"
+kind = "input"
+schema = "EXAMPLES_REDUCED"
+verify_paths = true
+
+[[gate]]
+name = "gate_examples_reduced_output"
+kind = "output"
+schema = "EXAMPLES_REDUCED"
+verify_paths = true
+
+[[gate]]
+name = "gate_execution_merged_input"
+kind = "input"
+schema = "EXECUTION_MERGED"
+verify_paths = true
+
+[[gate]]
+name = "gate_execution_merged_output"
+kind = "output"
+schema = "EXECUTION_MERGED"
+verify_paths = true
+
+[[gate]]
+name = "gate_guardrails_reduced_input"
+kind = "input"
+schema = "GUARDRAILS_REDUCED"
+verify_paths = true
+
+[[gate]]
+name = "gate_guardrails_reduced_output"
+kind = "output"
+schema = "GUARDRAILS_REDUCED"
+verify_paths = true
+
+[[gate]]
+name = "gate_include_example_entries_input"
+kind = "input"
+schema = "INCLUDE_EXAMPLE_ENTRIES"
+verify_paths = false
+
+[[gate]]
+name = "gate_include_example_group_input"
+kind = "input"
+schema = "INCLUDE_EXAMPLE_GROUP"
+verify_paths = false
+
+[[gate]]
+name = "gate_include_execution_instructions_input"
+kind = "input"
+schema = "INCLUDE_EXECUTION_INSTRUCTIONS"
+verify_paths = false
+
+[[gate]]
+name = "gate_include_failure_criteria_input"
+kind = "input"
+schema = "INCLUDE_FAILURE_CRITERIA"
+verify_paths = false
+
+[[gate]]
+name = "gate_include_guardrails_anti_patterns_input"
+kind = "input"
+schema = "INCLUDE_GUARDRAILS_ANTI_PATTERNS"
+verify_paths = false
+
+[[gate]]
+name = "gate_include_guardrails_constraints_input"
+kind = "input"
+schema = "INCLUDE_GUARDRAILS_CONSTRAINTS"
+verify_paths = false
+
+[[gate]]
+name = "gate_include_success_criteria_input"
+kind = "input"
+schema = "INCLUDE_SUCCESS_CRITERIA"
+verify_paths = false
+
+[[gate]]
+name = "gate_includes_merged_input"
+kind = "input"
+schema = "INCLUDES_MERGED"
+verify_paths = true
+
+[[gate]]
+name = "gate_includes_merged_output"
+kind = "output"
+schema = "INCLUDES_MERGED"
+verify_paths = true
+
+[[gate]]
+name = "gate_instructions_reduced_input"
+kind = "input"
+schema = "INSTRUCTIONS_REDUCED"
+verify_paths = true
+
+[[gate]]
+name = "gate_instructions_reduced_output"
+kind = "output"
+schema = "INSTRUCTIONS_REDUCED"
+verify_paths = true
+
+[[gate]]
+name = "gate_output_content_input"
+kind = "input"
+schema = "OUTPUT_CONTENT"
+verify_paths = false
+
+[[gate]]
+name = "gate_output_display_input"
+kind = "input"
+schema = "OUTPUT_DISPLAY"
+verify_paths = false
+
+[[gate]]
+name = "gate_output_structure_input"
+kind = "input"
+schema = "OUTPUT_STRUCTURE"
+verify_paths = false
+
+[[gate]]
+name = "gate_paths_resolved_output"
+kind = "output"
+schema = "PATHS_RESOLVED"
+verify_paths = false
+
+[[gate]]
+name = "gate_paths_verified"
+kind = "passthrough"
+schema = "PATHS_RESOLVED"
+
+[[gate]]
+name = "gate_paths_verified_input"
+kind = "input"
+schema = "PATHS_RESOLVED"
+verify_paths = true
+
+[[gate]]
+name = "gate_permissions_resolved_input"
+kind = "input"
+schema = "PERMISSIONS_RESOLVED"
+verify_paths = true
+
+[[gate]]
+name = "gate_permissions_resolved_output"
+kind = "output"
+schema = "PERMISSIONS_RESOLVED"
+verify_paths = true
+
+[[gate]]
+name = "gate_raw_definition_defaults"
+kind = "defaults"
+schema = "RAW_DEFINITION"
+
+[[gate]]
+name = "gate_raw_definition_input"
+kind = "input"
+schema = "RAW_DEFINITION"
+verify_paths = false
+
+[[gate]]
+name = "gate_success_reduced_input"
+kind = "input"
+schema = "SUCCESS_REDUCED"
+verify_paths = true
+
+[[gate]]
+name = "gate_success_reduced_output"
+kind = "output"
+schema = "SUCCESS_REDUCED"
+verify_paths = true
+
+[[gate]]
+name = "gate_universal_format_input"
+kind = "input"
+schema = "UNIVERSAL_FORMAT"
+verify_paths = true
+
+[[gate]]
+name = "gate_universal_format_output"
+kind = "output"
+schema = "UNIVERSAL_FORMAT"
+verify_paths = true
+
+[[gate]]
+name = "gate_universal_render_input"
+kind = "input"
+schema = "UNIVERSAL_RENDER"
+verify_paths = true
+
+[[gate]]
+name = "gate_universal_render_output"
+kind = "output"
+schema = "UNIVERSAL_RENDER"
+verify_paths = true
