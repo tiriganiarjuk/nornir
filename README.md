@@ -58,7 +58,7 @@ Runs Gleipnir, Ruff, and Basedpyright on source files and writes unfiltered `.qa
 
 ### Syn — Policy Enforcement
 
-Reads `.qa` sidecars and applies configurable three-tier filtering. Gate mode provides deterministic pass/fail locked to configuration — no overrides. This is what hooks use for automated enforcement. Report mode allows ad-hoc exploration with filter overrides.
+Reads `.qa` sidecars and applies configurable three-tier filtering. The write hook runs Syn in report mode and hands its assessment to the session: it informs and directs, and never blocks the write. Report mode also allows ad-hoc exploration with filter overrides. Gate mode gives a deterministic pass/fail locked to configuration — no overrides — for a caller that wants one.
 
 The separation is strict: detection, recording, and policy are independent. Multiple consumers (Syn CLI, Svalinn dashboard, hooks, future tools) read the same truth data at zero analysis cost.
 

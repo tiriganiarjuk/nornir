@@ -306,7 +306,7 @@ canary = "LLM adds behavior imports to data models instead of keeping structures
 [classes_only_in_structures]
 detail = "Class definitions belong in structures/."
 signal = "Classes outside structures/ break the architectural rule that data definitions live in one place."
-direction = "Move the class to structures/. If this file is a standalone script (not part of a package), add a PEP 723 shebang (#!/usr/bin/env -S uv run) with inline script metadata — this reclassifies the file as Script, which has different guardrails that allow inline classes. Scripts must not use relative imports."
+direction = "Move the class to structures/. A file that is a standalone script — run on its own, imported by nothing — declares itself with PEP 723 inline script metadata."
 canary = "LLM defines ad-hoc classes inline wherever needed instead of centralizing data models."
 
 [import_count]
@@ -318,7 +318,7 @@ canary = "LLM tries to reduce structures/ imports to fix this violation, breakin
 [max_functions_outside_zones]
 detail = "Too many functions outside architectural zones."
 signal = "Functions outside designated zones indicate logic leaking into runner or config files."
-direction = "Move functions into functions/pure/ or functions/impure/. If this file is a standalone script (not part of a package), add a PEP 723 shebang (#!/usr/bin/env -S uv run) with inline script metadata — this reclassifies the file as Script, which has different guardrails that allow free-standing functions. Scripts must not use relative imports."
+direction = "Move functions into functions/pure/ or functions/impure/. A file that is a standalone script — run on its own, imported by nothing — declares itself with PEP 723 inline script metadata."
 canary = "LLM dumps utility functions wherever it is working instead of placing them in the correct zone."
 
 # =========================================================================
