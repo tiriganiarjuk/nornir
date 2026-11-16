@@ -19,6 +19,7 @@ use std::path::Path;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use failure_mode_core::Failure;
 use schemas_embedded::DIRECTORY_LISTING;
 
 /// What to list: how deep, whether hidden entries count, whether files are hashed.
@@ -59,36 +60,45 @@ pub struct DirectoryListing {
     pub entries: Vec<DirectoryEntry>,
 }
 
-/// Every failure a directory read can produce. `error_type()` is the `error.type`
-/// a reader returns to Python; the Display string is the `error.message`.
-#[derive(Debug, thiserror::Error)]
+/// Every failure a directory read can produce. Its class and message come from the error
+/// registry (`failure_mode_core`): `error_type()` is the `error.type` a reader returns,
+/// the Display string is the `error.message`.
+#[derive(Debug)]
 pub enum DirectoryReadError {
-    #[error("Cannot list '{path}': {message}")]
     RootUnreadable { path: String, message: String },
-
-    #[error("Cannot read '{path}': {message}")]
     FileUnreadable { path: String, message: String },
-
     /// Every path the walk could not read, at once.
-    #[error("Cannot list '{root}' whole — {count} path(s) could not be read:\n  {}", .failures.join("\n  "), count = .failures.len())]
     EntriesUnreadable { root: String, failures: Vec<String> },
-
     /// The listing did not match its own schema — an engine fault.
-    #[error("Listing of '{root}' does not match directory-listing: {message}")]
     ListingInvalid { root: String, message: String },
 }
 
 impl DirectoryReadError {
-    /// The failure class a caller branches on — the `error.type` of the reader result.
-    pub fn error_type(&self) -> &'static str {
+    /// The registry's failure mode for this error, its slots filled.
+    pub fn failure(&self) -> Failure {
         match self {
-            DirectoryReadError::RootUnreadable { .. }
-            | DirectoryReadError::FileUnreadable { .. }
-            | DirectoryReadError::EntriesUnreadable { .. } => "read_error",
-            DirectoryReadError::ListingInvalid { .. } => "validation_error",
+            DirectoryReadError::RootUnreadable { path, message } => failure_mode_core::directory_unlistable(path, message),
+            DirectoryReadError::FileUnreadable { path, message } => failure_mode_core::file_unreadable(path, message),
+            DirectoryReadError::EntriesUnreadable { root, failures } => {
+                failure_mode_core::directory_partly_unreadable(root, failures.len(), failures.join("\n  "))
+            }
+            DirectoryReadError::ListingInvalid { root, message } => failure_mode_core::directory_listing_invalid(root, message),
         }
     }
+
+    /// The failure class a caller branches on — the `error.type` of the reader result.
+    pub fn error_type(&self) -> &'static str {
+        self.failure().class
+    }
 }
+
+impl std::fmt::Display for DirectoryReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure())
+    }
+}
+
+impl std::error::Error for DirectoryReadError {}
 
 /// The walk's working state: the root it lists from, what it found, and what it could not read.
 struct Walk<'a> {

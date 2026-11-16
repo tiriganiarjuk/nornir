@@ -909,6 +909,7 @@ dependencies = [
 name = "directory_read_io"
 version = "0.1.0"
 dependencies = [
+ "failure_mode_core",
  "schemas_embedded",
  "serde",
  "serde_json",

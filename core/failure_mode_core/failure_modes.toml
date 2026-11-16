@@ -128,6 +128,18 @@ standard    = "Cannot list the directory '{directory}': {reason}."
 route       = "Check that the path is right; if it is, ask the user why it cannot be listed."
 adversarial = "stop"
 
+[directory_partly_unreadable]
+class       = "read_error"
+standard    = "Cannot list '{directory}' whole — {count} path(s) could not be read:\n  {report}"
+route       = "Each unreadable path is named above; ask the user why they cannot be read."
+adversarial = "stop"
+
+[directory_listing_invalid]
+class       = "validation_error"
+standard    = "The listing of '{directory}' does not match directory-listing: {reason}."
+route       = "This is a fault in the reader, not in the directory. Report this message to the user."
+adversarial = "stop"
+
 [directory_unwritable]
 class       = "write_error"
 standard    = "Cannot write directory '{directory}': {reason}."
