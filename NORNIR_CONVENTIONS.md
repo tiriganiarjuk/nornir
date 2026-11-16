@@ -27,16 +27,15 @@ No circular dependencies. Ever. A core crate performing I/O is misplaced. A bina
 
 ### Binary Names: Verb Prefix
 
-A built tool is one crate with two faces: a CLI binary always, and a PyO3 module where Python needs it (§ Tool Structure). The table names what each kind of tool does; the face is not part of the kind. A gate is a generated variant for a Python pipeline, so it is a PyO3 module.
+A built tool is one crate with two faces: a CLI binary always, and a PyO3 module where Python needs it (§ Tool Structure). The table names what each kind of tool does; the face is not part of the kind. A gate is a generated variant whose use is a Python pipeline, so every gate has its PyO3 face; an input gate has its CLI face too.
 
 | Prefix | Directory | What it does |
 |--------|-----------|--------------|
 | `append_` | `writers/` | Accepts data on stdin, appends to a file with fsync |
 | `write_` | `writers/` | Accepts data on stdin, writes a new file atomically |
 | `store_` | `writers/` | Closes an open append file as one stored session: copy, verify, index, truncate |
-| `check_` | `cli/` | Validates a file against a schema, exits 0/1/2 |
 | `convert_` | `converters/` | Reads one format on stdin, writes another on stdout |
-| `gate_` | `gates/` | PyO3 module: validates at a pipeline stage boundary |
+| `gate_` | `gates/` | Validates at a pipeline stage boundary against an embedded schema; generated from `gates/gate_recipes.toml` by `generate_gates.py`. An input gate also runs from a shell: `gate_{stage}_input <file>` |
 | `read_` | `readers/` | Reads one file format, or one directory tree, validates against a schema — named at call time, or the reader's own where its source carries its shape — and returns the validated data |
 | `write_json_validate_` | `text_writers/` | Takes JSON text, validates it against a schema named at call time, writes one file format atomically |
 | `read_{format}_verify_` | `binary_readers/` | Reads one binary file format, verifies it against the format and the shape the caller states, returns the decoded content and its description |
@@ -51,7 +50,7 @@ A built tool is one crate with two faces: a CLI binary always, and a PyO3 module
 
 **Specialist tools** (`saga`, `syn`) are proper nouns without verb prefix. Package names: `saga_cli`, `syn_cli` — the suffix is required because the bare package name `syn` is the well-known Rust parsing crate. Binary names: `saga`, `syn`. These are the only exceptions.
 
-**Name structure:** `{verb}_{domain}_{specifics}` — e.g., `append_truth_qc_report_record`, `hook_pre_llm_bash`, `check_universal_render`.
+**Name structure:** `{verb}_{domain}_{specifics}` — e.g., `append_truth_qc_report_record`, `hook_pre_llm_bash`, `gate_universal_render_input`.
 
 **A generated variant's name grows with its constraints:** the longer the name, the more is fixed in. `append_embedding_normalize_batch_20` fixes its schema and its destination, and the batch size besides (`HOW_A_NORNIR_TOOL_IS_MADE.md` § A generated variant adds constraints, never logic).
 
@@ -152,7 +151,7 @@ Both faces carry the same information under their contracts (`MUST_READ_BEFORE_B
 
 ### Writers (declarative on write_engine)
 
-~20-line binaries. Define config, call `write_engine::run()`:
+~20-line binaries. Define config, exit with `write_engine::run_cli()`, which presents the outcome under the CLI contract:
 
 ```rust
 use schemas_embedded::MY_SCHEMA;
@@ -160,7 +159,7 @@ use write_engine::{OutputFormat, OutputPath, Stamps, WriteFrequency, WriterConfi
 
 fn main() {
     let base = write_engine::ai_home();
-    match write_engine::run(&WriterConfig {
+    std::process::exit(write_engine::run_cli(&WriterConfig {
         name: "append_my_thing",
         schema: &MY_SCHEMA,
         schema_source_path: base.join("smidja/nornir/schemas/tools/my-thing.schema.json").display().to_string(),
@@ -169,10 +168,7 @@ fn main() {
         output: OutputPath::DirectoryName { dir: base.join("path/to/output"), ext: "jsonl" },
         batch_size: None,
         stamps: Stamps::NONE,
-    }) {
-        Ok(msg) => println!("{msg}"),
-        Err(msg) => { eprintln!("{msg}"); std::process::exit(1); }
-    }
+    }));
 }
 ```
 
@@ -249,7 +245,6 @@ Before writing logic, check if it already exists:
 | Datagram emission to Hlidskjalf | `datagram_io` |
 | A directory's workspace name (`@smidja:nornir`), for any tool that operates on directories | `datagram_io::workspace_from_path` |
 | Schema constants | `schemas_embedded` |
-| File-arg diagnostic CLI contract | `io_check` |
 | Directory listing: every entry, its kind, size and sha256, unreadable paths reported | `directory_read_io` |
 | Path traversal / filename validation | `path_core::validate_path_segment` |
 | Runtime $HOME/ai resolution | `write_engine::ai_home` |
