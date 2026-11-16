@@ -8,13 +8,19 @@ use std::path::Path;
 use error_core::FormatError;
 use serde_json::{Map, Value};
 
-use super::diagnostics::{IncompatibleUnitFamily, TomlxIssues, UndefinedPathReference, UnknownUnit};
+use super::angle_parse::{parse_angle, AngleNotation};
+use super::diagnostics::{
+    IncompatibleUnitFamily, MalformedFieldAnnotation, TomlxIssues, UnconvertibleValue,
+    UndefinedPathReference, UnexpandablePath, UnknownUnit, UnresolvedAnnotation,
+};
 use super::paths::{expand_path, expand_registry_bases};
 use super::types::{
-    FieldAnnotationType, PathRegistry, SectionAnnotation, SectionPathInfo, TargetFamily,
-    TomlxOutput, TypeAnnotation,
+    FieldAnnotation, FieldAnnotationType, PathRegistry, SectionAnnotation, SectionPathInfo,
+    TargetFamily, TomlxOutput, TypeAnnotation,
 };
-use super::units::{convert_unit, lookup_unit, suggest_units, target_family, target_unit_name, UnitFamily};
+use super::units::{
+    convert_unit, lookup_unit, other_family_of_unit, suggest_units, target_unit_name, UnitFamily, UnitTarget,
+};
 use super::validation::{validate_tomlx, ValidatedSection, ValidationResult};
 
 /// Identity of a field being processed (name + source line).
@@ -103,20 +109,30 @@ fn process_sections(
             continue;
         }
 
-        let section_data = match get_section_mut(&mut data, section_path) {
-            Some(data) => data,
+        let annotation = match &section.annotation {
+            Some(annotation) => annotation,
             None => continue,
         };
 
-        if let Some(annotation) = &section.annotation {
-            record_type_metadata(section_path, section_data, annotation, &mut section_types, &mut typed_sections);
-
-            let paths = PathContext { registry: &path_registry, config_dir, resolve_env };
-            match apply_target_conversion(section_data, section, annotation, &paths, &mut issues)? {
-                TargetResult::Unit(name) => { section_units.insert(section_path.clone(), name); }
-                TargetResult::Path(info) => { section_paths.insert(section_path.clone(), info); }
-                TargetResult::None => {}
+        // An annotated section is a table reached by its name, or the file is refused.
+        let section_data = match get_section_mut(&mut data, section_path) {
+            Some(data) if data.is_object() => data,
+            _ => {
+                issues.unresolved_annotations.push(UnresolvedAnnotation {
+                    location: issues.loc(annotation.line),
+                    annotated: format!("Section [{}]", section_path),
+                });
+                continue;
             }
+        };
+
+        record_type_metadata(section_path, section_data, annotation, &mut section_types, &mut typed_sections);
+
+        let paths = PathContext { registry: &path_registry, config_dir, resolve_env };
+        match apply_target_conversion(section_data, section, annotation, &paths, &mut issues)? {
+            TargetResult::Unit(name) => { section_units.insert(section_path.clone(), name); }
+            TargetResult::Path(info) => { section_paths.insert(section_path.clone(), info); }
+            TargetResult::None => {}
         }
     }
 
@@ -167,7 +183,7 @@ fn apply_target_conversion(
     issues: &mut TomlxIssues,
 ) -> Result<TargetResult, FormatError> {
     match &annotation.target {
-        Some(TargetFamily::Time(_)) | Some(TargetFamily::Size) => {
+        Some(TargetFamily::Unit(_)) => {
             process_unit_section(section_data, section, annotation, issues)?;
             let unit_name = annotation.target.as_ref()
                 .map(|target| target_unit_name(target).to_string())
@@ -284,7 +300,7 @@ fn process_root_fields(
             };
             if let Some(value) = map.get_mut(field_ref.name) {
                 match (&annotation.target, &field.annotation_type) {
-                    (Some(target @ (TargetFamily::Time(_) | TargetFamily::Size)), FieldAnnotationType::Unit(unit)) => {
+                    (Some(TargetFamily::Unit(target)), FieldAnnotationType::Unit(unit)) => {
                         convert_field_unit(value, unit, target, &field_ref, issues)?;
                     }
                     (Some(TargetFamily::Path), FieldAnnotationType::Path(reference)) => {
@@ -305,8 +321,8 @@ fn process_unit_section(
     issues: &mut TomlxIssues,
 ) -> Result<(), FormatError> {
     let target = match &annotation.target {
-        Some(t) => t,
-        None => return Ok(()),
+        Some(TargetFamily::Unit(unit_target)) => unit_target,
+        _ => return Ok(()),
     };
 
     if let Value::Object(map) = section_data {
@@ -315,10 +331,12 @@ fn process_unit_section(
                 name: field.field_path.rsplit('.').next().unwrap_or(&field.field_path),
                 line: field.line,
             };
-            if let Some(value) = map.get_mut(field_ref.name) {
-                if let FieldAnnotationType::Unit(unit) = &field.annotation_type {
+            match (map.get_mut(field_ref.name), &field.annotation_type) {
+                (Some(value), FieldAnnotationType::Unit(unit)) => {
                     convert_field_unit(value, unit, target, &field_ref, issues)?;
                 }
+                (Some(_), FieldAnnotationType::Path(_)) => report_wrong_annotation_kind(field, "unit", issues),
+                (None, _) => report_unresolved_field(field, issues),
             }
         }
     }
@@ -328,60 +346,119 @@ fn process_unit_section(
 fn convert_field_unit(
     value: &mut Value,
     unit: &str,
-    target: &TargetFamily,
+    target: &UnitTarget,
     field: &FieldRef,
     issues: &mut TomlxIssues,
 ) -> Result<(), FormatError> {
-    let num = match value {
-        Value::Number(n) => n.as_f64().unwrap_or(0.0),
-        _ => return Ok(()),
+    // A unit name is read within the family of the section's target.
+    let expected = target.family;
+
+    // An angle may be written in parts, as a quoted string in a named notation.
+    let notation = match expected {
+        UnitFamily::Angle => AngleNotation::from_name(unit),
+        _ => None,
     };
 
-    let unit_info = match lookup_unit(unit) {
-        Some(info) => info,
-        None => {
-            issues.unknown_units.push(UnknownUnit {
+    if notation.is_none() && lookup_unit(unit, expected).is_none() {
+        match other_family_of_unit(unit, expected) {
+            Some(other) => issues.incompatible_unit_families.push(IncompatibleUnitFamily {
                 location: issues.loc(field.line),
                 field_name: field.name.to_string(),
                 unit: unit.to_string(),
-                suggestions: suggest_units(unit),
-            });
-            return Ok(());
-        }
-    };
-
-    let expected_family = target_family(target);
-    if let Some(expected) = expected_family {
-        if unit_info.family != expected {
-            let (unit_fam, target_fam) = match (unit_info.family, expected) {
-                (UnitFamily::Time, UnitFamily::Size) => ("time", "size"),
-                (UnitFamily::Size, UnitFamily::Time) => ("size", "time"),
-                _ => ("unknown", "unknown"),
-            };
-            issues.incompatible_unit_families.push(IncompatibleUnitFamily {
+                unit_family: other.name().to_string(),
+                unit_family_target: other.base_target().to_string(),
+                target: target.name.to_string(),
+                target_family: expected.name().to_string(),
+            }),
+            None => issues.unknown_units.push(UnknownUnit {
                 location: issues.loc(field.line),
                 field_name: field.name.to_string(),
                 unit: unit.to_string(),
-                unit_family: unit_fam.to_string(),
-                target: target_unit_name(target).to_string(),
-                target_family: target_fam.to_string(),
-            });
-            return Ok(());
+                suggestions: suggest_units(unit, expected),
+            }),
         }
+        return Ok(());
     }
 
-    match convert_unit(num, unit, target) {
-        Ok(converted) => {
-            if converted.fract() == 0.0 && converted.abs() < i64::MAX as f64 {
-                *value = Value::Number((converted as i64).into());
-            } else if let Some(n) = serde_json::Number::from_f64(converted) {
-                *value = Value::Number(n);
-            }
-        }
-        Err(_) => {}
+    // The unit applies to the value, or to every item of a list. Anything else is refused.
+    let outcome = match &mut *value {
+        Value::Array(items) => items.iter_mut().try_for_each(|item| convert_value(item, unit, notation, target)),
+        single => convert_value(single, unit, notation, target),
+    };
+
+    if let Err(reason) = outcome {
+        issues.unconvertible_values.push(UnconvertibleValue {
+            location: issues.loc(field.line),
+            field_name: field.name.to_string(),
+            unit: unit.to_string(),
+            found: value.to_string(),
+            reason,
+        });
     }
 
     Ok(())
+}
+
+/// Convert one value in place: a number in its unit, or an angle written in its notation.
+fn convert_value(
+    value: &mut Value,
+    unit: &str,
+    notation: Option<AngleNotation>,
+    target: &UnitTarget,
+) -> Result<(), String> {
+    let converted = match (notation, &*value) {
+        (Some(notation), Value::String(text)) => {
+            parse_angle(text, notation).and_then(|degrees| convert_unit(degrees, "deg", target))?
+        }
+        (Some(notation), _) => {
+            return Err(format!(
+                "the value is not a quoted string; unit={} reads one such as {}",
+                notation.name(), notation.example()
+            ));
+        }
+        (None, Value::Number(number)) => {
+            let number = number.as_f64().ok_or_else(|| "the number is out of range".to_string())?;
+            convert_unit(number, unit, target)?
+        }
+        (None, Value::String(_)) if target.family == UnitFamily::Angle => {
+            return Err(format!("a quoted string needs unit=dms or unit=dm, found unit={}", unit));
+        }
+        (None, _) => return Err(format!("unit={} needs a number", unit)),
+    };
+
+    store_number(value, converted);
+    Ok(())
+}
+
+/// Report a field whose annotation is of the kind its section's target does not take.
+fn report_wrong_annotation_kind(field: &FieldAnnotation, expected: &str, issues: &mut TomlxIssues) {
+    let (found, named) = match &field.annotation_type {
+        FieldAnnotationType::Unit(unit) => ("unit", unit),
+        FieldAnnotationType::Path(reference) => ("path", reference),
+    };
+    issues.malformed_field_annotations.push(MalformedFieldAnnotation {
+        location: issues.loc(field.line),
+        field_name: field.field_path.clone(),
+        raw_annotation: format!("{}={}", found, named),
+        reason: format!("this section's target takes {}= annotations, not {}=", expected, found),
+    });
+}
+
+/// Report an annotated field that is not in its section's table under its name.
+fn report_unresolved_field(field: &FieldAnnotation, issues: &mut TomlxIssues) {
+    issues.unresolved_annotations.push(UnresolvedAnnotation {
+        location: issues.loc(field.line),
+        annotated: format!("Field '{}'", field.field_path),
+    });
+}
+
+/// Put a converted number in place of a field's value: whole numbers as integers.
+fn store_number(value: &mut Value, converted: f64) {
+    if converted.fract() == 0.0 && converted.abs() < i64::MAX as f64 {
+        *value = Value::Number((converted as i64).into());
+    } else if let Some(n) = serde_json::Number::from_f64(converted) {
+        *value = Value::Number(n);
+    }
 }
 
 fn process_path_section(
@@ -397,10 +474,12 @@ fn process_path_section(
                 name: field.field_path.rsplit('.').next().unwrap_or(&field.field_path),
                 line: field.line,
             };
-            if let Some(value) = map.get_mut(field_ref.name) {
-                if let FieldAnnotationType::Path(reference) = &field.annotation_type {
+            match (map.get_mut(field_ref.name), &field.annotation_type) {
+                (Some(value), FieldAnnotationType::Path(reference)) => {
                     convert_field_path(value, reference, paths, &field_ref, issues)?;
                 }
+                (Some(_), FieldAnnotationType::Unit(_)) => report_wrong_annotation_kind(field, "path", issues),
+                (None, _) => report_unresolved_field(field, issues),
             }
         }
     }
@@ -414,9 +493,18 @@ fn convert_field_path(
     field: &FieldRef,
     issues: &mut TomlxIssues,
 ) -> Result<(), FormatError> {
-    let path_str = match value {
+    let path_str = match &*value {
         Value::String(s) => s.clone(),
-        _ => return Ok(()),
+        other => {
+            issues.unexpandable_paths.push(UnexpandablePath {
+                location: issues.loc(field.line),
+                field_name: field.name.to_string(),
+                reference: reference.to_string(),
+                found: other.to_string(),
+                reason: "the value is not a quoted string".to_string(),
+            });
+            return Ok(());
+        }
     };
 
     if !PathRegistry::is_builtin(reference) && !paths.registry.user_defined.contains_key(reference) {
@@ -431,7 +519,13 @@ fn convert_field_path(
 
     match expand_path(&path_str, reference, paths.registry, paths.config_dir, paths.resolve_env) {
         Ok(expanded) => { *value = Value::String(expanded); }
-        Err(_) => {}
+        Err(reason) => issues.unexpandable_paths.push(UnexpandablePath {
+            location: issues.loc(field.line),
+            field_name: field.name.to_string(),
+            reference: reference.to_string(),
+            found: value.to_string(),
+            reason,
+        }),
     }
 
     Ok(())
@@ -494,6 +588,255 @@ mod tests {
         let limits = result.data.get("limits").unwrap();
         assert_eq!(limits.get("max_size").unwrap(), 500_000_000i64);
         assert_eq!(limits.get("buffer").unwrap(), 65536i64);
+    }
+
+    #[test]
+    fn test_length_units() {
+        let source = "\n[margin]  # target=meters\nwest = 2      # unit=km\neast = 5000   # unit=m\nstep = 250    # unit=cm\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        let margin = result.data.get("margin").unwrap();
+        assert_eq!(margin.get("west").unwrap(), 2000i64);
+        assert_eq!(margin.get("east").unwrap(), 5000i64);
+        assert_eq!(margin.get("step").unwrap(), 2.5);
+        assert_eq!(result.section_units.get("margin"), Some(&"meters".to_string()));
+    }
+
+    #[test]
+    fn test_length_target_in_either_spelling() {
+        let source = "\n[margin]  # target=metres\nnorth = 10  # unit=kilometres\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        assert_eq!(result.data.get("margin").unwrap().get("north").unwrap(), 10_000i64);
+        assert_eq!(result.section_units.get("margin"), Some(&"meters".to_string()));
+    }
+
+    #[test]
+    fn test_m_follows_the_section_target() {
+        let source = "\n[ttl]  # target=seconds\nsession = 2  # unit=m\n\n[margin]  # target=meters\nwest = 2  # unit=m\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        assert_eq!(result.data.get("ttl").unwrap().get("session").unwrap(), 120);
+        assert_eq!(result.data.get("margin").unwrap().get("west").unwrap(), 2);
+    }
+
+    #[test]
+    fn test_length_unit_under_time_target_is_refused() {
+        let source = "\n[ttl]  # target=seconds\nsession = 5  # unit=km\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("session"));
+        assert!(err.contains("LENGTH"));
+        assert!(err.contains("target=meters"));
+    }
+
+    #[test]
+    fn test_time_unit_under_length_target_is_refused() {
+        let source = "\n[margin]  # target=meters\nwest = 5  # unit=hours\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("west"));
+        assert!(err.contains("TIME"));
+        assert!(err.contains("target=seconds"));
+    }
+
+    #[test]
+    fn test_unknown_length_unit_suggests_length_units() {
+        let source = "\n[margin]  # target=meters\nwest = 5  # unit=kilometrs\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("Unknown unit 'kilometrs'"));
+        assert!(err.contains("Did you mean"));
+    }
+
+    #[test]
+    fn test_mass_speed_and_pressure_sections() {
+        let source = "\n[load]  # target=kg\npack = 18500  # unit=g\nboat = 0.5    # unit=t\n\n[pace]  # target=m/s\nhiking = 18  # unit=km/h\n\n[weather]  # target=hpa\nstorm = 1         # unit=bar\nstation = 101325  # unit=pa\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        assert_eq!(result.data.get("load").unwrap().get("pack").unwrap(), 18.5);
+        assert_eq!(result.data.get("load").unwrap().get("boat").unwrap(), 500);
+        assert_eq!(result.data.get("pace").unwrap().get("hiking").unwrap(), 5);
+        assert_eq!(result.data.get("weather").unwrap().get("storm").unwrap(), 1000);
+        assert_eq!(result.data.get("weather").unwrap().get("station").unwrap(), 1013.25);
+        assert_eq!(result.section_units.get("load"), Some(&"kilograms".to_string()));
+        assert_eq!(result.section_units.get("pace"), Some(&"meters_per_second".to_string()));
+        assert_eq!(result.section_units.get("weather"), Some(&"hectopascals".to_string()));
+    }
+
+    #[test]
+    fn test_area_volume_and_frequency_sections() {
+        let source = "\n[lake]  # target=m2\nsurface = 2.5  # unit=ha\n\n[water]  # target=liters\nbottle = 750  # unit=ml\n\n[radio]  # target=hz\nchannel = 156.8  # unit=mhz\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        assert_eq!(result.data.get("lake").unwrap().get("surface").unwrap(), 25000);
+        assert_eq!(result.data.get("water").unwrap().get("bottle").unwrap(), 0.75);
+        assert_eq!(result.data.get("radio").unwrap().get("channel").unwrap(), 156_800_000i64);
+        assert_eq!(result.section_units.get("lake"), Some(&"square_meters".to_string()));
+    }
+
+    #[test]
+    fn test_angles_written_in_parts() {
+        let source = "\n[camp]  # target=degrees\nlatitude = \"56°32'24.5\\\"N\"  # unit=dms\nlongitude = \"61°42.654'W\"   # unit=dm // from the GPS\nbearing = 270                # unit=deg\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        let camp = result.data.get("camp").unwrap();
+        let latitude = (56.0 * 3600.0 + 32.0 * 60.0 + 24.5) / 3600.0;
+        let longitude = -(61.0 * 60.0 + 42.654) / 60.0;
+        assert_eq!(camp.get("latitude").unwrap().as_f64().unwrap(), latitude);
+        assert_eq!(camp.get("longitude").unwrap().as_f64().unwrap(), longitude);
+        assert_eq!(camp.get("bearing").unwrap(), 270);
+        assert_eq!(result.section_units.get("camp"), Some(&"degrees".to_string()));
+    }
+
+    #[test]
+    fn test_angles_to_radians() {
+        let source = "\n[sun]  # target=radians\nazimuth = 180        # unit=deg\nnoon = \"180°0'0\\\"\"  # unit=dms\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        let sun = result.data.get("sun").unwrap();
+        assert!((sun.get("azimuth").unwrap().as_f64().unwrap() - std::f64::consts::PI).abs() < 1e-12);
+        assert!((sun.get("noon").unwrap().as_f64().unwrap() - std::f64::consts::PI).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_angle_in_parts_that_is_not_a_string_is_refused() {
+        let source = "\n[camp]  # target=degrees\nlatitude = 56.54  # unit=dms\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("latitude"));
+        assert!(err.contains("not a quoted string"));
+        assert!(err.contains("Fix:"));
+    }
+
+    #[test]
+    fn test_angle_missing_a_part_is_refused() {
+        let source = "\n[camp]  # target=degrees\nlatitude = \"56°32'N\"  # unit=dms\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("no seconds"));
+    }
+
+    #[test]
+    fn test_quoted_angle_without_a_notation_is_refused() {
+        let source = "\n[camp]  # target=degrees\nlatitude = \"56°32'24\\\"N\"  # unit=deg\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("needs unit=dms or unit=dm"));
+    }
+
+    #[test]
+    fn test_angle_notation_under_time_target_is_refused() {
+        let source = "\n[ttl]  # target=seconds\nsession = 5  # unit=dms\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("ANGLE"));
+        assert!(err.contains("target=degrees"));
+    }
+
+    #[test]
+    fn test_unknown_target_lists_the_targets() {
+        let source = "\n[load]  # target=stones\npack = 3  # unit=kg\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("Unknown target 'stones'"));
+        assert!(err.contains("kilograms"));
+    }
+
+    #[test]
+    fn test_unit_on_a_list_converts_every_item() {
+        let source = "\n[area.margin]  # target=meters\nwest = [2, 10, 50]      # unit=km\neast = [500, 2.5, 0]    # unit=m\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        let margin = result.data.get("area").unwrap().get("margin").unwrap();
+        assert_eq!(margin.get("west").unwrap(), &serde_json::json!([2000, 10000, 50000]));
+        assert_eq!(margin.get("east").unwrap(), &serde_json::json!([500, 2.5, 0]));
+    }
+
+    #[test]
+    fn test_list_of_angles_in_parts() {
+        let source = "\n[camps]  # target=degrees\nlatitudes = [\"56°30'N\", \"57°15'N\"]  # unit=dm\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        assert_eq!(result.data.get("camps").unwrap().get("latitudes").unwrap(), &serde_json::json!([56.5, 57.25]));
+    }
+
+    #[test]
+    fn test_list_holding_a_non_number_is_refused() {
+        let source = "\n[margin]  # target=meters\nwest = [2, \"ten\", 50]  # unit=km\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("west"));
+        assert!(err.contains("needs a number"));
+    }
+
+    #[test]
+    fn test_unit_on_a_string_is_refused() {
+        let source = "\n[ttl]  # target=seconds\nname = \"session\"  # unit=seconds\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("name"));
+        assert!(err.contains("needs a number"));
+    }
+
+    #[test]
+    fn test_annotated_section_inside_a_list_of_tables_is_refused() {
+        let source = "\n[[area.zones]]\nzoom_levels_coarser = 2\n\n[area.zones.margin]  # target=meters\nwest = 10  # unit=km\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("Section [area.zones.margin]"));
+        assert!(err.contains("not in the file's data"));
+    }
+
+    #[test]
+    fn test_annotation_on_a_list_of_tables_header_is_refused() {
+        let source = "\n[[zones]]  # target=meters\nwest = 10\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("a list of tables cannot carry an annotation"));
+    }
+
+    #[test]
+    fn test_list_of_tables_passes_through_unannotated() {
+        let source = "\n[[zones]]  # the innermost\nname = \"inner\"\n\n[[zones]]\nname = \"outer\"\n";
+        let result = parse_tomlx(source, None, None, &test_env).unwrap();
+
+        assert_eq!(result.data.get("zones").unwrap(), &serde_json::json!([{"name": "inner"}, {"name": "outer"}]));
+    }
+
+    #[test]
+    fn test_unit_on_a_dotted_key_is_refused() {
+        let source = "\n[margin]  # target=meters\nwest.inner = 2  # unit=km\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("Field 'margin.west.inner'"));
+        assert!(err.contains("not in the file's data"));
+    }
+
+    #[test]
+    fn test_path_annotation_in_a_unit_section_is_refused() {
+        let source = "\n[ttl]  # target=seconds\nsession = \"logs/\"  # path=home\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("takes unit= annotations, not path="));
+    }
+
+    #[test]
+    fn test_path_on_a_value_that_is_not_a_string_is_refused() {
+        let source = "\n[paths]  # target=path, base=~/app/\nretries = 3  # path=base\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("retries"));
+        assert!(err.contains("not a quoted string"));
+    }
+
+    #[test]
+    fn test_path_naming_an_unset_variable_is_refused() {
+        let source = "\n[paths]  # target=path, base=$MISSING_TOMLX_VAR/app/, expand=env\ncli = \"cli/\"  # path=base\n";
+        let err = parse_tomlx(source, Some("config.tomlx"), None, &test_env).unwrap_err().to_string();
+
+        assert!(err.contains("cli"));
+        assert!(err.contains("MISSING_TOMLX_VAR"));
     }
 
     #[test]

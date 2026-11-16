@@ -1,6 +1,6 @@
 # .tomlx Format Specification
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 **Status:** Implemented in `format_core::tomlx`; read by the `read_tomlx_*` readers
 **Authors:** Human-AI Collaboration
 
@@ -54,14 +54,14 @@ Section headers may include annotations in trailing comments:
 
 | Key | Purpose | Description |
 |-----|---------|-------------|
-| `target=` | Processing mode | Unit conversion (`seconds`, `bytes`) or path expansion (`path`) |
+| `target=` | Processing mode | Unit conversion (`seconds`, `bytes`, `meters`, `kg`, … — §2.3) or path expansion (`path`) |
 | `type=` | Type declaration | JSON Schema generation (`int`, `str`, `bool`, `list[int]`) |
 
 **Processing modes (target=):**
 
 | Target | Mode | Description |
 |--------|------|-------------|
-| `seconds`, `ms`, `bytes`, etc. | Unit conversion | Numeric values with unit annotations |
+| a target unit of one family (§2.3) | Unit conversion | Numeric values with unit annotations; angles may be written in parts (§2.6) |
 | `path` | Path expansion | String paths with reference annotations |
 
 **Type declarations (type=):**
@@ -137,6 +137,38 @@ Paths don't contain ` // ` with spaces. Human comments naturally do.
 - Annotation present = ERROR (orphan annotation)
 - Section passes through as regular TOML
 
+### 1.5 What an Annotation Can Attach To (Fail Closed)
+
+An annotation that cannot be applied is an error. Nothing is skipped.
+
+**Sections:**
+- An annotated section is a plain table reached by its name: `[margin]`, `[area.margin]`
+- A list of tables (`[[zones]]`) carries no annotation and passes through as regular TOML. A comment on its header is for people; one that reads as an annotation = ERROR
+- A table inside a list of tables (`[zones.margin]` after `[[zones]]`) cannot be annotated = ERROR
+
+**Fields:**
+- An annotated field is written on one line with a bare key: `west = 2  # unit=km`
+- A dotted key (`west.inner = 2`) or a quoted key (`"west" = 2`) cannot be annotated = ERROR
+- The annotation is of the kind the section's target takes: `unit=` under a unit target, `path=` under `target=path`. The other kind = ERROR
+
+**Values under a unit target:**
+- A number, or a list of numbers written on one line; every item of a list is converted
+- Under an angle target, also a quoted string in a named notation (§2.6), or a list of them
+- Any other value = ERROR. A field that needs no conversion belongs in a section without a target
+
+**Values under `target=path`:**
+- A quoted string
+- Every part of the path resolves: its base, the home directory, each environment variable it names. A part that does not = ERROR
+- Any other value = ERROR
+
+Several values of one kind are written as a list:
+
+```toml
+[area.margin]  # target=meters
+west  = [2, 10, 50]   # unit=km
+south = [2, 10, 50]   # unit=km
+```
+
 ---
 
 ## 2. Unit Conversion Mode
@@ -191,12 +223,103 @@ The parser converts `value` from `source_unit` to `target_unit`.
 
 **Valid targets:** `bytes`, `b`
 
+#### Length Units
+
+| Unit | Aliases | Base (meters) |
+|------|---------|---------------|
+| millimeters | `mm`, `millimeter`, `millimetre`, `millimetres` | 0.001 |
+| centimeters | `cm`, `centimeter`, `centimetre`, `centimetres` | 0.01 |
+| meters | `m`, `meter`, `metre`, `metres` | 1 |
+| kilometers | `km`, `kilometer`, `kilometre`, `kilometres` | 1000 |
+
+**Valid targets:** `meters`, `metres`, `meter`, `metre`, `m`
+
+#### Mass Units
+
+| Unit | Aliases | Base (grams) |
+|------|---------|--------------|
+| milligrams | `mg`, `milligram` | 0.001 |
+| grams | `g`, `gram` | 1 |
+| kilograms | `kg`, `kilogram` | 1000 |
+| tonnes | `t`, `tonne` | 1000000 |
+
+**Valid targets:** `kilograms`, `kilogram`, `kg`; `grams`, `gram`, `g`
+
+#### Area Units
+
+| Unit | Aliases | Base (square meters) |
+|------|---------|----------------------|
+| `mm2` | `mm²` | 0.000001 |
+| `cm2` | `cm²` | 0.0001 |
+| `m2` | `m²` | 1 |
+| hectares | `ha`, `hectare` | 10000 |
+| `km2` | `km²` | 1000000 |
+
+**Valid targets:** `square_meters`, `square_metres`, `m2`, `m²`
+
+#### Volume Units
+
+| Unit | Aliases | Base (liters) |
+|------|---------|---------------|
+| milliliters | `ml`, `milliliter`, `millilitre`, `millilitres`, `cm3`, `cm³` | 0.001 |
+| liters | `l`, `liter`, `litre`, `litres` | 1 |
+| `m3` | `m³` | 1000 |
+
+**Valid targets:** `liters`, `litres`, `liter`, `litre`, `l`; `cubic_meters`, `cubic_metres`, `m3`, `m³`
+
+#### Speed Units
+
+| Unit | Aliases | Base (meters per second) |
+|------|---------|--------------------------|
+| `m/s` | `mps` | 1 |
+| `km/h` | `kmh`, `kph` | 1000/3600 |
+
+**Valid targets:** `meters_per_second`, `metres_per_second`, `m/s`, `mps`; `kilometers_per_hour`, `kilometres_per_hour`, `km/h`, `kmh`, `kph`
+
+#### Angle Units
+
+| Unit | Aliases | Base (degrees) |
+|------|---------|----------------|
+| degrees | `deg`, `degree`, `°` | 1 |
+| radians | `rad`, `radian` | 180/π |
+
+**Notations:** `dms`, `dm` — an angle written in parts (§2.6)
+
+**Valid targets:** `degrees`, `degree`, `deg`; `radians`, `radian`, `rad`
+
+#### Pressure Units
+
+| Unit | Aliases | Base (pascals) |
+|------|---------|----------------|
+| pascals | `pa`, `pascal` | 1 |
+| hectopascals | `hpa`, `hectopascal` | 100 |
+| kilopascals | `kpa`, `kilopascal` | 1000 |
+| millibars | `mbar`, `millibar` | 100 |
+| bars | `bar` | 100000 |
+
+**Valid targets:** `pascals`, `pascal`, `pa`; `hectopascals`, `hectopascal`, `hpa`
+
+#### Frequency Units
+
+| Unit | Aliases | Base (hertz) |
+|------|---------|--------------|
+| hertz | `hz` | 1 |
+| kilohertz | `khz` | 1000 |
+| megahertz | `mhz` | 1000000 |
+| gigahertz | `ghz` | 1000000000 |
+
+**Valid targets:** `hertz`, `hz`
+
+Unit and target names are case-insensitive. The name recorded in `section_units` is the first valid target listed for the one named: `target=kg` records `kilograms`.
+
 ### 2.4 Conversion Rules
 
-1. Source and target must be in same family (time→time, size→size)
-2. Cross-family conversion = ERROR
-3. Unknown unit = ERROR (with suggestions)
-4. Conversion: `output = input × (source_base / target_base)`
+1. A unit name is read within the family of the section's target: `m` is minutes under a time target and meters under a length target
+2. Source and target must be in same family (time→time, size→size, length→length)
+3. Cross-family conversion = ERROR
+4. Unknown unit = ERROR (with suggestions from the target's family)
+5. Conversion: `output = input × (source_base / target_base)`
+6. The source and target factors are joined before the one division, so a whole-number factor converts exactly: `36 km/h` is `10 m/s`, and a value already in its target unit is unchanged
 
 ### 2.5 Example
 
@@ -210,6 +333,10 @@ heartbeat = 30    # unit=seconds
 [sizes]  # target=bytes
 max_cache = 500   # unit=mb
 buffer = 64       # unit=kib
+
+[margin]  # target=meters
+west = 2          # unit=km
+east = 500        # unit=m
 ```
 
 **Output:**
@@ -224,9 +351,54 @@ buffer = 64       # unit=kib
     "max_cache": 500000000,
     "buffer": 65536
   },
+  "margin": {
+    "west": 2000,
+    "east": 500
+  },
   "section_units": {
     "ttl": "seconds",
-    "sizes": "bytes"
+    "sizes": "bytes",
+    "margin": "meters"
+  }
+}
+```
+
+### 2.6 Angles Written in Parts
+
+Under an angle target, a value may be a quoted string in degrees and minutes, with or without seconds. Its unit annotation names the notation; nothing is guessed.
+
+| Notation | Parts | Example |
+|----------|-------|---------|
+| `dms` | whole degrees, whole minutes, seconds | `"56°32'24.5\"N"` |
+| `dm` | whole degrees, minutes | `"61°42.654'W"` |
+
+**Rules:**
+
+1. The parts are separated by their symbols (`°`, `'` or `′`, `"` or `″`) or by spaces: `"56 32 24.5 N"`
+2. Every part but the last is a whole number; minutes and seconds are below 60
+3. South and west are negative, given by a closing hemisphere letter (`N`, `S`, `E`, `W`) or by a leading minus sign — one or the other
+4. The value converts to decimal degrees, and from there to the section's target
+5. A value that does not match its notation = ERROR; so is a quoted string whose unit names no notation
+6. The notation is all that is converted. A value's range (a latitude within ±90) is for the schema the converted data is validated against
+
+**Input:**
+```toml
+[camp]  # target=degrees
+latitude = "56°32'24.5\"N"   # unit=dms
+longitude = "61°42.654'W"    # unit=dm
+bearing = 270                # unit=deg
+```
+
+**Output:**
+```json
+{
+  "camp": {
+    "latitude": 56.54013888888889,
+    "longitude": -61.7109,
+    "bearing": 270
+  },
+  "section_units": {
+    "camp": "degrees"
   }
 }
 ```
@@ -591,7 +763,42 @@ ERROR: config.tomlx:8
 
   Did you mean: min, minutes, m?
 
-  Supported time units: ms, s, sec, seconds, m, min, minutes, h, hr, hours, d, days, w, weeks
+  Supported time units: ms, s, m, h, d, w
+  Supported size units: b, kb, mb, gb, tb, kib, mib, gib, tib
+  Supported length units: mm, cm, m, km
+  ...one line for each family
+```
+
+Suggestions come from the family of the section's target.
+
+**Value its unit cannot convert:**
+```
+ERROR: config.tomlx:9
+  Field 'latitude' has a value its unit cannot convert.
+
+  Found: "56°32'N"  # unit=dms
+  Problem: it has no seconds
+
+  Rule: A unit applies to a number, or to a list of numbers written on one line.
+        Under an angle target, unit=dms and unit=dm apply to a quoted string.
+
+  Fix: Write it as: latitude = "56°32'24.5\"N"  # unit=dms
+       Or give a number: latitude = 56.54  # unit=deg
+```
+
+For a unit that is not a notation, the fix shows a number and a list in that unit.
+
+**Annotation that attaches to nothing:**
+```
+ERROR: config.tomlx:14
+  Section [area.zones.margin] carries an annotation, but is not in the file's data where its name says.
+
+  Rule: An annotation applies to a plain table reached by its name, and to a field
+        written in that table with a bare key. A table inside a list of tables,
+        a dotted key and a quoted key cannot carry one.
+
+  Fix: Put the values in a plain section: [section]  # target=meters
+       Several values of one kind can be a list: field = [2, 10, 50]  # unit=km
 ```
 
 **Incompatible conversion:**
@@ -792,6 +999,7 @@ The parser SHOULD:
 - **Strict path validation mode:** Verify paths exist at parse time
 - **Custom unit definitions:** Extensible unit families
 - **Nested section annotations:** Inherit target from parent
+- **Annotations inside lists of tables:** a table within a `[[list]]` item carrying a target, resolved to its item
 - **Include directives:** Reference other .tomlx files
 - **Windows environment variable syntax:** `%VAR%` support
 
@@ -807,8 +1015,13 @@ The parser SHOULD:
 [flags]   # type=bool
 [tags]    # type=list[str]
 
-# Unit conversion
+# Unit conversion: one target unit of a family
 [section]  # target=seconds
+[section]  # target=bytes
+[section]  # target=meters
+[section]  # target=kg
+[section]  # target=m/s
+[section]  # target=degrees
 
 # Combined type and target
 [ttl]  # type=int, target=seconds
@@ -826,6 +1039,12 @@ The parser SHOULD:
 # Units (must be convertible to section target)
 field = 15  # unit=minutes
 field = 30  # unit=seconds
+field = 5   # unit=km
+field = 18  # unit=km/h
+
+# Angles written in parts (under an angle target)
+field = "56°32'24.5\"N"  # unit=dms
+field = "61°42.654'W"    # unit=dm
 
 # Paths
 field = "subdir/"     # path=base

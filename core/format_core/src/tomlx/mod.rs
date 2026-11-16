@@ -14,7 +14,8 @@
 //!
 //! # Supported Modes
 //!
-//! - **Unit conversion** (`target=seconds`, `target=bytes`)
+//! - **Unit conversion** (`target=seconds`, `target=bytes`, `target=meters`, and the
+//!   other unit families), with angles in degrees and minutes read from quoted strings
 //! - **Path expansion** (`target=path, base=~/.app/`)
 //! - **Type declarations** (`type=int`, `type=list[str]`)
 //! - **Combined** (`type=int, target=seconds`)
@@ -29,6 +30,7 @@
 //! let json = output.to_json();
 //! ```
 
+pub mod angle_parse;
 pub mod annotation;
 pub mod diagnostics;
 pub mod paths;

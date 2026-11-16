@@ -10,6 +10,7 @@ use super::types::{
     ExpandMode, FieldAnnotation, FieldAnnotationType, SectionAnnotation, TargetFamily,
     TypeAnnotation, parse_target, parse_type_annotation, RESERVED_PATH_KEYS,
 };
+use super::units::target_names_summary;
 
 /// Result of parsing a section header line.
 #[derive(Debug)]
@@ -36,13 +37,12 @@ pub fn parse_section_header(line: &str, line_num: usize) -> Option<SectionHeader
         return None;
     }
 
+    if line.starts_with("[[") {
+        return Some(parse_table_list_header(line));
+    }
+
     let bracket_end = line.find(']')?;
     let section_path = line[1..bracket_end].trim().to_string();
-
-    // Skip array of tables [[section]]
-    if line.starts_with("[[") {
-        return Some(SectionHeaderParse::NoAnnotation { section_path });
-    }
 
     let after_bracket = &line[bracket_end + 1..];
     let comment_start = after_bracket.find('#');
@@ -60,6 +60,26 @@ pub fn parse_section_header(line: &str, line_num: usize) -> Option<SectionHeader
                 }),
             }
         }
+    }
+}
+
+/// Parse a header that starts an item in a list of tables: `[[section]]`. It carries
+/// no annotation. A comment on it is for people; one that reads as an annotation is
+/// refused, because nothing would apply it.
+fn parse_table_list_header(line: &str) -> SectionHeaderParse {
+    let close = line.find("]]").unwrap_or(line.len());
+    let section_path = line[2..close].trim().to_string();
+    let comment = line[close..].find('#').map(|position| line[close + position + 1..].trim());
+
+    match comment {
+        Some(comment) if parse_section_annotation(comment, &section_path, 0).is_ok() => {
+            SectionHeaderParse::Error {
+                section_path,
+                raw: comment.to_string(),
+                reason: "a list of tables cannot carry an annotation".to_string(),
+            }
+        }
+        _ => SectionHeaderParse::NoAnnotation { section_path },
     }
 }
 
@@ -116,7 +136,7 @@ impl AnnotationBuilder {
         match key {
             "target" => {
                 self.target = Some(parse_target(value).ok_or_else(|| {
-                    format!("Unknown target '{}'. Use: seconds, ms, bytes, or path", value)
+                    format!("Unknown target '{}'. Use: {}, or path", value, target_names_summary())
                 })?);
             }
             "type" => {
@@ -338,7 +358,7 @@ mod tests {
         let result = parse_section_header("[ttl]  # target=seconds", 1).unwrap();
         if let SectionHeaderParse::Annotated(ann) = result {
             assert_eq!(ann.section_path, "ttl");
-            assert!(matches!(ann.target, Some(TargetFamily::Time(_))));
+            assert!(matches!(ann.target, Some(TargetFamily::Unit(_))));
         } else {
             panic!("Expected Annotated");
         }

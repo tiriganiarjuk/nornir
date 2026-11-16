@@ -10,6 +10,9 @@
 
 use std::fmt;
 
+use super::angle_parse::AngleNotation;
+use super::units::supported_units_summary;
+
 #[derive(Debug, Clone)]
 pub struct Location {
     pub file: Option<String>,
@@ -88,8 +91,38 @@ pub struct IncompatibleUnitFamily {
     pub field_name: String,
     pub unit: String,
     pub unit_family: String,
+    /// The target a section holding this unit's family converts to.
+    pub unit_family_target: String,
     pub target: String,
     pub target_family: String,
+}
+
+/// A value its unit annotation cannot convert.
+#[derive(Debug, Clone)]
+pub struct UnconvertibleValue {
+    pub location: Location,
+    pub field_name: String,
+    pub unit: String,
+    pub found: String,
+    pub reason: String,
+}
+
+/// A value its path annotation cannot expand.
+#[derive(Debug, Clone)]
+pub struct UnexpandablePath {
+    pub location: Location,
+    pub field_name: String,
+    pub reference: String,
+    pub found: String,
+    pub reason: String,
+}
+
+/// An annotation on a section or a field that is not in the file's data where its name says.
+#[derive(Debug, Clone)]
+pub struct UnresolvedAnnotation {
+    pub location: Location,
+    /// What carries the annotation, as a message names it: `Section [a.b]`, `Field 'a.b.c'`.
+    pub annotated: String,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +145,9 @@ pub struct TomlxIssues {
     pub base_redeclarations: Vec<BaseRedeclaration>,
     pub unknown_units: Vec<UnknownUnit>,
     pub incompatible_unit_families: Vec<IncompatibleUnitFamily>,
+    pub unconvertible_values: Vec<UnconvertibleValue>,
+    pub unexpandable_paths: Vec<UnexpandablePath>,
+    pub unresolved_annotations: Vec<UnresolvedAnnotation>,
     pub undefined_path_references: Vec<UndefinedPathReference>,
 }
 
@@ -137,6 +173,9 @@ impl TomlxIssues {
             || !self.base_redeclarations.is_empty()
             || !self.unknown_units.is_empty()
             || !self.incompatible_unit_families.is_empty()
+            || !self.unconvertible_values.is_empty()
+            || !self.unexpandable_paths.is_empty()
+            || !self.unresolved_annotations.is_empty()
             || !self.undefined_path_references.is_empty()
     }
 
@@ -149,6 +188,9 @@ impl TomlxIssues {
             + self.base_redeclarations.len()
             + self.unknown_units.len()
             + self.incompatible_unit_families.len()
+            + self.unconvertible_values.len()
+            + self.unexpandable_paths.len()
+            + self.unresolved_annotations.len()
             + self.undefined_path_references.len()
     }
 
@@ -164,6 +206,9 @@ impl TomlxIssues {
         sections.extend(self.base_redeclarations.iter().map(format_base_redeclaration));
         sections.extend(self.unknown_units.iter().map(format_unknown_unit));
         sections.extend(self.incompatible_unit_families.iter().map(format_incompatible_family));
+        sections.extend(self.unconvertible_values.iter().map(format_unconvertible_value));
+        sections.extend(self.unexpandable_paths.iter().map(format_unexpandable_path));
+        sections.extend(self.unresolved_annotations.iter().map(format_unresolved_annotation));
         sections.extend(self.undefined_path_references.iter().map(format_undefined_path_ref));
 
         if sections.is_empty() {
@@ -261,10 +306,68 @@ fn format_unknown_unit(issue: &UnknownUnit) -> String {
     format!(
         "ERROR: {}\n  \
          Unknown unit '{}' on field '{}'.{}\n\n  \
-         Supported time units: ms, s, sec, seconds, m, min, minutes, h, hr, hours, d, days, w, weeks\n  \
-         Supported size units: b, bytes, kb, mb, gb, tb, kib, mib, gib, tib",
-        issue.location, issue.unit, issue.field_name, suggestions
+         {}",
+        issue.location, issue.unit, issue.field_name, suggestions, supported_units_summary()
     )
+}
+
+fn format_unconvertible_value(issue: &UnconvertibleValue) -> String {
+    let fix = match AngleNotation::from_name(&issue.unit) {
+        Some(notation) => format!(
+            "Write it as: {} = {}  # unit={}\n       \
+                  Or give a number: {} = 56.54  # unit=deg",
+            issue.field_name, toml_string(notation.example()), notation.name(), issue.field_name
+        ),
+        None => format!(
+            "Give a number: {} = 5  # unit={}\n       \
+                  Or a list: {} = [2, 10, 50]  # unit={}\n       \
+                  Or move the field to a section without a target if it needs no conversion.",
+            issue.field_name, issue.unit, issue.field_name, issue.unit
+        ),
+    };
+    format!(
+        "ERROR: {}\n  \
+         Field '{}' has a value its unit cannot convert.\n\n  \
+         Found: {}  # unit={}\n  \
+         Problem: {}\n\n  \
+         Rule: A unit applies to a number, or to a list of numbers written on one line.\n       \
+               Under an angle target, unit=dms and unit=dm apply to a quoted string.\n\n  \
+         Fix: {}",
+        issue.location, issue.field_name, issue.found, issue.unit, issue.reason, fix
+    )
+}
+
+fn format_unexpandable_path(issue: &UnexpandablePath) -> String {
+    format!(
+        "ERROR: {}\n  \
+         Field '{}' has a value its path annotation cannot expand.\n\n  \
+         Found: {}  # path={}\n  \
+         Problem: {}\n\n  \
+         Rule: A path annotation applies to a quoted string, and every part of the path\n       \
+               must resolve: its base, the home directory, each environment variable.\n\n  \
+         Fix: Give the path as a string: {} = \"subdir/\"  # path={}\n       \
+              Or move the field to a section without a target if it is not a path.",
+        issue.location, issue.field_name, issue.found, issue.reference, issue.reason,
+        issue.field_name, issue.reference
+    )
+}
+
+fn format_unresolved_annotation(issue: &UnresolvedAnnotation) -> String {
+    format!(
+        "ERROR: {}\n  \
+         {} carries an annotation, but is not in the file's data where its name says.\n\n  \
+         Rule: An annotation applies to a plain table reached by its name, and to a field\n       \
+               written in that table with a bare key. A table inside a list of tables,\n       \
+               a dotted key and a quoted key cannot carry one.\n\n  \
+         Fix: Put the values in a plain section: [section]  # target=meters\n       \
+              Several values of one kind can be a list: field = [2, 10, 50]  # unit=km",
+        issue.location, issue.annotated
+    )
+}
+
+/// A string as a TOML file writes it.
+fn toml_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\\\""))
 }
 
 fn format_incompatible_family(issue: &IncompatibleUnitFamily) -> String {
@@ -276,7 +379,7 @@ fn format_incompatible_family(issue: &IncompatibleUnitFamily) -> String {
          Move this field to a section with target={}.",
         issue.location, issue.field_name, issue.unit, issue.target,
         issue.unit_family.to_uppercase(), issue.unit, issue.target_family,
-        if issue.unit_family == "size" { "bytes" } else { "seconds" }
+        issue.unit_family_target
     )
 }
 

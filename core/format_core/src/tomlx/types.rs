@@ -4,44 +4,24 @@
 
 use std::collections::HashMap;
 
+use super::units::{lookup_target, UnitTarget};
+
 /// Target processing mode for a section.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TargetFamily {
-    /// Time-based units (seconds, minutes, hours, etc.)
-    Time(TimeBase),
-    /// Size-based units (bytes, kilobytes, etc.)
-    Size,
+    /// Unit conversion to one unit of a family (seconds, bytes, meters, etc.)
+    Unit(UnitTarget),
     /// Path expansion mode.
     Path,
-}
-
-/// Time target bases.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TimeBase {
-    Seconds,
-    Milliseconds,
-}
-
-impl TimeBase {
-    /// Get the multiplier to convert to this base from seconds.
-    pub fn from_seconds_multiplier(&self) -> f64 {
-        match self {
-            TimeBase::Seconds => 1.0,
-            TimeBase::Milliseconds => 1000.0,
-        }
-    }
 }
 
 /// Parse a target string into a TargetFamily.
 pub fn parse_target(target: &str) -> Option<TargetFamily> {
     let target = target.trim().to_lowercase();
-    match target.as_str() {
-        "seconds" | "s" | "sec" | "secs" => Some(TargetFamily::Time(TimeBase::Seconds)),
-        "milliseconds" | "ms" | "millis" => Some(TargetFamily::Time(TimeBase::Milliseconds)),
-        "bytes" | "b" => Some(TargetFamily::Size),
-        "path" => Some(TargetFamily::Path),
-        _ => None,
+    if target == "path" {
+        return Some(TargetFamily::Path);
     }
+    lookup_target(&target).map(TargetFamily::Unit)
 }
 
 /// Section annotation parsed from a section header comment.
@@ -295,9 +275,17 @@ mod tests {
 
     #[test]
     fn test_parse_target() {
-        assert!(matches!(parse_target("seconds"), Some(TargetFamily::Time(TimeBase::Seconds))));
-        assert!(matches!(parse_target("ms"), Some(TargetFamily::Time(TimeBase::Milliseconds))));
-        assert!(matches!(parse_target("bytes"), Some(TargetFamily::Size)));
+        let unit_target_name = |target: &str| match parse_target(target) {
+            Some(TargetFamily::Unit(unit_target)) => Some(unit_target.name),
+            _ => None,
+        };
+        assert_eq!(unit_target_name("seconds"), Some("seconds"));
+        assert_eq!(unit_target_name("ms"), Some("milliseconds"));
+        assert_eq!(unit_target_name("bytes"), Some("bytes"));
+        assert_eq!(unit_target_name("meters"), Some("meters"));
+        assert_eq!(unit_target_name("metres"), Some("meters"));
+        assert_eq!(unit_target_name("m"), Some("meters"));
+        assert_eq!(unit_target_name("KG"), Some("kilograms"));
         assert!(matches!(parse_target("path"), Some(TargetFamily::Path)));
         assert!(parse_target("unknown").is_none());
     }
