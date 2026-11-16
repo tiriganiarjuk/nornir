@@ -19,7 +19,8 @@ use directory_read_io::{read_directory_json as list_as_json, ListOptions};
 #[pyo3(signature = (root, max_depth=None, include_hidden=false, with_hashes=false))]
 fn read(py: Python<'_>, root: &str, max_depth: Option<u32>, include_hidden: bool, with_hashes: bool) -> PyResult<PyObject> {
     let dict = PyDict::new_bound(py);
-    let options = ListOptions { max_depth, include_hidden, with_hashes };
+    // The tool enters every directory; pruning is the engine's, for callers that name it.
+    let options = ListOptions { max_depth, include_hidden, with_hashes, ..ListOptions::default() };
     match list_as_json(root, options) {
         Ok(json) => {
             dict.set_item("ok", true)?;

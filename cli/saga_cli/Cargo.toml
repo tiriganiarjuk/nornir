@@ -12,3 +12,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 saga_runner = { path = "../../capability/saga_runner" }
+failure_mode_core = { path = "../../core/failure_mode_core" }

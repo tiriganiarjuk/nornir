@@ -236,37 +236,50 @@ fn matches_kind(qa_name: &str, kind: Kind) -> bool {
     }
 }
 
-fn find_qa_files(path: &Path, target: Target, kind: Kind) -> Vec<PathBuf> {
+fn find_qa_files(path: &Path, target: Target, kind: Kind) -> Result<Vec<PathBuf>, Failure> {
     if path.is_file() && path.extension().map_or(false, |e| e == "qa") {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if matches_kind(&name, kind) {
-            return vec![path.to_path_buf()];
+            return Ok(vec![path.to_path_buf()]);
         }
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     if path.is_file() {
         let sidecar = saga_runner::qa_path(path);
         if sidecar.exists() {
-            return vec![sidecar];
+            return Ok(vec![sidecar]);
         }
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    let mut results = Vec::new();
     let skip = match target {
         Target::Src => Some("tests"),
         Target::Tests => Some("src"),
         Target::All => None,
     };
     let extra_skip: Vec<&str> = skip.into_iter().collect();
-    saga_runner::walk_files(
-        path,
-        &extra_skip,
-        &|name| name.ends_with(".qa") && name.starts_with('.') && matches_kind(name, kind),
-        &mut results,
-    );
-    results
+    saga_runner::find_files(path, &extra_skip, &|name| {
+        name.ends_with(".qa") && name.starts_with('.') && matches_kind(name, kind)
+    })
+}
+
+/// The sidecars under a path and their reports. A tree that cannot be listed whole
+/// is a fault naming what could not be read: its files are not known to be clean.
+fn discover_and_load(path: &Path, target: Target, kind: Kind) -> (Vec<SanityReport>, Vec<LocatedFault>) {
+    match find_qa_files(path, target, kind) {
+        Ok(qa_files) => load_sidecars(&qa_files),
+        Err(failure) => {
+            let unlisted = LocatedFault {
+                file: path.display().to_string(),
+                tool: "syn".to_string(),
+                mode: failure.mode.to_string(),
+                class: failure.class.to_string(),
+                message: failure.standard_message(),
+            };
+            (Vec::new(), vec![unlisted])
+        }
+    }
 }
 
 /// The reports of the sidecars that load, and a fault for each one that does not:
@@ -380,7 +393,7 @@ fn run(args: &Args) -> Result<i32, String> {
         (load_reports_from_stdin()?, Vec::new())
     } else {
         let path = args.path.as_deref().unwrap_or_else(|| Path::new("."));
-        load_sidecars(&find_qa_files(path, args.target, args.kind))
+        discover_and_load(path, args.target, args.kind)
     };
 
     let overrides = build_overrides(args);

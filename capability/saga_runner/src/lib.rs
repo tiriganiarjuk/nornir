@@ -5,6 +5,7 @@
 
 pub use saga_core::{Fault, Issue, SanityReport, qa_path, source_path_from_qa};
 
+use directory_read_io::{list_directory, DirectoryListing, EntryKind, ListOptions};
 use failure_mode_core::Failure;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -365,10 +366,10 @@ pub fn generate_report(file_path: &Path, project_root: Option<&Path>) -> SanityR
     let (issues, mut faults) = examine(Source::in_place(&file_path));
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
-    let content_hash = match hash_file(&file_path) {
+    let content_hash = match directory_read_io::file_sha256(&file_path.to_string_lossy()) {
         Ok(hash) => hash,
-        Err(io_err) => {
-            faults.push(fault("saga", failure_mode_core::file_unreadable(file_path.to_string_lossy(), io_err)));
+        Err(read_err) => {
+            faults.push(fault("saga", read_err.failure()));
             String::new()
         }
     };
@@ -441,76 +442,82 @@ pub fn load_qa_file(qa_file: &Path) -> Result<SanityReport, Failure> {
     serde_json::from_str(&content).map_err(|json_err| failure_mode_core::sidecar_not_matching(&shown, json_err))
 }
 
-/// Remove .qa sidecars whose source files no longer exist.
-pub fn remove_orphaned_sidecars(search_dir: &Path) -> Vec<PathBuf> {
-    let qa_files = find_files(search_dir, &[], &|name| {
-        name.ends_with(".qa") && name.starts_with('.')
-    });
-    let mut removed = Vec::new();
-    for qa_file in qa_files {
-        if let Some(source) = source_path_from_qa(&qa_file) {
-            if !source.exists() {
-                if std::fs::remove_file(&qa_file).is_ok() {
-                    removed.push(qa_file);
-                }
-            }
+/// What the orphan sweep did: the sidecars it removed, and those it could not.
+#[derive(Debug, Default)]
+pub struct OrphanSweep {
+    pub removed: Vec<PathBuf>,
+    /// A sidecar whose source is gone but which could not be removed, with why.
+    pub not_removed: Vec<(PathBuf, String)>,
+}
+
+/// Remove .qa sidecars whose source the listing shows absent. A tree that cannot
+/// be listed whole is a failure, and nothing is removed: absence is only what a
+/// complete listing shows.
+pub fn remove_orphaned_sidecars(search_dir: &Path) -> Result<OrphanSweep, Failure> {
+    let listing = list_tree(search_dir, &[])?;
+    let present: std::collections::HashSet<&str> = listing
+        .entries
+        .iter()
+        .filter(|entry| entry.kind != EntryKind::Directory)
+        .map(|entry| entry.path.as_str())
+        .collect();
+
+    let mut sweep = OrphanSweep::default();
+    for entry in listing.entries.iter().filter(|entry| entry.kind == EntryKind::File) {
+        let Some(source) = source_path_from_qa(Path::new(&entry.path)) else { continue };
+        if present.contains(source.to_string_lossy().as_ref()) {
+            continue;
+        }
+        let qa_file = Path::new(&listing.root).join(&entry.path);
+        match std::fs::remove_file(&qa_file) {
+            Ok(()) => sweep.removed.push(qa_file),
+            Err(io_err) => sweep.not_removed.push((qa_file, io_err.to_string())),
         }
     }
-    removed
+    Ok(sweep)
 }
 
 // =============================================================================
-// Directory walking
+// Directory walking — through the one directory walker, `directory_read_io`
 // =============================================================================
 
-/// Recursively collect files matching a predicate, skipping junk directories.
-pub fn walk_files(
-    search_dir: &Path,
-    extra_skip: &[&str],
-    predicate: &dyn Fn(&str) -> bool,
-    results: &mut Vec<PathBuf>,
-) {
-    let entries = match std::fs::read_dir(search_dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
+/// The tree under a directory as saga walks it: hidden files kept (the sidecars),
+/// hidden directories and junk directories never entered. A tree that cannot be
+/// listed whole is a failure naming every path that could not be read.
+fn list_tree(search_dir: &Path, extra_skip: &[&str]) -> Result<DirectoryListing, Failure> {
+    let root = search_dir.canonicalize().unwrap_or_else(|_| search_dir.to_path_buf());
+    let options = ListOptions {
+        include_hidden: true,
+        prune_hidden_directories: true,
+        prune_directories: SKIP_DIRS.iter().chain(extra_skip).map(|name| name.to_string()).collect(),
+        ..ListOptions::default()
     };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        if path.is_dir() {
-            if name.starts_with('.')
-                || SKIP_DIRS.contains(&name.as_str())
-                || extra_skip.contains(&name.as_str())
-            {
-                continue;
-            }
-            walk_files(&path, extra_skip, predicate, results);
-        } else if predicate(&name) {
-            results.push(path);
-        }
-    }
+    list_directory(&root.to_string_lossy(), options).map_err(|list_err| list_err.failure())
 }
 
-/// Collect files matching a predicate under a directory, sorted.
+/// The files under a directory whose name the predicate accepts, sorted.
 pub fn find_files(
     search_dir: &Path,
     extra_skip: &[&str],
     predicate: &dyn Fn(&str) -> bool,
-) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    walk_files(search_dir, extra_skip, predicate, &mut files);
-    files.sort();
-    files
+) -> Result<Vec<PathBuf>, Failure> {
+    let listing = list_tree(search_dir, extra_skip)?;
+    let root = Path::new(&listing.root);
+    Ok(listing
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::File)
+        .filter(|entry| Path::new(&entry.path).file_name().and_then(|name| name.to_str()).is_some_and(predicate))
+        .map(|entry| root.join(&entry.path))
+        .collect())
 }
 
 // =============================================================================
 // Internal helpers
 // =============================================================================
 
-/// Directories always skipped during recursive file discovery.
-const SKIP_DIRS: &[&str] = &["__pycache__", "node_modules", ".venv", "venv", "target"];
+/// Directories saga never enters. Hidden directories are pruned besides.
+const SKIP_DIRS: &[&str] = &["__pycache__", "node_modules", "venv", "target"];
 
 /// Last N path components as a string. Disambiguates `lib.rs` across crates.
 fn tail_path(path: &Path, depth: usize) -> String {
@@ -549,22 +556,6 @@ fn summarize_issues(
         map.into_iter().map(|(key, count)| (key.to_string(), count)).collect()
     };
     (to_owned(by_tool), to_owned(by_severity), to_owned(by_category))
-}
-
-fn hash_file(path: &Path) -> std::io::Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let bytes_read = file.read(&mut buf)?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buf[..bytes_read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn timestamp_now() -> String {
@@ -716,6 +707,57 @@ mod tests {
         assert!(loaded.faults.is_empty());
         assert_eq!(loaded.content_hash.len(), 64);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tree with a source and its sidecar, an orphaned sidecar, and files in
+    /// directories saga never enters.
+    fn walked_tree(test_name: &str) -> PathBuf {
+        let dir = temp_dir(test_name).canonicalize().unwrap();
+        for sub in ["src", ".git", "node_modules", "target"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        for file in ["src/a.py", "src/.a.py.qa", "src/.gone.py.qa", ".git/b.py", "node_modules/c.py", "target/d.py"] {
+            std::fs::write(dir.join(file), "").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn the_walk_keeps_hidden_files_and_never_enters_hidden_or_junk_directories() {
+        let dir = walked_tree("walk");
+        let sources = find_files(&dir, &[], &|name| name.ends_with(".py")).unwrap();
+        assert_eq!(sources, [dir.join("src/a.py")]);
+        let sidecars = find_files(&dir, &[], &|name| name.ends_with(".qa")).unwrap();
+        assert_eq!(sidecars, [dir.join("src/.a.py.qa"), dir.join("src/.gone.py.qa")]);
+        assert!(find_files(&dir, &["src"], &|name| name.ends_with(".py")).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tree_that_cannot_be_listed_whole_is_a_failure_naming_what_could_not_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = walked_tree("unlistable");
+        let locked = dir.join("src");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let failure = find_files(&dir, &[], &|name| name.ends_with(".py")).unwrap_err();
+        let sweep = remove_orphaned_sidecars(&dir);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(failure.class, "read_error");
+        assert!(failure.to_string().contains("src"), "{failure}");
+        assert!(sweep.is_err(), "nothing is removed from a tree that was not listed whole");
+        assert!(dir.join("src/.gone.py.qa").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_sidecar_whose_source_the_listing_shows_absent_is_removed() {
+        let dir = walked_tree("orphans");
+        let sweep = remove_orphaned_sidecars(&dir).unwrap();
+        assert_eq!(sweep.removed, [dir.join("src/.gone.py.qa")]);
+        assert!(sweep.not_removed.is_empty());
+        assert!(dir.join("src/.a.py.qa").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

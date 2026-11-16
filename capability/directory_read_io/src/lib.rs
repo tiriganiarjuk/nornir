@@ -22,8 +22,9 @@ use sha2::{Digest, Sha256};
 use failure_mode_core::Failure;
 use schemas_embedded::DIRECTORY_LISTING;
 
-/// What to list: how deep, whether hidden entries count, whether files are hashed.
-#[derive(Debug, Clone, Copy, Default)]
+/// What to list: how deep, whether hidden entries count, whether files are hashed,
+/// and which directories the walk stays out of. The default enters everything.
+#[derive(Debug, Clone, Default)]
 pub struct ListOptions {
     /// `None` lists the whole tree; `Some(1)` lists the root's own entries only.
     pub max_depth: Option<u32>,
@@ -31,6 +32,11 @@ pub struct ListOptions {
     pub include_hidden: bool,
     /// A sha256 of every file's content.
     pub with_hashes: bool,
+    /// Directory names the walk neither lists nor enters, at any depth.
+    pub prune_directories: Vec<String>,
+    /// The walk neither lists nor enters a directory whose name starts with `.`,
+    /// while `include_hidden` still governs hidden files.
+    pub prune_hidden_directories: bool,
 }
 
 /// One entry, by its path relative to the root.
@@ -170,6 +176,11 @@ fn visit_entry(walk: &mut Walk<'_>, path: &Path, depth: u32) {
     if metadata.file_type().is_symlink() {
         walk.entries.push(DirectoryEntry { path: relative, kind: EntryKind::Symlink, size: None, sha256: None });
     } else if metadata.is_dir() {
+        let pruned = (walk.options.prune_hidden_directories && name.starts_with('.'))
+            || walk.options.prune_directories.iter().any(|pruned_name| pruned_name == name);
+        if pruned {
+            return;
+        }
         walk.entries.push(DirectoryEntry { path: relative, kind: EntryKind::Directory, size: None, sha256: None });
         if walk.options.max_depth.map_or(true, |max_depth| depth < max_depth) {
             walk_level(walk, path, depth + 1);
@@ -260,6 +271,38 @@ mod tests {
         let options = ListOptions { include_hidden: true, ..ListOptions::default() };
         let listing = list_directory(dir.to_str().unwrap(), options).unwrap();
         assert!(paths(&listing).contains(&".hidden/secret"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_pruned_directory_is_neither_listed_nor_entered_at_any_depth() {
+        let dir = temp_tree("prune_named");
+        let options = ListOptions { prune_directories: vec!["Ada".to_string()], ..ListOptions::default() };
+        let listing = list_directory(dir.to_str().unwrap(), options).unwrap();
+        assert_eq!(paths(&listing), ["people", "top.txt"]);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hidden_directories_can_be_pruned_while_hidden_files_are_kept() {
+        let dir = temp_tree("prune_hidden");
+        fs::write(dir.join("people/.Ada.qa"), "{}").unwrap();
+        let options = ListOptions { include_hidden: true, prune_hidden_directories: true, ..ListOptions::default() };
+        let listing = list_directory(dir.to_str().unwrap(), options).unwrap();
+        assert!(paths(&listing).contains(&"people/.Ada.qa"));
+        assert!(!paths(&listing).iter().any(|path| path.starts_with(".hidden")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_pruned_directory_that_cannot_be_read_is_no_failure() {
+        let dir = temp_tree("prune_unreadable");
+        let locked = dir.join("people/Ada");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let options = ListOptions { prune_directories: vec!["Ada".to_string()], ..ListOptions::default() };
+        let listing = list_directory(dir.to_str().unwrap(), options);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(paths(&listing.unwrap()), ["people", "top.txt"]);
         fs::remove_dir_all(&dir).ok();
     }
 

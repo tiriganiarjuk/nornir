@@ -76,13 +76,19 @@ struct Args {
 // Directory mode
 // =============================================================================
 
-fn find_source_files(search_dir: &Path, kind: Kind) -> Vec<PathBuf> {
+/// What a refusal prints: the failure class on the first line, then the message.
+fn refusal(failure: failure_mode_core::Failure) -> String {
+    format!("{}\n{failure}", failure.class)
+}
+
+fn find_source_files(search_dir: &Path, kind: Kind) -> Result<Vec<PathBuf>, String> {
     saga_runner::find_files(search_dir, &[], &|name| match kind {
         Kind::Py => name.ends_with(".py"),
         Kind::Rs => name.ends_with(".rs"),
         Kind::Svelte => name.ends_with(".svelte"),
         Kind::All => name.ends_with(".py") || name.ends_with(".rs") || name.ends_with(".svelte"),
     })
+    .map_err(refusal)
 }
 
 fn kind_label(kind: Kind) -> &'static str {
@@ -98,16 +104,25 @@ fn strip_sidecars(search_dir: &Path) -> Result<(), String> {
     let resolved = search_dir.canonicalize().unwrap_or_else(|_| search_dir.to_path_buf());
     let qa_files = saga_runner::find_files(&resolved, &[], &|name| {
         name.ends_with(".qa") && name.starts_with('.')
-    });
+    })
+    .map_err(refusal)?;
 
     let mut removed = 0usize;
+    let mut not_removed = 0usize;
     for qa_file in &qa_files {
-        if std::fs::remove_file(qa_file).is_ok() {
-            removed += 1;
+        match std::fs::remove_file(qa_file) {
+            Ok(()) => removed += 1,
+            Err(io_err) => {
+                eprintln!("  FAIL {}: {}", qa_file.display(), io_err);
+                not_removed += 1;
+            }
         }
     }
 
-    eprintln!("[saga] stripped {} .qa sidecars from {}", removed, search_dir.display());
+    eprintln!(
+        "[saga] stripped {} .qa sidecars from {}, {} could not be removed",
+        removed, search_dir.display(), not_removed
+    );
     Ok(())
 }
 
@@ -115,12 +130,18 @@ fn run_directory(search_dir: &Path, force: bool, kind: Kind) -> Result<(), Strin
     let project_root = search_dir.canonicalize().unwrap_or_else(|_| search_dir.to_path_buf());
 
     // Remove orphaned .qa sidecars before generation
-    let orphans = saga_runner::remove_orphaned_sidecars(&project_root);
-    if !orphans.is_empty() {
-        eprintln!("[saga] removed {} orphaned .qa sidecars", orphans.len());
+    let orphans = saga_runner::remove_orphaned_sidecars(&project_root).map_err(refusal)?;
+    for (sidecar, reason) in &orphans.not_removed {
+        eprintln!("  FAIL {}: orphaned, and could not be removed: {}", sidecar.display(), reason);
+    }
+    if !orphans.removed.is_empty() || !orphans.not_removed.is_empty() {
+        eprintln!(
+            "[saga] removed {} orphaned .qa sidecars, {} could not be removed",
+            orphans.removed.len(), orphans.not_removed.len()
+        );
     }
 
-    let files = find_source_files(&project_root, kind);
+    let files = find_source_files(&project_root, kind)?;
 
     if files.is_empty() {
         eprintln!("[saga] no {} files found in {}", kind_label(kind), search_dir.display());
