@@ -42,7 +42,7 @@ A built tool is one crate with two faces: a CLI binary always, and a PyO3 module
 | `write_bytes_verify_` | `binary_writers/` | Takes bytes, verifies them against one binary format and the shape the caller states, writes the file atomically |
 | `create_` | `presence/` | Makes a thing exist where its existence is the point and its content is not: a flag (an empty file) — `create_flag_{name}` |
 | `remove_` | `presence/` | Takes such a thing away, only while it is still what `create_` made: a flag only while it is empty — `remove_flag_{name}` |
-| `hook_` | `hooks/` | Intercepts an LLM tool call for security/quality |
+| `hook_` | `hooks/` | Runs on a Claude Code hook event: gates or assesses a tool call, or acts on a session event (start, end, stop, notification, compaction) |
 | `send_` | `senders/` | Fire-and-forget datagram to hlidskjalf socket |
 | `rewrite_` | `rewriters/` | Reads JSON on stdin, modifies content, writes JSON on stdout |
 | `split_` | `dispatchers/` | Splits input into batches for parallel processing |
@@ -318,6 +318,4 @@ To add a new data shape:
 
 ## Workspace Dependencies
 
-All external crates declared in root `Cargo.toml` `[workspace.dependencies]`. Reference as `{ workspace = true }` in crate Cargo.toml. Never pin a version in a crate's own Cargo.toml.
-
-Current: serde 1.0, serde_json 1.0, serde_yaml 0.9, toml 0.8, toon-format 0.4, jsonschema 0.29, thiserror 2.0, pyo3 0.22, regex 1.11, jaq-interpret 1.5, jaq-parse 1.0, tree-sitter 0.25, tree-sitter-css 0.25, tree-sitter-html 0.23, tree-sitter-python 0.25, tree-sitter-rust 0.24, tree-sitter-typescript 0.23, sha2 0.10, flate2 1.1, png 0.18, clap 4 (derive), libc 0.2, reqwest 0.12 (blocking), dotenvy 0.15, rodio 0.19.
+All external crates declared in root `Cargo.toml` `[workspace.dependencies]`. Reference as `{ workspace = true }` in crate Cargo.toml. Never pin a version in a crate's own Cargo.toml. What is declared, and at which version, is read from that table.

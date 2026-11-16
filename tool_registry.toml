@@ -2,7 +2,7 @@
 # Each entry describes a writer binary's capabilities so regin can match
 # an agent's output spec to the correct tool.
 #
-# Generated entries are appended by generate_writer.py.
+# generate_writer.py prints a writer's entry; it is pasted here by hand.
 
 [[tools]]
 binary_name = "append_embedding_normalize_batch_20"

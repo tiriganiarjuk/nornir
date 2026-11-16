@@ -169,29 +169,17 @@ If you see logic in a binary that overlaps with any crate in that table, that's 
 
 **Why it matters:** Gleipnir runs as a post-edit hook on every file change. If a check fires falsely, every session sees the false positive, every session dismisses it, and the dismissal habit transfers to real violations. The check becomes invisible. Conversely, a check that misses common violation patterns provides false confidence.
 
-**Current gleipnir check categories (Rust):**
-- `no_unwrap` — .unwrap()/.expect() in production code (exempts static/LazyLock/const/test)
-- `no_println` — println!/dbg! in library code (exempts main.rs, test code, output-named functions)
-- `no_clone_spam` — .clone() without ownership justification (exempts return position, collection insert, struct fields, match arms, iterators, test code)
-- `no_string_abuse` — "literal".to_string() / String::from("literal") allocations
-- `no_pub_overuse` — too many pub functions in non-entry-point files
-- `no_underscore_prefix` — _variable used as actual variable (not genuinely unused)
-- `function_length_rs` — functions exceeding line threshold
-- `nesting_depth_rs` — deeply nested control flow
-- `short_names` / `numbered_names` — single-letter or numbered variable/param names
-- `suppression` — #[allow(...)], clippy suppression attributes outside test code
+**Where the checks are:** the registered checks are `CHECK_REGISTRY` in
+`core/gleipnir_core/src/matrix.rs`; which run on Python files is the matrix
+(`core/gleipnir_core/GLEIPNIR_MATRIX.md`), and the Rust, Svelte/TypeScript, CSS and HTML lists are
+in `core/gleipnir_core/src/lib.rs`. Each check's exemptions are in its own code. Read them there —
+a list in this guide would be out of date by the next change.
 
 **Questions to ask:**
 - Does a check fire on code patterns that are genuinely correct? Document the pattern and propose an exemption.
 - Does a check miss common violation patterns? Document the missed case and propose a detection addition.
 - Are the exemption rules correct? A check that exempts "test code" should correctly identify test modules, test functions, and test helper functions — not just `#[test]` annotations.
 - Is the check's error message actionable? A message that says "violation found" without explaining what to do is useless. A message that explains the principle and gives a concrete fix direction is valuable.
-
-**Current known areas for gleipnir improvement:**
-- `no_clone_spam` — ownership-transferring call patterns (`.push()`, `.insert()`) could be recognized more broadly
-- `no_string_abuse` — same ownership-transfer recognition applies to `.to_string()` in return position
-- `nesting_depth_rs` — `match` arms inside `for` loops are counted as nesting but are often the idiomatic pattern
-- `no_println` — `main()` function in binary crates and output-named functions should be exempt
 
 ---
 
