@@ -1,11 +1,12 @@
-//! Shared reader IO — the runtime-schema sibling of `gate_io`.
+//! The one engine for "read, convert, validate".
 //!
-//! A reader reads one structured-file format from disk, converts it to JSON
-//! through `format_core`, validates it against a JSON Schema loaded BY NAME
-//! from a directory at call time, and returns the validated JSON string. The
-//! schema is a parameter, not a compile-time embed: the consuming project owns
-//! its schemas. Each `readers/read_{format}_validate_json` crate is a thin PyO3
-//! wrapper over `read_validate_json` with its format fixed.
+//! It reads one structured-file format from disk, converts it to JSON through
+//! `format_core`, validates it against a schema, and returns the validated JSON
+//! string. Where the schema comes from is the one choice a tool fixes
+//! (`HOW_A_NORNIR_TOOL_IS_MADE.md` § A generated variant adds constraints): a
+//! `SchemaSource::Named` schema is loaded by name from a directory at call time —
+//! the readers; a `SchemaSource::Embedded` schema is compiled into the binary, and
+//! may also have the paths the data names verified on disk — the gates.
 //!
 //! Also home to the tomlx readers. A `.tomlx` file's annotations type its values —
 //! units converted, paths resolved — through `format_core::tomlx`.
@@ -33,6 +34,20 @@ use format_core::convert::{
 };
 use format_core::serialize::to_json;
 use format_core::tomlx::{parse_tomlx, TomlxOutput};
+use schema_core::EmbeddedValidator;
+
+// =============================================================================
+// Schema sources
+// =============================================================================
+
+/// Where the schema that validates the data comes from.
+pub enum SchemaSource<'a> {
+    /// `{dir}/{name}.schema.json`, loaded at call time and compiled once per process.
+    Named { name: &'a str, dir: &'a str },
+    /// A schema compiled into the binary. With `verify_paths`, every
+    /// `path_exists_absolute` field in the data must name a path that exists.
+    Embedded { validator: &'a EmbeddedValidator, verify_paths: bool },
+}
 
 // =============================================================================
 // Source formats
@@ -118,6 +133,13 @@ pub enum ReaderError {
 
     #[error("No type annotations in '{path}' — read_tomlx_json_schema needs at least one annotated section")]
     TomlxNoSchema { path: String },
+
+    #[error("Embedded schema '{name}' is unusable: {message}")]
+    EmbeddedSchemaInvalid { name: String, message: String },
+
+    /// The paths the data names that do not exist, every one at once.
+    #[error("{0}")]
+    PathsMissing(String),
 }
 
 impl ReaderError {
@@ -130,9 +152,11 @@ impl ReaderError {
             ReaderError::SchemaReadFailed { .. }
             | ReaderError::SchemaNotJson { .. }
             | ReaderError::SchemaCompileFailed { .. }
-            | ReaderError::TomlxNoSchema { .. } => "schema_error",
+            | ReaderError::TomlxNoSchema { .. }
+            | ReaderError::EmbeddedSchemaInvalid { .. } => "schema_error",
             ReaderError::ValidationFailed(_) => "validation_error",
             ReaderError::CachePoisoned(_) => "cache_error",
+            ReaderError::PathsMissing(_) => "path_error",
         }
     }
 }
@@ -205,6 +229,12 @@ pub fn read_validate_json(
     schema_name: &str,
     schema_dir: &str,
 ) -> Result<String, ReaderError> {
+    read_validate(format, file_path, &SchemaSource::Named { name: schema_name, dir: schema_dir })
+}
+
+/// Read `file_path` as `format`, convert to JSON, validate against `schema`,
+/// return the validated JSON string.
+pub fn read_validate(format: SourceFormat, file_path: &str, schema: &SchemaSource<'_>) -> Result<String, ReaderError> {
     let content = read_file(file_path)?;
 
     let json_str = format.to_json(&content).map_err(|format_err| ReaderError::ParseFailed {
@@ -218,8 +248,39 @@ pub fn read_validate_json(
         message: json_err.to_string(),
     })?;
 
-    validate_against_named_schema(&data, schema_name, schema_dir)?;
+    validate_against(&data, &json_str, schema)?;
     Ok(json_str)
+}
+
+/// Validate parsed JSON — `data`, whose text is `json_str` — against `schema`.
+pub fn validate_against(data: &Value, json_str: &str, schema: &SchemaSource<'_>) -> Result<(), ReaderError> {
+    match schema {
+        SchemaSource::Named { name, dir } => validate_against_named_schema(data, name, dir),
+        SchemaSource::Embedded { validator, verify_paths } => {
+            validate_against_embedded_schema(json_str, validator)?;
+            if *verify_paths {
+                verify_named_paths(json_str, validator)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_against_embedded_schema(json_str: &str, validator: &EmbeddedValidator) -> Result<(), ReaderError> {
+    let unusable = |message: String| ReaderError::EmbeddedSchemaInvalid { name: validator.schema_name().to_string(), message };
+    let result = validator.validate(json_str).map_err(|schema_err| unusable(schema_err.to_string()))?;
+    if result.valid {
+        Ok(())
+    } else {
+        Err(ReaderError::ValidationFailed(result.message))
+    }
+}
+
+fn verify_named_paths(json_str: &str, validator: &EmbeddedValidator) -> Result<(), ReaderError> {
+    path_verify_io::verify_paths(validator.schema_json(), json_str).map_err(|path_err| match path_err {
+        error_core::NornirError::Path(missing) => ReaderError::PathsMissing(missing.to_string()),
+        other => ReaderError::EmbeddedSchemaInvalid { name: validator.schema_name().to_string(), message: other.to_string() },
+    })
 }
 
 /// Validate parsed JSON against `{schema_dir}/{schema_name}.schema.json`, loaded

@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
-error_core = { path = "../../core/error_core" }
-format_core = { path = "../../core/format_core" }
-path_verify_io = { path = "../path_verify_io" }
+reader_io = { path = "../reader_io" }
 schema_core = { path = "../../core/schema_core" }
+text_writer_io = { path = "../text_writer_io" }
+thiserror = { workspace = true }

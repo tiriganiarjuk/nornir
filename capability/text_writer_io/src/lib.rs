@@ -19,8 +19,9 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use format_core::serialize::{to_markdown_document, to_toml, to_toon, to_xml, to_yaml};
-use reader_io::{validate_against_named_schema, ReaderError};
+use format_core::convert::json_to_toml;
+use format_core::serialize::{to_markdown_document, to_toon, to_xml, to_yaml};
+use reader_io::{validate_against, ReaderError, SchemaSource};
 
 /// Which file format a text writer writes — the writing twin of `reader_io::SourceFormat`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +89,8 @@ impl TextWriteError {
 fn rendered(format: TextFormat, json_data: &str, data: &Value) -> Result<String, String> {
     let converted = match format {
         TextFormat::Json => return Ok(json_data.to_string()),
-        TextFormat::Toml => to_toml(data),
+        // json_to_toml names every null and its fix when the data cannot be TOML.
+        TextFormat::Toml => json_to_toml(json_data),
         TextFormat::Yaml => to_yaml(data),
         TextFormat::Toon => to_toon(data),
         TextFormat::Xml => to_xml(data),
@@ -124,11 +126,22 @@ pub fn validate_render(
     schema_name: &str,
     schema_dir: &str,
 ) -> Result<String, TextWriteError> {
+    validate_render_with(format, json_data, file_path, &SchemaSource::Named { name: schema_name, dir: schema_dir })
+}
+
+/// Validate `json_data` against `schema` and convert it to `format`: the exact text a
+/// write of it puts on disk, final newline included. Nothing is written.
+pub fn validate_render_with(
+    format: TextFormat,
+    json_data: &str,
+    file_path: &str,
+    schema: &SchemaSource<'_>,
+) -> Result<String, TextWriteError> {
     let data: Value = serde_json::from_str(json_data).map_err(|json_err| TextWriteError::NotJson {
         path: file_path.to_string(),
         message: json_err.to_string(),
     })?;
-    validate_against_named_schema(&data, schema_name, schema_dir)
+    validate_against(&data, json_data, schema)
         .map_err(|source| TextWriteError::SchemaRefused { path: file_path.to_string(), source })?;
     let text = rendered(format, json_data, &data)
         .map_err(|message| TextWriteError::NotExpressible { path: file_path.to_string(), message })?;
@@ -144,7 +157,18 @@ pub fn validate_write(
     schema_name: &str,
     schema_dir: &str,
 ) -> Result<(), TextWriteError> {
-    let text = validate_render(format, json_data, file_path, schema_name, schema_dir)?;
+    validate_write_with(format, json_data, file_path, &SchemaSource::Named { name: schema_name, dir: schema_dir })
+}
+
+/// Validate `json_data` against `schema`, convert it to `format`, then write it to
+/// `file_path`, with a final newline.
+pub fn validate_write_with(
+    format: TextFormat,
+    json_data: &str,
+    file_path: &str,
+    schema: &SchemaSource<'_>,
+) -> Result<(), TextWriteError> {
+    let text = validate_render_with(format, json_data, file_path, schema)?;
     write_validated_text(file_path, &text)
 }
 

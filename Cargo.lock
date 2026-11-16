@@ -1577,10 +1577,10 @@ dependencies = [
 name = "gate_io"
 version = "0.1.0"
 dependencies = [
- "error_core",
- "format_core",
- "path_verify_io",
+ "reader_io",
  "schema_core",
+ "text_writer_io",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3541,6 +3541,8 @@ dependencies = [
  "error_core",
  "format_core",
  "jsonschema",
+ "path_verify_io",
+ "schema_core",
  "serde_json",
  "thiserror 2.0.18",
 ]
