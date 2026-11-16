@@ -4,7 +4,7 @@ Validation-as-code Rust monorepo. Produces compiled binaries, PyO3 gate modules,
 
 ## What This Is
 
-Nornir is a Rust workspace containing 97 crates organised in a strict three-tier architecture:
+Nornir is a Rust workspace organised in a strict three-tier architecture:
 
 - **Core** (pure, no I/O) — type definitions, validation engines, formatting, diffing, error types
 - **Capability** (I/O boundary) — file operations, schema embedding, hook protocols, datagram emission
@@ -83,7 +83,7 @@ Every tool invocation passes through layered security:
 
 ### Post-Execution Quality Assessment
 
-Every file write triggers the full quality pipeline: Gleipnir → Saga → Syn. Violations are injected as context into the LLM's next turn — immediate, automatic, zero-effort feedback.
+Every write to a Python, Rust or Svelte file triggers the full quality pipeline: Gleipnir → Saga → Syn. Violations are injected as context into the LLM's next turn — immediate, automatic, zero-effort feedback.
 
 ### Context Re-Injection
 
@@ -109,7 +109,7 @@ A ratatui terminal interface that assembles composable system prompts from a lib
 
 ### Pipeline Gates
 
-35 compiled Rust/PyO3 gate modules that enforce JSON Schema validation at every stage boundary of the agent definition pipeline. Each gate embeds its schema at compile time. Python code between gates never touches the filesystem.
+Compiled Rust/PyO3 gate modules that enforce JSON Schema validation at every stage boundary of the agent definition pipeline. Each gate embeds its schema at compile time. Python code between gates never touches the filesystem.
 
 ## The Agent Definition Pipeline
 
@@ -124,26 +124,20 @@ One declarative TOML definition produces many benchmarkable, auditable, reproduc
 ```
 core/           Pure Rust libraries. No I/O, no side effects.
 capability/     I/O boundary crates. File operations, schema embedding, protocols.
-gates/          PyO3 gate modules for pipeline stage validation.
-hooks/          Hook binaries for session security and quality enforcement.
-cli/            CLI tools: saga, syn, cc_launch, and pipeline check utilities.
-senders/        Datagram emission binaries for the monitoring dashboard.
-writers/        Atomic file-write binaries for specific output formats.
-watchers/       File-watching and traffic-diffing binaries.
-rewriters/      Request rewriting binaries (compaction injection).
-interceptors/   Traffic interception modules.
-daemons/        Long-running services (bifrost_proxy).
+the rest        Binaries and Python extension modules, one directory per category.
 ```
+
+The category directories, and the verb prefix each one's crates carry, are defined in
+`NORNIR_CONVENTIONS.md` § Architecture and § Naming.
 
 ## Building
 
 All crates are built and deployed through `nornir_deploy`, which wraps Cargo and Maturin to handle the mixed binary/PyO3 workspace.
 
 ```bash
-nornir_deploy --build all        # Build everything
-nornir_deploy --build gates      # Build pipeline gate modules only
-nornir_deploy --build tools      # Build CLI tools only
-nornir_deploy --build hooks      # Build hook binaries only
+nornir_deploy --all              # Build and deploy everything
+nornir_deploy --build gates      # One category
+nornir_deploy --list             # The categories, from deploy_categories.toml
 ```
 
 ## Licence
