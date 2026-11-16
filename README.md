@@ -22,7 +22,7 @@ The conventional response — better prompts, stricter instructions, more code r
 
 Nornir provides that environment. Its tools enforce a zone-based functional architecture through AST analysis, compile-time schema validation, and real-time feedback on every file write. The result is LLM-generated code that follows architectural principles not because the LLM was told to, but because the working environment makes principled code the path of least resistance.
 
-**The proof is visible.** The Python projects built under this system — [Draupnir](https://github.com/johnny111272/draupnir) and [Regin](https://github.com/johnny111272/regin) — are entirely LLM-generated. Compare their file trees to any typical LLM-generated Python project. The typical project is flat, vaguely named, and unnavigable. Draupnir and Regin are spatial maps you can read like blueprints — every file in a zone, every function at a complexity level, every import path encoding its safety contract. Same model wrote both kinds of code. The difference is the infrastructure.
+**The proof is visible.** The Python projects built under this system — [Draupnir](https://github.com/tiriganiarjuk/draupnir) and [Regin](https://github.com/tiriganiarjuk/regin) — are entirely LLM-generated. Compare their file trees to any typical LLM-generated Python project. The typical project is flat, vaguely named, and unnavigable. Draupnir and Regin are spatial maps you can read like blueprints — every file in a zone, every function at a complexity level, every import path encoding its safety contract. Same model wrote both kinds of code. The difference is the infrastructure.
 
 ## The Code Quality Triad: Gleipnir, Saga, Syn
 
@@ -115,7 +115,7 @@ Compiled Rust/PyO3 gate modules that enforce JSON Schema validation at every sta
 
 Nornir's gates are one stage of a five-stage pipeline:
 
-**[Verdandi](https://github.com/johnny111272/verdandi)** (type system) → **[Draupnir](https://github.com/johnny111272/draupnir)** (schema generation) → **Nornir Gates** (compiled validation) → **[Regin](https://github.com/johnny111272/regin)** (pipeline resolution) → **[Galdr](https://github.com/johnny111272/galdr)** (composition and render)
+**[Verdandi](https://github.com/tiriganiarjuk/verdandi)** (type system) → **[Draupnir](https://github.com/tiriganiarjuk/draupnir)** (schema generation) → **Nornir Gates** (compiled validation) → **[Regin](https://github.com/tiriganiarjuk/regin)** (pipeline resolution) → **[Galdr](https://github.com/tiriganiarjuk/galdr)** (composition and render)
 
 One declarative TOML definition produces many benchmarkable, auditable, reproducible agent configurations.
 
