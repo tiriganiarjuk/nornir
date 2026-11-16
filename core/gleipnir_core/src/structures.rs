@@ -204,7 +204,6 @@ impl CheckConfig {
     pub fn for_v2(level: Level, zone: Zone, stats: &StatisticsToml) -> Self {
         let key = match level {
             Level::L0 => None,              // structure — no level-specific config
-            Level::Outside => None,         // unclassified — no level-specific config
             Level::L1 => Some("l1"),
             Level::L2 => Some("l2"),
             Level::L3 => Some("l3"),
@@ -212,7 +211,9 @@ impl CheckConfig {
             Level::L5 => Some("l5"),
             Level::L6 => Some("l6"),
             Level::L7 => Some("l7"),
-            Level::L8 => Some("l8"),
+            // A file with no level is held to the outermost level's length,
+            // parameter and nesting limits. It has no complexity band (below).
+            Level::L8 | Level::Outside => Some("l8"),
         };
         let v2_entry = key.and_then(|k| {
             stats.v2.as_ref().and_then(|m| m.levels.get(k))
@@ -222,6 +223,10 @@ impl CheckConfig {
         if let Some(entry) = v2_entry {
             config.min_cc = entry.min_cc.unwrap_or(0);
             config.max_cc = entry.max_cc.unwrap_or(usize::MAX);
+        }
+        if level == Level::Outside {
+            config.min_cc = 0;
+            config.max_cc = usize::MAX;
         }
         // Apply zone-specific overrides (e.g. [v2.transform.l2])
         if let Some(level_key) = key {

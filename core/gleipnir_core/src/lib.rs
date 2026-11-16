@@ -483,10 +483,19 @@ mod tests {
 
     #[test]
     fn for_v2_outside_has_no_cc_band_and_l8_has_one() {
-        let outside = CheckConfig::for_v2(Level::Outside, Zone::Structure, &STATISTICS);
+        let outside = CheckConfig::for_v2(Level::Outside, Zone::Outside, &STATISTICS);
         assert_eq!((outside.min_cc, outside.max_cc), (0, usize::MAX));
         let entry_point = CheckConfig::for_v2(Level::L8, Zone::Orchestrate, &STATISTICS);
         assert_eq!((entry_point.min_cc, entry_point.max_cc), (1, 2));
+    }
+
+    #[test]
+    fn for_v2_outside_keeps_the_outermost_level_s_other_limits() {
+        let outside = CheckConfig::for_v2(Level::Outside, Zone::Outside, &STATISTICS);
+        let entry_point = CheckConfig::for_v2(Level::L8, Zone::Orchestrate, &STATISTICS);
+        assert_eq!(outside.max_function_lines, entry_point.max_function_lines);
+        assert_eq!(outside.max_function_params, entry_point.max_function_params);
+        assert_eq!(outside.max_nesting_depth, entry_point.max_nesting_depth);
     }
 
     #[test]
