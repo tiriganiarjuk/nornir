@@ -6,10 +6,3 @@ upgrade is done; the record of it is git.
 
 ---
 
-## yggdrasil `common_core::list_directory` → `directory_read_io`
-
-`~/ai/smidja/yggdrasil/core/common_core` `list_directory` (used by Kvasir, Ratatoskr and
-Svalinn) becomes a user of `capability/directory_read_io`, so the ecosystem walks directories
-in one place.
-
-**Waits on:** the author's ruling on where the yggdrasil build lives.
