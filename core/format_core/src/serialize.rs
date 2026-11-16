@@ -34,7 +34,8 @@ pub fn to_toml(value: &Value) -> Result<String, FormatError> {
 /// block is written, so the document reads back as the same envelope.
 pub fn to_markdown_document(value: &Value) -> Result<String, FormatError> {
     let (frontmatter, body) = envelope_parts(value)?;
-    if frontmatter.is_empty() && !body.starts_with("---\n") {
+    let body_opens_with_fence = body.starts_with("---\n") || body.starts_with("---\r\n");
+    if frontmatter.is_empty() && !body_opens_with_fence {
         return Ok(body.to_string());
     }
     if frontmatter.is_empty() {
@@ -95,9 +96,69 @@ pub fn to_xml(value: &Value) -> Result<String, FormatError> {
         )));
     }
 
+    check_xml_element(root_name, root_value)?;
     let mut output = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     write_xml_element(&mut output, root_name, root_value, 0)?;
     Ok(output)
+}
+
+/// Every element name, attribute name and character below `value` is one XML 1.0 allows;
+/// the first that is not is refused by name.
+fn check_xml_element(element_name: &str, value: &Value) -> Result<(), FormatError> {
+    check_xml_name(element_name, "element")?;
+    match value {
+        Value::String(text) => check_xml_characters(text, element_name),
+        Value::Array(items) => items.iter().try_for_each(|item| check_xml_element(element_name, item)),
+        Value::Object(map) => map.iter().try_for_each(|(key, member)| check_xml_member(element_name, key, member)),
+        _ => Ok(()),
+    }
+}
+
+fn check_xml_member(element_name: &str, key: &str, member: &Value) -> Result<(), FormatError> {
+    if let Some(attribute_name) = key.strip_prefix('@') {
+        check_xml_name(attribute_name, "attribute")?;
+        return member.as_str().map_or(Ok(()), |text| check_xml_characters(text, key));
+    }
+    if key == "#text" {
+        return member.as_str().map_or(Ok(()), |text| check_xml_characters(text, element_name));
+    }
+    check_xml_element(key, member)
+}
+
+fn check_xml_name(name: &str, kind: &str) -> Result<(), FormatError> {
+    let mut characters = name.chars();
+    let starts = characters.next().is_some_and(is_xml_name_start);
+    if starts && characters.all(is_xml_name_character) {
+        return Ok(());
+    }
+    Err(FormatError::Conversion(format!("'{name}' is not a name XML allows for an {kind}")))
+}
+
+fn is_xml_name_start(character: char) -> bool {
+    matches!(character,
+        ':' | '_' | 'A'..='Z' | 'a'..='z'
+        | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
+        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
+        | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
+}
+
+fn is_xml_name_character(character: char) -> bool {
+    is_xml_name_start(character)
+        || matches!(character, '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
+}
+
+fn check_xml_characters(text: &str, holder: &str) -> Result<(), FormatError> {
+    let allowed = |character: char| {
+        matches!(character, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
+    };
+    match text.chars().find(|character| !allowed(*character)) {
+        None => Ok(()),
+        Some(character) => Err(FormatError::Conversion(format!(
+            "the text of '{holder}' holds the character U+{:04X}, which XML cannot carry",
+            character as u32
+        ))),
+    }
 }
 
 /// Classified members of a JSON object for XML serialization.
@@ -230,19 +291,25 @@ fn write_xml_object(
     Ok(())
 }
 
-/// Escape special characters in XML text content.
+/// Escape special characters in XML text content. A carriage return is written as a
+/// character reference: written raw, a reader turns it into a line feed.
 fn escape_xml_text(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('\r', "&#13;")
 }
 
-/// Escape special characters in XML attribute values.
+/// Escape special characters in XML attribute values. Line breaks and tabs are written
+/// as character references: written raw, a reader turns each into a space.
 fn escape_xml_attr(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\t', "&#9;")
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
 }
 
 // =============================================================================
@@ -467,6 +534,8 @@ pub(crate) fn json_value_to_toml_value(
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Ok(toml::Value::Integer(i))
+            } else if n.is_u64() {
+                Err(format!("the integer {n} is beyond TOML's largest integer, 9223372036854775807"))
             } else if let Some(f) = n.as_f64() {
                 Ok(toml::Value::Float(f))
             } else {
@@ -525,6 +594,35 @@ mod tests {
         let value = json!({"key": null});
         let err = to_toml(&value).unwrap_err();
         assert!(matches!(err, FormatError::Conversion(_)));
+    }
+
+    #[test]
+    fn test_to_toml_integer_beyond_its_range_fails() {
+        let err = to_toml(&json!({"key": 9223372036854775808_u64})).unwrap_err();
+        assert!(err.to_string().contains("beyond TOML's largest integer"), "{err}");
+        assert!(to_toml(&json!({"key": 9223372036854775807_i64})).is_ok());
+    }
+
+    #[test]
+    fn test_to_xml_refuses_names_and_characters_xml_does_not_allow() {
+        for value in [
+            json!({"with space": "x"}),
+            json!({"root": {"occurrence/birth": "x"}}),
+            json!({"root": {"1abc": "x"}}),
+            json!({"root": {"@bad name": "x"}}),
+            json!({"root": {"a": "nul\u{0}"}}),
+            json!({"root": {"@k": "bell\u{7}"}}),
+        ] {
+            assert!(matches!(to_xml(&value).unwrap_err(), FormatError::Conversion(_)), "{value}");
+        }
+    }
+
+    #[test]
+    fn test_to_xml_line_breaks_survive_in_attributes_and_text() {
+        let value = json!({"root": {"@k": "a\nb\tc\rd", "#text": "x\ry", "child": "z"}});
+        let text = to_xml(&value).unwrap();
+        assert!(text.contains("k=\"a&#10;b&#9;c&#13;d\""), "{text}");
+        assert_eq!(crate::parse::xml(&text).unwrap(), value);
     }
 
     #[test]

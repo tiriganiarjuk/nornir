@@ -80,6 +80,11 @@ pub enum FormatError {
     #[error("Conversion error: {0}")]
     Conversion(String),
 
+    /// The source is valid in its own format and holds a value JSON cannot carry:
+    /// a TOML date-time, a not-a-number, an infinity.
+    #[error("{0}")]
+    ValueNotJson(String),
+
     #[error("{message}")]
     Educational { message: String },
 }

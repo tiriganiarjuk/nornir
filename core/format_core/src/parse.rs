@@ -10,16 +10,46 @@ pub fn json(content: &str) -> Result<Value, FormatError> {
     serde_json::from_str(content).map_err(|e| FormatError::JsonParse(e.to_string()))
 }
 
-/// Parse YAML string to Value.
+/// Parse YAML string to Value. A document holding `.inf` or `.nan` is refused: JSON has
+/// no form for either.
 pub fn yaml(content: &str) -> Result<Value, FormatError> {
-    serde_yaml::from_str(content).map_err(|e| FormatError::YamlParse(e.to_string()))
+    let value = serde_yaml::from_str(content).map_err(|e| FormatError::YamlParse(e.to_string()))?;
+    if may_hold_non_finite(content) {
+        let typed: serde_yaml::Value =
+            serde_yaml::from_str(content).map_err(|e| FormatError::YamlParse(e.to_string()))?;
+        refuse_non_finite(&typed)?;
+    }
+    Ok(value)
 }
 
-/// Parse TOML string to Value (via toml::Value intermediate).
+/// Whether the text spells an infinity or a not-a-number anywhere — the cheap test that
+/// decides whether the document is examined value by value.
+fn may_hold_non_finite(content: &str) -> bool {
+    let lowered = content.to_ascii_lowercase();
+    lowered.contains(".inf") || lowered.contains(".nan")
+}
+
+fn refuse_non_finite(value: &serde_yaml::Value) -> Result<(), FormatError> {
+    match value {
+        serde_yaml::Value::Number(number) if number.is_nan() || number.is_infinite() => Err(
+            FormatError::ValueNotJson(format!("the float {number} is not a finite number")),
+        ),
+        serde_yaml::Value::Sequence(items) => items.iter().try_for_each(refuse_non_finite),
+        serde_yaml::Value::Mapping(map) => map.iter().try_for_each(|(key, item)| {
+            refuse_non_finite(key)?;
+            refuse_non_finite(item)
+        }),
+        serde_yaml::Value::Tagged(tagged) => refuse_non_finite(&tagged.value),
+        _ => Ok(()),
+    }
+}
+
+/// Parse TOML string to Value (via toml::Value intermediate). A date-time, an infinity or
+/// a not-a-number is refused: JSON has no form for any of them.
 pub fn toml(content: &str) -> Result<Value, FormatError> {
     let toml_value: toml::Value =
         toml::from_str(content).map_err(|e| FormatError::TomlParse(e.to_string()))?;
-    toml_value_to_json_value(toml_value)
+    toml_value_to_json_value(toml_value, "")
 }
 
 /// Parse TOON string to Value.
@@ -50,10 +80,13 @@ pub fn xml(content: &str) -> Result<Value, FormatError> {
                     .map_err(|e| FormatError::XmlParse(e))?;
                 let children = parse_xml_children(&mut reader, &tag)
                     .map_err(|e| FormatError::XmlParse(e))?;
-                let element = build_xml_element(attrs, children);
-                let mut root = serde_json::Map::new();
-                root.insert(tag, element);
-                return Ok(Value::Object(root));
+                return xml_document(&mut reader, tag, build_xml_element(attrs, children));
+            }
+            Ok(Event::Empty(ref e)) => {
+                let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let attrs = parse_xml_attributes(e)
+                    .map_err(|e| FormatError::XmlParse(e))?;
+                return xml_document(&mut reader, tag, build_xml_element(attrs, (vec![], None)));
             }
             Ok(Event::Decl(_)) | Ok(Event::Comment(_)) | Ok(Event::PI(_)) => continue,
             Ok(Event::Eof) => {
@@ -67,6 +100,31 @@ pub fn xml(content: &str) -> Result<Value, FormatError> {
             Err(e) => return Err(FormatError::XmlParse(e.to_string())),
         }
     }
+}
+
+/// The document `{"root_name": element}`, once nothing but comments and processing
+/// instructions follows the root element. Anything else after it is refused: a document
+/// has one root, and content past it would be read by no one.
+fn xml_document(
+    reader: &mut quick_xml::Reader<&[u8]>,
+    root_name: String,
+    element: Value,
+) -> Result<Value, FormatError> {
+    use quick_xml::events::Event;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) => break,
+            Ok(Event::Comment(_)) | Ok(Event::PI(_)) => continue,
+            Ok(_) => {
+                return Err(FormatError::XmlParse(format!("content after the root element <{root_name}>")));
+            }
+            Err(e) => return Err(FormatError::XmlParse(e.to_string())),
+        }
+    }
+    let mut root = serde_json::Map::new();
+    root.insert(root_name, element);
+    Ok(Value::Object(root))
 }
 
 /// Parse attributes from an XML start element into a vec of (@key, value) pairs.
@@ -184,21 +242,21 @@ fn build_xml_element(
         map.insert("#text".to_string(), Value::String(t));
     }
 
-    // Insert child elements — group repeated names into arrays
+    // Insert child elements — group repeated names into arrays, each name keeping the
+    // place of its first appearance. A name seen once holds its element; seen again, the
+    // array of them.
+    let mut repeated: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (name, value) in child_elements {
-        if let Some(existing) = map.remove(&name) {
-            // Already seen this name — convert to array or push to existing array
-            match existing {
-                Value::Array(mut arr) => {
-                    arr.push(value);
-                    map.insert(name, Value::Array(arr));
-                }
-                _ => {
-                    map.insert(name, Value::Array(vec![existing, value]));
-                }
+        match map.get_mut(&name) {
+            Some(Value::Array(items)) if repeated.contains(&name) => items.push(value),
+            Some(existing) => {
+                let first = existing.take();
+                *existing = Value::Array(vec![first, value]);
+                repeated.insert(name);
             }
-        } else {
-            map.insert(name, value);
+            None => {
+                map.insert(name, value);
+            }
         }
     }
 
@@ -231,22 +289,21 @@ pub fn markdown(content: &str) -> Result<Value, FormatError> {
 }
 
 /// Split a document into (frontmatter YAML text, body). `None` frontmatter
-/// means no opening fence. The fences are `---` lines: the opening one at
-/// byte 0, the closing one the first subsequent line equal to `---`. The YAML
-/// text is every line between them, each with its line break: a block scalar
-/// that closes the frontmatter keeps the trailing line breaks it was written with.
+/// means no opening fence. The fences are `---` lines, ended by a line feed or
+/// by a carriage return and a line feed: the opening one at byte 0, the closing
+/// one the first subsequent line equal to `---`. The YAML text is every line
+/// between them, each with its line break: a block scalar that closes the
+/// frontmatter keeps the trailing line breaks it was written with.
 fn split_frontmatter(content: &str) -> Result<(Option<&str>, &str), FormatError> {
-    let Some(after_open) = content.strip_prefix("---\n") else {
+    let Some(after_open) = content.strip_prefix("---\n").or_else(|| content.strip_prefix("---\r\n")) else {
         return Ok((None, content));
     };
-    if let Some(body) = after_open.strip_prefix("---\n") {
-        return Ok((Some(""), body));
-    }
-    if let Some(close_at) = after_open.find("\n---\n") {
-        return Ok((Some(&after_open[..close_at + 1]), &after_open[close_at + 5..]));
-    }
-    if after_open.ends_with("\n---") {
-        return Ok((Some(&after_open[..after_open.len() - 3]), ""));
+    let mut yaml_end = 0;
+    for line in after_open.split_inclusive('\n') {
+        if matches!(line, "---" | "---\n" | "---\r\n") {
+            return Ok((Some(&after_open[..yaml_end]), &after_open[yaml_end + line.len()..]));
+        }
+        yaml_end += line.len();
     }
     Err(FormatError::MarkdownParse(
         "opening frontmatter fence without a closing fence".to_string(),
@@ -267,24 +324,33 @@ fn frontmatter_object(parsed: Value) -> Value {
 // TOML → JSON value conversion
 // =============================================================================
 
-fn toml_value_to_json_value(value: toml::Value) -> Result<Value, FormatError> {
+/// `path` names where the value sits, for the refusal of one JSON cannot carry.
+fn toml_value_to_json_value(value: toml::Value, path: &str) -> Result<Value, FormatError> {
     Ok(match value {
         toml::Value::String(s) => Value::String(s),
         toml::Value::Integer(i) => Value::Number(i.into()),
-        toml::Value::Float(f) => serde_json::Number::from_f64(f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
+        toml::Value::Float(f) => Value::Number(serde_json::Number::from_f64(f).ok_or_else(|| {
+            FormatError::ValueNotJson(format!("the float {f} at '{path}' is not a finite number"))
+        })?),
         toml::Value::Boolean(b) => Value::Bool(b),
-        toml::Value::Datetime(dt) => Value::String(dt.to_string()),
+        toml::Value::Datetime(dt) => {
+            return Err(FormatError::ValueNotJson(format!(
+                "'{path}' is the date-time {dt}, a type of its own in TOML"
+            )));
+        }
         toml::Value::Array(arr) => {
-            let items: Result<Vec<Value>, FormatError> =
-                arr.into_iter().map(toml_value_to_json_value).collect();
+            let items: Result<Vec<Value>, FormatError> = arr
+                .into_iter()
+                .enumerate()
+                .map(|(index, item)| toml_value_to_json_value(item, &format!("{path}[{index}]")))
+                .collect();
             Value::Array(items?)
         }
         toml::Value::Table(table) => {
             let mut map = serde_json::Map::new();
             for (k, v) in table {
-                map.insert(k, toml_value_to_json_value(v)?);
+                let below = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                map.insert(k, toml_value_to_json_value(v, &below)?);
             }
             Value::Object(map)
         }
@@ -393,6 +459,69 @@ mod tests {
         }
         let at_end_of_file = markdown("---\nnote: |\n  l1\n---").unwrap();
         assert_eq!(at_end_of_file["frontmatter"]["note"], "l1\n");
+    }
+
+    #[test]
+    fn test_markdown_fences_ended_by_carriage_return_and_line_feed() {
+        let result = markdown("---\r\ntitle: Nunavut\r\ntags:\r\n- Arctic\r\n---\r\nThe body.\r\n").unwrap();
+        assert_eq!(result["frontmatter"], serde_json::json!({"title": "Nunavut", "tags": ["Arctic"]}));
+        assert_eq!(result["body"], "The body.\r\n");
+    }
+
+    #[test]
+    fn test_markdown_empty_block_at_end_of_file() {
+        let result = markdown("---\n---").unwrap();
+        assert_eq!(result["frontmatter"], serde_json::json!({}));
+        assert_eq!(result["body"], "");
+    }
+
+    #[test]
+    fn test_markdown_body_that_is_only_a_fence_reads_back() {
+        for body in ["---", "---\n", "---\r\nx", "---\n---"] {
+            let envelope = serde_json::json!({"frontmatter": {}, "body": body});
+            let document = crate::serialize::to_markdown_document(&envelope).unwrap();
+            assert_eq!(markdown(&document).unwrap(), envelope, "{document:?}");
+        }
+    }
+
+    #[test]
+    fn test_yaml_infinity_and_not_a_number_are_refused() {
+        for text in ["v: .inf", "v: -.INF", "- .nan", "a:\n  b: [1, .NaN]"] {
+            assert!(matches!(yaml(text).unwrap_err(), FormatError::ValueNotJson(_)), "{text}");
+        }
+        assert_eq!(yaml("v: \".inf\"\nw: x.info").unwrap(), serde_json::json!({"v": ".inf", "w": "x.info"}));
+    }
+
+    #[test]
+    fn test_toml_values_json_cannot_carry_are_refused() {
+        for text in ["when = 1979-05-27T07:32:00Z", "day = 1979-05-27", "at = 07:32:00", "v = nan", "[a]\nb = [1.0, inf]"] {
+            assert!(matches!(toml(text).unwrap_err(), FormatError::ValueNotJson(_)), "{text}");
+        }
+        let error = toml("[a]\nb = [1.0, inf]").unwrap_err();
+        assert!(error.to_string().contains("a.b[1]"), "{error}");
+        assert_eq!(toml("when = \"1979-05-27\"").unwrap(), serde_json::json!({"when": "1979-05-27"}));
+    }
+
+    #[test]
+    fn test_xml_self_closing_root() {
+        assert_eq!(xml("<root/>").unwrap(), serde_json::json!({"root": {}}));
+        assert_eq!(xml("<?xml version=\"1.0\"?>\n<root id=\"7\"/>\n").unwrap(), serde_json::json!({"root": {"@id": "7"}}));
+    }
+
+    #[test]
+    fn test_xml_content_after_the_root_is_refused() {
+        for text in ["<a>x</a><b>y</b>", "<a/><b/>", "<a>x</a>trailing"] {
+            assert!(matches!(xml(text).unwrap_err(), FormatError::XmlParse(_)), "{text}");
+        }
+        assert_eq!(xml("<a>x</a>\n<!-- after -->\n").unwrap(), serde_json::json!({"a": "x"}));
+    }
+
+    #[test]
+    fn test_xml_repeated_siblings_keep_the_order_of_first_appearance() {
+        let result = xml("<r><a>1</a><b>2</b><c>3</c><a>4</a><a>5</a></r>").unwrap();
+        let keys: Vec<&String> = result["r"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["a", "b", "c"]);
+        assert_eq!(result["r"]["a"], serde_json::json!(["1", "4", "5"]));
     }
 
     #[test]

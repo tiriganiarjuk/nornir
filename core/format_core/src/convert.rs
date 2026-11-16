@@ -213,7 +213,7 @@ pub fn strip_nulls(value: serde_json::Value) -> serde_json::Value {
 fn value_to_toml(value: &serde_json::Value) -> Result<String, FormatError> {
     match serialize::to_toml(value) {
         Ok(result) => Ok(result),
-        Err(_raw_err) => {
+        Err(raw_err) => {
             // Analyze for educational diagnostics
             let mut issues = Vec::new();
 
@@ -237,9 +237,7 @@ fn value_to_toml(value: &serde_json::Value) -> Result<String, FormatError> {
             }
 
             if issues.is_empty() {
-                Err(FormatError::Conversion(
-                    "TOML serialization failed".to_string(),
-                ))
+                Err(raw_err)
             } else {
                 Err(FormatError::Educational {
                     message: issues.join("\n\n"),

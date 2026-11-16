@@ -56,6 +56,12 @@ standard    = "'{path}' is not valid {format}: {reason}."
 route       = "The file is not in the format this tool reads. Report its path and this message to the user; the file is corrected before it is read again."
 adversarial = "stop"
 
+[file_value_not_json]
+class       = "conversion_error"
+standard    = "'{path}' is valid {format} and holds a value JSON cannot carry: {reason}."
+route       = "This tool hands over JSON, and the value has no JSON form. Report the file's path and this message to the user; the value is written in the file as a string before it is read again."
+adversarial = "stop"
+
 [conversion_produced_invalid_json]
 class       = "conversion_error"
 standard    = "Converting {format} to JSON produced invalid JSON: {reason}."

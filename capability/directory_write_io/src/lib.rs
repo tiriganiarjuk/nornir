@@ -394,7 +394,7 @@ mod tests {
         let report =
             write_directory(generated.to_str().unwrap(), &request(&[page("a/one.md", "1")]), &schema_dir(&dir)).unwrap();
         assert_eq!(report, DirectoryWriteReport { written: 1, unchanged: 0, removed: 0 });
-        assert_eq!(fs::read_to_string(generated.join("a/one.md")).unwrap(), "---\ntitle: T\n---\n1\n");
+        assert_eq!(fs::read_to_string(generated.join("a/one.md")).unwrap(), "---\ntitle: T\n---\n1");
         assert!(generated.join(DIRECTORY_MARKER).is_file());
         fs::remove_dir_all(&dir).ok();
     }
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!(report, DirectoryWriteReport { written: 1, unchanged: 1, removed: 1 });
         assert_eq!(fs::metadata(generated.join("keep.md")).unwrap().modified().unwrap(), old_time);
         assert!(!generated.join("gone.md").exists());
-        assert_eq!(fs::read_to_string(generated.join("change.md")).unwrap(), "---\ntitle: T\n---\n2\n");
+        assert_eq!(fs::read_to_string(generated.join("change.md")).unwrap(), "---\ntitle: T\n---\n2");
         fs::remove_dir_all(&dir).ok();
     }
 

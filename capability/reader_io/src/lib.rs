@@ -103,6 +103,8 @@ impl SourceFormat {
 pub enum ReaderError {
     ReadFailed { path: String, message: String },
     ParseFailed { format: &'static str, path: String, message: String },
+    /// The file is valid in its format and holds a value JSON cannot carry.
+    ValueNotJson { format: &'static str, path: String, message: String },
     ConvertedJsonInvalid { format: &'static str, message: String },
     SchemaReadFailed { path: String, message: String },
     SchemaNotJson { path: String, message: String },
@@ -122,6 +124,7 @@ impl ReaderError {
         match self {
             ReaderError::ReadFailed { path, message } => failure_mode_core::file_unreadable(path, message),
             ReaderError::ParseFailed { format, path, message } => failure_mode_core::file_not_in_format(path, format, message),
+            ReaderError::ValueNotJson { format, path, message } => failure_mode_core::file_value_not_json(path, format, message),
             ReaderError::ConvertedJsonInvalid { format, message } => {
                 failure_mode_core::conversion_produced_invalid_json(format, message)
             }
@@ -234,10 +237,15 @@ pub fn read_validate(format: SourceFormat, file_path: &str, schema: &SchemaSourc
 pub fn read_converted(format: SourceFormat, file_path: &str) -> Result<(String, Value), ReaderError> {
     let content = read_file(file_path)?;
 
-    let json_str = format.to_json(&content).map_err(|format_err| ReaderError::ParseFailed {
-        format: format.label(),
-        path: file_path.to_string(),
-        message: format_err.to_string(),
+    let json_str = format.to_json(&content).map_err(|format_err| match format_err {
+        FormatError::ValueNotJson(message) => {
+            ReaderError::ValueNotJson { format: format.label(), path: file_path.to_string(), message }
+        }
+        other => ReaderError::ParseFailed {
+            format: format.label(),
+            path: file_path.to_string(),
+            message: other.to_string(),
+        },
     })?;
 
     let data: Value = serde_json::from_str(&json_str).map_err(|json_err| ReaderError::ConvertedJsonInvalid {

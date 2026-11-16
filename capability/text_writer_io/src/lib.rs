@@ -20,7 +20,8 @@ use std::path::Path;
 use serde_json::Value;
 
 use format_core::convert::json_to_toml;
-use format_core::serialize::{to_markdown_document, to_toon, to_xml, to_yaml};
+use format_core::serialize::{to_markdown_document, to_yaml};
+use format_core::write_verify::{to_toon_verified, to_xml_verified};
 use failure_mode_core::Failure;
 use reader_io::{validate_against, ReaderError, SchemaSource};
 
@@ -100,22 +101,25 @@ impl std::fmt::Display for TextWriteError {
 impl std::error::Error for TextWriteError {}
 
 /// The text to write: the JSON exactly as given, or the data in the file's format.
+/// TOON and XML are written only when they read back as the data handed over.
 fn rendered(format: TextFormat, json_data: &str, data: &Value) -> Result<String, String> {
     let converted = match format {
         TextFormat::Json => return Ok(json_data.to_string()),
         // json_to_toml names every null and its fix when the data cannot be TOML.
         TextFormat::Toml => json_to_toml(json_data),
         TextFormat::Yaml => to_yaml(data),
-        TextFormat::Toon => to_toon(data),
-        TextFormat::Xml => to_xml(data),
+        TextFormat::Toon => to_toon_verified(data),
+        TextFormat::Xml => to_xml_verified(data),
         TextFormat::Markdown => to_markdown_document(data),
     };
     converted.map_err(|format_err| format_err.to_string())
 }
 
-fn with_final_newline(text: &str) -> String {
-    if text.ends_with('\n') {
-        text.to_string()
+/// The file's text: `text` ended with a line break. A Markdown document is the one
+/// exception — its body is data, and is written to its last byte exactly as given.
+fn file_text(format: TextFormat, text: String) -> String {
+    if format == TextFormat::Markdown || text.ends_with('\n') {
+        text
     } else {
         format!("{text}\n")
     }
@@ -127,12 +131,12 @@ fn write_validated_text(file_path: &str, text: &str) -> Result<(), TextWriteErro
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|io_err| write_failed(format!("create directory: {io_err}")))?;
     }
-    write_engine::write_file_atomic(path, &with_final_newline(text)).map_err(write_failed)
+    write_engine::write_file_atomic(path, text).map_err(write_failed)
 }
 
 /// Validate `json_data` against `{schema_dir}/{schema_name}.schema.json` and convert
-/// it to `format`: the exact text a write of it puts on disk, final newline included.
-/// `file_path` names the file in the errors; nothing is written.
+/// it to `format`: the exact text a write of it puts on disk, its final line break
+/// included. `file_path` names the file in the errors; nothing is written.
 pub fn validate_render(
     format: TextFormat,
     json_data: &str,
@@ -144,7 +148,7 @@ pub fn validate_render(
 }
 
 /// Validate `json_data` against `schema` and convert it to `format`: the exact text a
-/// write of it puts on disk, final newline included. Nothing is written.
+/// write of it puts on disk, its final line break included. Nothing is written.
 pub fn validate_render_with(
     format: TextFormat,
     json_data: &str,
@@ -159,11 +163,12 @@ pub fn validate_render_with(
         .map_err(|source| TextWriteError::SchemaRefused { path: file_path.to_string(), source })?;
     let text = rendered(format, json_data, &data)
         .map_err(|message| TextWriteError::NotExpressible { path: file_path.to_string(), message })?;
-    Ok(with_final_newline(&text))
+    Ok(file_text(format, text))
 }
 
 /// Validate `json_data` against `{schema_dir}/{schema_name}.schema.json`, convert
-/// it to `format`, then write it to `file_path`, with a final newline.
+/// it to `format`, then write it to `file_path`. Every format but Markdown ends with a
+/// line break; a Markdown document ends where its body ends.
 pub fn validate_write(
     format: TextFormat,
     json_data: &str,
@@ -175,7 +180,7 @@ pub fn validate_write(
 }
 
 /// Validate `json_data` against `schema`, convert it to `format`, then write it to
-/// `file_path`, with a final newline.
+/// `file_path`.
 pub fn validate_write_with(
     format: TextFormat,
     json_data: &str,
@@ -187,7 +192,7 @@ pub fn validate_write_with(
 }
 
 /// Validate `json_data` against `{schema_dir}/{schema_name}.schema.json`, then
-/// write it to `file_path` exactly as given, with a final newline.
+/// write it to `file_path` exactly as given, ended with a line break.
 pub fn validate_write_json(
     json_data: &str,
     file_path: &str,
@@ -455,6 +460,40 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.error_type(), "conversion_error");
         assert!(!big.exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn markdown_ends_where_its_body_ends() {
+        let dir = temp_dir("markdown_last_byte");
+        write_schema(&dir, "markdown_last_byte", ENVELOPE_SCHEMA);
+        for (name, body) in [("open.md", "No final line break"), ("empty.md", ""), ("fence.md", "---")] {
+            let file = dir.join(name);
+            let data = serde_json::json!({"frontmatter": {"title": "x"}, "body": body}).to_string();
+            validate_write(TextFormat::Markdown, &data, file.to_str().unwrap(), "markdown_last_byte", dir_str(&dir)).unwrap();
+            assert_eq!(fs::read_to_string(&file).unwrap(), format!("---\ntitle: x\n---\n{body}"));
+            let expected: Value = serde_json::from_str(&data).unwrap();
+            assert_eq!(read_back(SourceFormat::Markdown, &file, "markdown_last_byte", &dir), expected, "{name}");
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn toon_and_xml_refuse_data_they_would_hand_back_changed() {
+        let dir = temp_dir("verified");
+        write_schema(&dir, "verified", r#"{"type": "object"}"#);
+        for (text_format, data, file_name) in [
+            (TextFormat::Toon, r#"{"big": 18446744073709551615}"#, "out.toon"),
+            (TextFormat::Toon, r#"{"huge": 1e300}"#, "huge.toon"),
+            (TextFormat::Xml, r#"{"root": {"count": 3}}"#, "out.xml"),
+            (TextFormat::Xml, r#"{"root": {"a b": "x"}}"#, "name.xml"),
+            (TextFormat::Toml, r#"{"big": 9223372036854775808}"#, "out.toml"),
+        ] {
+            let file = dir.join(file_name);
+            let error = validate_write(text_format, data, file.to_str().unwrap(), "verified", dir_str(&dir)).unwrap_err();
+            assert_eq!(error.error_type(), "conversion_error", "{file_name}");
+            assert!(!file.exists(), "{file_name}");
+        }
         fs::remove_dir_all(&dir).ok();
     }
 
