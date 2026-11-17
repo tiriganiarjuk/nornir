@@ -165,6 +165,9 @@ Each table in `deploy_categories.toml` is a category. These are the fields `norn
 | `exit_codes` | Runs the binary with no arguments, accepts any code in `valid_exit_codes` | Binaries that exit non-zero on missing arguments but prove they load |
 | `python_import` | Runs `python -c "import <module>"`, expects exit 0 | Every PyO3 module |
 
+Every verify command runs with an empty stdin — `verify_input` for the `stdin` method, nothing
+otherwise — and is stopped after 30 seconds. A verify that is stopped is a failed verify.
+
 **Two-faced crates need no entry for their CLI face.** A PyO3 crate whose `Cargo.toml` declares a
 `python` feature is built by maturin with that feature on. If it also declares a `[[bin]]`, its
 CLI face is built by cargo without the feature, copied to `~/ai/tools/bin/`, and verified to exit 2

@@ -84,10 +84,6 @@ def _pyo3_crates(config: dict) -> list[str]:
     return config.get("pyo3_crates", config.get("gate_crates", []))
 
 
-def _pyo3_verify(config: dict) -> str:
-    return config.get("pyo3_verify", config.get("gate_verify", "python_import"))
-
-
 # --- Two-faced tools ---
 #
 # A tool is one crate with two faces: its CLI binary, built by cargo with no
@@ -229,39 +225,52 @@ def copy_binaries(crates: list[str], binary_names: dict[str, str], release_dir: 
 
 # --- Verify ---
 
+VERIFY_TIMEOUT_SECONDS = 30
+
+
+def run_verify(command: list[str], stdin_text: str | None = None) -> int | None:
+    """Run one verify command. Returns its exit code, or None when it timed out.
+
+    The command's stdin is `stdin_text` when given and empty otherwise, so a
+    binary that reads stdin sees end of input at once. A command still running
+    after VERIFY_TIMEOUT_SECONDS is stopped, and that is a failed verify.
+    """
+    try:
+        result = subprocess.run(
+            command,
+            input=stdin_text.encode() if stdin_text is not None else None,
+            stdin=None if stdin_text is not None else subprocess.DEVNULL,
+            capture_output=True,
+            timeout=VERIFY_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("  verify timed out after {}s: {}", VERIFY_TIMEOUT_SECONDS, " ".join(command))
+        return None
+    return result.returncode
+
+
 def verify_help(binary: Path) -> bool:
     """Verify binary responds to --help (exit 0 or 1)."""
-    result = subprocess.run([str(binary), "--help"], capture_output=True)
-    return result.returncode in (0, 1)
+    return run_verify([str(binary), "--help"]) in (0, 1)
 
 
 def verify_stdin(binary: Path, verify_input: str) -> bool:
     """Verify binary accepts JSON on stdin (exit 0)."""
-    result = subprocess.run(
-        [str(binary)],
-        input=verify_input.encode(),
-        capture_output=True,
-    )
-    return result.returncode == 0
+    return run_verify([str(binary)], stdin_text=verify_input) == 0
 
 
 def verify_exit_codes(binary: Path, valid_codes: list[int]) -> bool:
     """Verify binary exits with an accepted code when run with no args."""
-    result = subprocess.run([str(binary)], capture_output=True)
-    return result.returncode in valid_codes
+    return run_verify([str(binary)]) in valid_codes
 
 
 def verify_python_import(crate: str, python_version: str) -> bool:
     """Verify PyO3 module can be imported."""
-    result = subprocess.run(
-        [
-            python_version, "-c",
-            f"import sys; sys.path.insert(0, '{TOOLS_LIB}'); import {crate}",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
+    command = [
+        python_version, "-c",
+        f"import sys; sys.path.insert(0, '{TOOLS_LIB}'); import {crate}",
+    ]
+    return run_verify(command) == 0
 
 
 def verify_crate(crate: str, binary: Path, method: str, category_config: dict) -> bool:

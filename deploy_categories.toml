@@ -108,10 +108,8 @@ pyo3_crates = [
     "traffic_interceptor_rewriter",
 ]
 python_version = "python3.13"
-pyo3_verify = "python_import"
 
 [gates]
-build = "maturin"
 python_version = "python3.13"
 gate_crates = [
     "gate_raw_definition_input",
@@ -152,7 +150,6 @@ gate_crates = [
     "gate_output_content_input",
     "gate_output_display_input",
 ]
-gate_verify = "python_import"
 
 [readers]
 python_version = "python3.13"
@@ -169,7 +166,6 @@ pyo3_crates = [
     "read_directory_json",
     "read_directory_permitted_json",
 ]
-pyo3_verify = "python_import"
 
 [text_writers]
 python_version = "python3.13"
@@ -182,7 +178,6 @@ pyo3_crates = [
     "write_json_validate_markdown",
     "write_json_validate_directory",
 ]
-pyo3_verify = "python_import"
 
 [presence]
 python_version = "python3.13"
@@ -190,14 +185,12 @@ pyo3_crates = [
     "create_flag_generate_lock",
     "remove_flag_generate_lock",
 ]
-pyo3_verify = "python_import"
 
 [binary_readers]
 python_version = "python3.13"
 pyo3_crates = [
     "read_png_verify_heights",
 ]
-pyo3_verify = "python_import"
 
 [binary_writers]
 python_version = "python3.13"
@@ -205,4 +198,3 @@ pyo3_crates = [
     "write_bytes_verify_png",
     "write_bytes_verify_quantized_mesh",
 ]
-pyo3_verify = "python_import"

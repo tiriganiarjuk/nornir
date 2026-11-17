@@ -22,9 +22,6 @@ check it in one lookup.
 
 Each phase is committed on its own. A finished item leaves this list and its section below.
 
-- **Phase 0 — the deploy tool.** Verify steps get stdin from `/dev/null` and a timeout; the dead
-  deploy config goes (§3 the `hush` hang, §5 dead deploy config). First, because every later
-  phase deploys through it.
 - **Phase 1 — lifecycle hooks, one primitive.** One schema-validated payload reader for orient,
   inject, end_handoff, stop_tts, notify_tts and compact_session_log, with its tests: session ids
   checked before they reach a path (§1), payloads under a schema (§2), stdin parsing and
@@ -97,13 +94,6 @@ readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
 
 - **`hush` interpolates a directory unescaped into a `pkill -f` regex.** `cli/hush/src/main.rs:51-54`. `[B]`
 
-- **`nornir_deploy --build tools` hangs verifying `hush`.** `verify_exit_codes`
-  (`nornir_deploy:248-250`) runs the binary with no arguments, with the caller's stdin and no
-  timeout; `hush` reads stdin, so with stdin held open the deploy waits for ever, after the
-  binaries are copied and before the next category is built. `nornir_deploy --build tools,hooks`
-  stopped there on 2026-11-16 and built no hooks; `nornir_deploy --build hooks < /dev/null`
-  completed. `[Tyr, run]`
-
 - **The tomlx engine differs from its spec.** `core/format_core/TOMLX_SPEC.md` is the authority;
   §1–§5 carry every decision. Test-first against the spec in `format_core::tomlx`, one change per
   commit, `cargo test -p format_core`, then `nornir_deploy --build readers` (every `read_tomlx_*`
@@ -142,9 +132,6 @@ readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
   `hits.toml` and `VOICE.lock`, the announce queue,
   `compact_summary.jsonl`, `thinking_log.jsonl`, `running_transcript.jsonl`.
   `schemas/tools/tool-registry.schema.json` exists and nothing reads it. `[A+B]`
-- **Dead deploy config:** `_pyo3_verify` in `nornir_deploy:87` is never called, and the keys it
-  reads (`pyo3_verify`, `gate_verify`) plus `build = "maturin"` (`deploy_categories.toml:121`) are
-  read by nothing. Remove them. `[A+B]`
 - **The jsonschema `resolve-file` feature is on for core crates** — a `$ref` can read the
   filesystem during validation inside tier 1. `[B]`
 
