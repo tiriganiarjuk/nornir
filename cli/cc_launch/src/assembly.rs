@@ -73,11 +73,24 @@ pub fn write_prompt_file(state: &AppState) -> Result<PathBuf, String> {
     fs::write(&output_path, &prompt)
         .map_err(|e| format!("write prompt file: {e}"))?;
 
-    // Persist assembled prompt into workspace for hook-based re-injection on compact.
-    let workspace_copy = state.workspace_path().join(".SYSTEM_PROMPT.xml");
-    let _ = fs::write(&workspace_copy, &prompt);
+    write_workspace_copy(state.workspace_path(), &prompt)?;
 
     Ok(output_path)
+}
+
+/// Keep the assembled prompt in the workspace, where the session hooks take it
+/// from to put it back after a compaction. A session launched without this copy
+/// loses its instructions at its first compaction, so there is no launch without it.
+fn write_workspace_copy(workspace_path: &Path, prompt: &str) -> Result<(), String> {
+    let workspace_copy = workspace_path.join(".SYSTEM_PROMPT.xml");
+    fs::write(&workspace_copy, prompt).map_err(|io_error| {
+        format!(
+            "cannot write {}: {io_error}. The session would lose its instructions at its first \
+             compaction, so nothing was launched. Make the workspace directory writable, or \
+             launch from one that is.",
+            workspace_copy.display()
+        )
+    })
 }
 
 fn assemble_prompt(state: &AppState) -> Result<String, String> {
@@ -312,4 +325,37 @@ pub fn consume_launch_spec() -> Result<LaunchSpec, String> {
 /// Remove any stale launch spec (e.g. after a TUI quit).
 pub fn discard_launch_spec() {
     let _ = fs::remove_file(launch_spec_path());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspace(test_name: &str) -> PathBuf {
+        let workspace = std::env::temp_dir().join(format!("cc_launch_{test_name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&workspace);
+        workspace
+    }
+
+    #[test]
+    fn the_prompt_is_kept_in_the_workspace() -> Result<(), String> {
+        let workspace = workspace("kept");
+        fs::create_dir_all(&workspace).map_err(|io_error| io_error.to_string())?;
+
+        write_workspace_copy(&workspace, "<prompt/>")?;
+
+        let kept = fs::read_to_string(workspace.join(".SYSTEM_PROMPT.xml")).map_err(|io_error| io_error.to_string())?;
+        assert_eq!(kept, "<prompt/>");
+        Ok(())
+    }
+
+    #[test]
+    fn a_workspace_that_cannot_take_the_prompt_refuses_the_launch() {
+        let missing = workspace("missing");
+
+        let refusal = write_workspace_copy(&missing, "<prompt/>").unwrap_err();
+
+        assert!(refusal.contains(".SYSTEM_PROMPT.xml"), "{refusal}");
+        assert!(refusal.contains("nothing was launched"), "{refusal}");
+    }
 }

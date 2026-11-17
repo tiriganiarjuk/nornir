@@ -64,9 +64,6 @@ readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
 
 ## 3. Malfunction — wrong behaviour today
 
-- **cc_launch swallows a failed write of `.SYSTEM_PROMPT.xml`.** `cli/cc_launch/src/assembly.rs:78`
-  (`let _ = fs::write`). If it fails, the session is never re-injected after compaction. `[B]`
-
 - **Workspace identity collides.** Orient registers by basename, so two projects with the same
   last path component share `control/workspaces/{name}/` and a registry row; Hlidskjalf receives
   two identity formats. `[A+B]` (the primitive is §7)
