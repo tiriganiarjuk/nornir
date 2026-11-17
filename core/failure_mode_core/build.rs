@@ -1,4 +1,5 @@
-//! Compiles failure_modes.toml into one function per failure mode.
+//! Compiles failure_modes.toml into one function per failure mode, the `error.type` table, and
+//! the failure-class schema.
 //!
 //! A missing or unknown field, a class that is not `*_error`, an adversarial return other
 //! than "stop", or a brace that is not a `{slot}` fails the build here. An alert priority
@@ -27,6 +28,8 @@ fn main() -> Result<(), String> {
     let _ = writeln!(generated, "/// The `error.type` table of MUST_READ_BEFORE_BUILDING.md: every failure class,");
     let _ = writeln!(generated, "/// and the failure modes that carry it.");
     let _ = writeln!(generated, "pub const ERROR_TYPE_TABLE: &str = {:?};", error_type_table(&modes_by_class));
+    let _ = writeln!(generated, "/// schemas/tools/failure-class.schema.json: every failure class, as a JSON Schema.");
+    let _ = writeln!(generated, "pub const FAILURE_CLASS_SCHEMA: &str = {:?};", failure_class_schema(&modes_by_class));
 
     let out_dir = std::env::var("OUT_DIR").map_err(|e| format!("OUT_DIR: {e}"))?;
     std::fs::write(Path::new(&out_dir).join("failure_modes.rs"), generated)
@@ -41,6 +44,21 @@ fn error_type_table(modes_by_class: &BTreeMap<String, Vec<&str>>) -> String {
         let _ = writeln!(table, "| `{class}` | {} |", named.join(", "));
     }
     table
+}
+
+/// The JSON Schema of the failure classes: the string an `error.type` can be, for a caller
+/// outside Rust to type the contract with. Class names are checked snake_case, so they need
+/// no escaping.
+fn failure_class_schema(modes_by_class: &BTreeMap<String, Vec<&str>>) -> String {
+    let classes: Vec<String> = modes_by_class.keys().map(|class| format!("\"{class}\"")).collect();
+    format!(
+        "{{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"title\": \"failure-class\",\n  \
+         \"description\": \"GENERATED from core/failure_mode_core/failure_modes.toml; edit the registry, then run: \
+         cargo run -p failure_mode_core --example write_failure_class_schema. Every failure class a tool's error.type \
+         can carry (MUST_READ_BEFORE_BUILDING.md, Approved interfaces).\",\n  \"type\": \"string\",\n  \
+         \"enum\": [{}]\n}}\n",
+        classes.join(", ")
+    )
 }
 
 /// The Rust function for one failure mode.

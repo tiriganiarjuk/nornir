@@ -101,6 +101,15 @@ mod tests {
     }
 
     #[test]
+    fn the_failure_class_schema_is_the_registry_s() {
+        assert!(
+            include_str!("../../../schemas/tools/failure-class.schema.json") == FAILURE_CLASS_SCHEMA,
+            "schemas/tools/failure-class.schema.json is behind the registry — run: \
+             cargo run -p failure_mode_core --example write_failure_class_schema"
+        );
+    }
+
+    #[test]
     fn a_mode_fills_its_slots_into_its_message() {
         let failure = file_unreadable("/data/config.toml", "No such file or directory");
         assert_eq!(failure.mode, "file_unreadable");

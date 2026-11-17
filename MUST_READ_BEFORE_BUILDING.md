@@ -54,8 +54,10 @@ on `error.type`; `error.message` is for people.
 
 The table is generated from the error registry, `core/failure_mode_core/failure_modes.toml`:
 every class, and the failure modes that carry it. Each mode's entry in the registry says what
-failed and what to do next. `cargo test -p failure_mode_core` fails while this table is behind
-the registry.
+failed and what to do next. The classes are generated as a JSON Schema as well,
+`schemas/tools/failure-class.schema.json`, for a caller outside Rust to type `error.type` with
+(`cargo run -p failure_mode_core --example write_failure_class_schema`). `cargo test -p
+failure_mode_core` fails while this table or that schema is behind the registry.
 
 <!-- error-type-table: generated from core/failure_mode_core/failure_modes.toml — cargo run -p failure_mode_core --example write_error_type_table -->
 | `error.type` | Failure modes |

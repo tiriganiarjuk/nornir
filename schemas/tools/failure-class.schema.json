@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "failure-class",
+  "description": "GENERATED from core/failure_mode_core/failure_modes.toml; edit the registry, then run: cargo run -p failure_mode_core --example write_failure_class_schema. Every failure class a tool's error.type can carry (MUST_READ_BEFORE_BUILDING.md, Approved interfaces).",
+  "type": "string",
+  "enum": ["argument_error", "cache_error", "compression_error", "conversion_error", "instrument_error", "parse_error", "path_error", "read_error", "repair_error", "rules_error", "schema_error", "validation_error", "verification_error", "write_error"]
+}
