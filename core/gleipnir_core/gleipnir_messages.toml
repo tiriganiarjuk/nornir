@@ -587,6 +587,12 @@ signal = "Unrecognized filenames bypass the level system entirely. The file gets
 direction = "Rename the file to one of the valid level names for this zone. In pure/impure/transform zones: ffi.py, primitive.py, simple.py, dispatch.py, composed.py, assembled.py. In the orchestrate zone: orchestrate.py, dispatch.py. Entry points (cli.py, __main__.py) live at the project root, not inside zones. The filename IS the level declaration — it tells gleipnir what rules to apply."
 canary = "LLM creates arbitrarily named files inside zones, bypassing the level system that enforces decomposition and import boundaries."
 
+[file_in_no_zone]
+detail = "This file lies in no zone of the project layout. Every file of a project belongs to a zone: structure/ for data shapes, or logic/pure/, logic/impure/, logic/transform/ or logic/orchestrate/ for code, in a module directory, in a file named for its level."
+signal = "A file beside the layout has no level, no import rules and no complexity band, so nothing bounds what collects in it. The layout is what lets a reader find a piece of code from what it does; a file outside it is found only by someone who already knows it is there."
+direction = "Move what this file holds into the zone its work belongs to: data shapes to structure/, computation without effects to logic/pure/, anything that reads or writes to logic/impure/, the wiring between them to logic/orchestrate/ — under a module directory named for the action, in the file named for its level. A file that is a standalone script — run on its own, imported by nothing — declares itself with PEP 723 inline script metadata."
+canary = "LLM puts new code in a loose file beside the layout (helpers.py, utils.py, a module at the package root) to avoid choosing a zone and a level."
+
 [no_before_validators]
 detail = "BeforeValidator injects implicit transformation during model validation. Transforms should be explicit function calls, not hidden in type annotations."
 signal = "BeforeValidator hides data transformation inside the type system. When model_validate runs, the validator silently mutates input — invisible to the caller, impossible to trace, breaks the principle that transforms are explicit operations in logic zones."

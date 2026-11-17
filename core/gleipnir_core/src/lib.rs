@@ -341,9 +341,31 @@ mod tests {
     #[test]
     fn a_file_in_no_zone_is_told_so_and_is_not_held_to_a_zone_s_rules() {
         let names = check_names("/project/src/pkg/helpers.py", BRANCHING_FUNCTION);
-        assert!(names.contains(&"v2_import_boundaries".to_string()), "the layout finding: {names:?}");
-        for zone_rule in ["v2_structure_no_logic", "v2_structure_bases", "v2_cc_level", "unknown_file_in_zone"] {
+        assert!(names.contains(&"file_in_no_zone".to_string()), "the layout finding: {names:?}");
+        let zone_rules =
+            ["v2_structure_no_logic", "v2_structure_bases", "v2_cc_level", "unknown_file_in_zone", "v2_import_boundaries"];
+        for zone_rule in zone_rules {
             assert!(!names.contains(&zone_rule.to_string()), "{zone_rule} is a zone's rule: {names:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_in_no_zone_is_told_where_its_code_belongs() {
+        let violations = run_checks_v2("/project/src/pkg/helpers.py", BRANCHING_FUNCTION).expect("the source parses");
+        let hit = violations
+            .iter()
+            .find(|found| found.check_name == "file_in_no_zone")
+            .expect("file_in_no_zone must fire on a file beside the layout");
+        assert!(hit.message.contains("helpers.py"));
+        assert_eq!(hit.direction, messages::FILE_IN_NO_ZONE.direction);
+        assert_eq!(hit.severity, structures::Severity::Error);
+    }
+
+    #[test]
+    fn a_package_marker_and_a_file_in_a_zone_are_not_in_no_zone() {
+        for in_place in ["/project/src/pkg/__init__.py", "/project/src/pkg/logic/pure/math/simple.py"] {
+            let names = check_names(in_place, b"");
+            assert!(!names.contains(&"file_in_no_zone".to_string()), "{in_place}: {names:?}");
         }
     }
 

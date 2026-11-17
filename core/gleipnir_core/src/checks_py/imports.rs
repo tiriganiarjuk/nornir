@@ -8,7 +8,7 @@ use crate::classify;
 use crate::parsing::{
     extract_imported_names, extract_module_info, find_nodes_by_type, node_line, node_text,
 };
-use crate::structures::{CheckConfig, Level, ParsedSource, Severity, V2Classification, Violation};
+use crate::structures::{CheckConfig, Level, ParsedSource, Severity, V2Classification, Violation, Zone};
 
 fn violation(line: usize, message: String) -> Violation {
     Violation {
@@ -667,6 +667,12 @@ pub fn check_v2_import_boundaries(
         return violations;
     }
 
+    // A file in no zone has no place in the import hierarchy to judge from;
+    // file_in_no_zone reports it.
+    if source_class.zone == Zone::Outside {
+        return violations;
+    }
+
     if source_class.level == Level::Outside {
         violations.push(violation(
             1,
@@ -1099,12 +1105,19 @@ mod tests {
     }
 
     #[test]
-    fn v2_outside_file_is_violation() {
+    fn v2_file_with_an_unknown_name_in_a_zone_is_violation() {
         let code = "import json\n";
-        let parsed = parse_with_path(code, "/project/src/mypackage/random_file.py");
+        let parsed = parse_with_path(code, "/project/src/mypackage/logic/pure/check/random_file.py");
         let violations = check_v2_import_boundaries(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("outside v2 zone layout"));
+    }
+
+    #[test]
+    fn v2_file_in_no_zone_is_left_to_its_own_check() {
+        let code = "from mypackage.logic.pure.check.simple import run\n";
+        let parsed = parse_with_path(code, "/project/src/mypackage/random_file.py");
+        assert!(check_v2_import_boundaries(&parsed, &default_config()).is_empty());
     }
 
     #[test]

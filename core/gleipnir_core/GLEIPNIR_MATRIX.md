@@ -109,7 +109,7 @@ entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
 | no_type_checking_imports |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_disallowed_stdlib     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_direct_file_io        |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
-| v2_import_boundaries     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| v2_import_boundaries     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  ⚫  |
 | no_before_validators     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_sys_path_mutation     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
 | no_deferred_imports      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
@@ -138,6 +138,7 @@ entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
 | no_inline_dispatch       |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
 | hardcoded_config         |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | unknown_file_in_zone     |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  ⚫  |
+| file_in_no_zone          |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |
 | v2_cc_level              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  ⚫  |
 | no_methods_in_classes    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
 | v2_structure_no_logic    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |

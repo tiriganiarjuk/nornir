@@ -87,6 +87,7 @@ const CHECK_REGISTRY: &[(&CheckMessages, CheckFn)] = &[
     (&messages::V2_DISPATCH_ONLY_TABLES, architecture::check_v2_dispatch_only_tables),
     (&messages::V2_CLASSES_ONLY_IN_STRUCTURE, architecture::check_v2_classes_only_in_structure),
     (&messages::UNKNOWN_FILE_IN_ZONE, architecture::check_unknown_file_in_zone),
+    (&messages::FILE_IN_NO_ZONE, architecture::check_file_in_no_zone),
     // STYLE
     (&messages::FUNCTION_LENGTH, style::check_function_length),
     (&messages::PARAM_COUNT, style::check_param_count),

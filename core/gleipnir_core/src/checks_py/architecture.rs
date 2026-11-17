@@ -1164,6 +1164,25 @@ pub fn check_unknown_file_in_zone(
 }
 
 // -------------------------------------------------------------------------
+// file_in_no_zone
+// -------------------------------------------------------------------------
+
+/// Detect a file that lies in no zone of the layout.
+///
+/// Every file of a project belongs to a zone: structure/, or one of the logic
+/// zones. A file beside the layout has no level, no import rules and no
+/// complexity band. A package's `__init__.py` is its marker and is in place
+/// wherever the package is.
+pub fn check_file_in_no_zone(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let filename = source.file_path.rsplit('/').next().unwrap_or("");
+    let in_no_zone = classify::classify_file_v2(source.file_path).zone == Zone::Outside;
+    if !in_no_zone || filename == "__init__.py" {
+        return Vec::new();
+    }
+    vec![violation(1, format!("'{filename}' is in no zone of the layout"))]
+}
+
+// -------------------------------------------------------------------------
 // no_inline_dispatch
 // -------------------------------------------------------------------------
 
