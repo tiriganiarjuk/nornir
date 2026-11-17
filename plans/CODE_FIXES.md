@@ -106,7 +106,6 @@ readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
   `error_type()` on stderr's first line): cli/ (saga_cli and syn_cli are Tyr's), converters/, dispatchers/, watchers/, daemons/,
   rewriters/, senders/send_datagram, intercept_replay. `[A+B]`
 - **Senders exit 1 on wrong arguments** (`senders/send_*/src/main.rs:5-7`); convention is 2. `[A+B]`
-- **`process::exit` inside `run()`** — `cli/cc_launch/src/main.rs:106, 122`. `[A+B]`
 - **PyO3 code not behind the `python` feature**, so no test binary links:
   `binary_readers/read_png_verify_heights`, `binary_writers/write_bytes_verify_png`,
   `binary_writers/write_bytes_verify_quantized_mesh`, `interceptors/traffic_interceptor_rewriter`. `[A+B]`

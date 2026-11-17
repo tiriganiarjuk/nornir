@@ -52,25 +52,42 @@ struct Cli {
     claude_args: Vec<String>,
 }
 
-/// Exit code from --pick meaning "nothing to launch" (quit, or update
-/// completed). The shell function stops silently on any nonzero exit.
-const EXIT_NO_LAUNCH: i32 = 3;
+/// How a run that did not fail ended.
+enum Finished {
+    /// The work asked for is done.
+    Done,
+    /// `--pick` ended with nothing to launch: the TUI was quit, or an update
+    /// completed. The shell function stops silently on any nonzero exit.
+    NothingToLaunch,
+}
 
-fn main() {
-    let arguments = Cli::parse();
-    if let Err(error) = run(arguments) {
-        eprintln!("cc_launch: {error}");
-        process::exit(1);
+impl Finished {
+    fn exit_code(&self) -> i32 {
+        match self {
+            Finished::Done => 0,
+            Finished::NothingToLaunch => 3,
+        }
     }
 }
 
-fn run(arguments: Cli) -> Result<(), String> {
+fn main() {
+    let arguments = Cli::parse();
+    match run(arguments) {
+        Ok(finished) => process::exit(finished.exit_code()),
+        Err(error) => {
+            eprintln!("cc_launch: {error}");
+            process::exit(1);
+        }
+    }
+}
+
+fn run(arguments: Cli) -> Result<Finished, String> {
     // Spec-only modes need no library scan and no TUI.
     if arguments.spec_workspace {
-        return print_spec_workspace();
+        return print_spec_workspace().map(|()| Finished::Done);
     }
     if arguments.go {
-        return exec_from_spec();
+        return exec_from_spec().map(|()| Finished::Done);
     }
 
     let ai_home = write_engine::ai_home();
@@ -102,26 +119,24 @@ fn run(arguments: Cli) -> Result<(), String> {
         TuiOutcome::Launch => {
             if update_mode {
                 run_update(&state, &update_session, &update_workspace)?;
-                if pick_mode {
-                    process::exit(EXIT_NO_LAUNCH); // update done, nothing to launch
-                }
-                Ok(())
+                // In pick mode an update leaves nothing to launch.
+                Ok(if pick_mode { Finished::NothingToLaunch } else { Finished::Done })
             } else {
                 let prompt_path = assembly::write_prompt_file(&state)?;
                 if pick_mode {
                     assembly::write_launch_spec(&state, &prompt_path)?;
-                    Ok(()) // exit 0: spec ready — shell cds, then runs --go
+                    Ok(Finished::Done) // exit 0: spec ready — shell cds, then runs --go
                 } else {
-                    exec_claude(&prompt_path, &state)
+                    exec_claude(&prompt_path, &state).map(|()| Finished::Done)
                 }
             }
         }
         TuiOutcome::Quit => {
             if pick_mode {
                 assembly::discard_launch_spec();
-                process::exit(EXIT_NO_LAUNCH);
+                return Ok(Finished::NothingToLaunch);
             }
-            Ok(())
+            Ok(Finished::Done)
         }
     }
 }
