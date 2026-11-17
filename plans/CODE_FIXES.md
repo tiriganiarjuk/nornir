@@ -7,11 +7,13 @@ logic that has to be taken apart and moved into the right crate — set aside as
 work.
 
 The security hooks, `hook_io`'s decision path, the quality hook, gleipnir, saga and syn are Tyr's; their findings are in
-`~/ai/spaces/tyr/ATTENTION.md`.
+`~/ai/spaces/tyr/ATTENTION.md`. A tool owed a move onto an existing, better tool is in
+`REQUIRED_UPGRADES.md`, not here.
 
 **Source marks.** `[A+B]` both structural auditors found it — the audit's actionable set.
 `[A]` / `[B]` one auditor only: placed by severity, but unconfirmed. `[run]` the auditor
-executed a probe. `[inferred]` reasoned from code, not run. Every item carries the reference to
+executed a probe. `[inferred]` reasoned from code, not run. `[Tyr]` found by Tyr while working
+in the crates that are his. Every item carries the reference to
 check it in one lookup.
 
 ---
@@ -44,9 +46,6 @@ check it in one lookup.
 - **The announce queue loses entries.** `relay_mic_to_voice/src/main.rs:204-209` reads then
   removes the file; a line appended in between is lost. `[B]`
 
-- **Raw capture differs between the two interception paths.** bifrost fsyncs through
-  `write_engine`; the rewriter's `append_raw` only flushes (`lib.rs:35-51`). `[A+B]`
-
 - **The wire schema is stored three times.** `daemons/bifrost_proxy/cc_wire_schema.json` and
   `interceptors/traffic_interceptor_rewriter/cc_wire_schema.json` are separate files (replay
   symlinks to the second); identical today, nothing keeps them so. Belongs in `schemas/` and
@@ -57,6 +56,13 @@ check it in one lookup.
   ignored). `[A+B]`
 
 - **`hush` interpolates a directory unescaped into a `pkill -f` regex.** `cli/hush/src/main.rs:51-54`. `[B]`
+
+- **`nornir_deploy --build tools` hangs verifying `hush`.** `verify_exit_codes`
+  (`nornir_deploy:248-250`) runs the binary with no arguments, with the caller's stdin and no
+  timeout; `hush` reads stdin, so with stdin held open the deploy waits for ever, after the
+  binaries are copied and before the next category is built. `nornir_deploy --build tools,hooks`
+  stopped there on 2026-11-16 and built no hooks; `nornir_deploy --build hooks < /dev/null`
+  completed. `[Tyr, run]`
 
 ## 4. Test integrity
 
@@ -73,18 +79,10 @@ check it in one lookup.
 - **`process::exit` inside `run()`** — `cli/cc_launch/src/main.rs:106, 122`. `[A+B]`
 - **PyO3 code not behind the `python` feature**, so no test binary links:
   `binary_readers/read_png_verify_heights`, `binary_writers/write_bytes_verify_png`,
-  `binary_writers/write_bytes_verify_quantized_mesh`, `interceptors/traffic_interceptor_rewriter`.
-  The binary tools also hand-build the result dict instead of `tool_face_io::py_contract`. `[A+B]`
+  `binary_writers/write_bytes_verify_quantized_mesh`, `interceptors/traffic_interceptor_rewriter`. `[A+B]`
 - **`capability/intercept_io`** is a PyO3 module in the capability tier, depended on by nothing,
   in no deploy category. Decide: move, or remove. `[A+B]`
-- **`hook_session_start_inject` builds its reply JSON by hand** (`:133-140`) instead of
-  `hook_io::response::SessionStartResponse`. `[A+B]`
-- **Own file writing instead of `write_engine`:** `split_jsonl_batches::write_batch`, the
-  watcher's `append_transcript`, `rewrite_compaction_summary`, `bifrost_proxy::save_unparseable_request`,
-  `announce::save_hits`, `relay_mic_to_voice::create_recording_lock` (`presence_io` exists for
-  this). `[A+B]`
-- **cc_launch walks directories with `read_dir`** instead of `directory_read_io`, and hard-codes
-  `/Users/johnny/...` in `permissions.rs:24-31`. `[A+B]`
+- **cc_launch hard-codes `/Users/johnny/...`** in `permissions.rs:24-31`. `[A+B]`
 - **Two ways to find `announce`:** `relay_mic_to_voice` uses `$PATH` (`:181, 233`); every other
   site uses `ai_home()/tools/bin`. `[A+B]`
 - **Data with no schema file:** the cc_launch fragment library, announce's `announce.toml`,
