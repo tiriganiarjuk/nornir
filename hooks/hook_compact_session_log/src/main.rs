@@ -3,7 +3,7 @@
 //! Usage (in ~/.claude/settings.json):
 //!     hook_compact_session_log --project-dir $CLAUDE_PROJECT_DIR
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -38,19 +38,27 @@ fn persist_summary(session_id: &SessionId, compact_summary: &str) {
         .unwrap_or(0);
     let timestamp = time_core::iso_zulu(epoch_secs);
 
-    let record = serde_json::json!({
+    let record = summary_record(&timestamp, compact_summary);
+    let jsonl_path = summary_path(&write_engine::ai_home(), session_id);
+
+    if let Some(sessions_dir) = jsonl_path.parent() {
+        if std::fs::create_dir_all(sessions_dir).is_ok() {
+            let _ = write_engine::append_line_fsync(&jsonl_path, &record.to_string());
+        }
+    }
+}
+
+/// One line of a session's compaction log: when, and the summary.
+fn summary_record(timestamp: &str, compact_summary: &str) -> serde_json::Value {
+    serde_json::json!({
         "timestamp": timestamp,
         "compact_summary": compact_summary,
-    });
+    })
+}
 
-    let sessions_dir = write_engine::ai_home()
-        .join("intercept/sessions")
-        .join(session_id);
-
-    if std::fs::create_dir_all(&sessions_dir).is_ok() {
-        let jsonl_path = sessions_dir.join("compact_summary.jsonl");
-        let _ = write_engine::append_line_fsync(&jsonl_path, &record.to_string());
-    }
+/// Where a session's compaction summaries are kept under the ai home.
+fn summary_path(ai_home: &Path, session_id: &SessionId) -> PathBuf {
+    ai_home.join("intercept/sessions").join(session_id).join("compact_summary.jsonl")
 }
 
 fn emit_datagram(workspace: &str) {
@@ -108,4 +116,25 @@ fn main() -> ExitCode {
         emit_datagram(&workspace);
         announce_compaction(&workspace, &project_dir.display().to_string());
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_summary_line_holds_when_and_the_summary() {
+        let record = summary_record("2026-11-17T07:00:00Z", "what happened");
+        assert_eq!(record, serde_json::json!({ "timestamp": "2026-11-17T07:00:00Z", "compact_summary": "what happened" }));
+    }
+
+    #[test]
+    fn a_summary_is_kept_under_its_session() -> Result<(), String> {
+        let session_id = SessionId::try_from("s-1".to_string())?;
+        assert_eq!(
+            summary_path(Path::new("/home/u/ai"), &session_id),
+            Path::new("/home/u/ai/intercept/sessions/s-1/compact_summary.jsonl"),
+        );
+        Ok(())
+    }
 }

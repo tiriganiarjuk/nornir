@@ -12,3 +12,6 @@ session_event_io = { path = "../../capability/session_event_io" }
 write_engine = { path = "../../capability/write_engine" }
 workspace_registry = { path = "../../capability/workspace_registry" }
 clap = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

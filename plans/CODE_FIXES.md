@@ -100,8 +100,7 @@ readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
 
 ## 4. Test integrity
 
-- **No tests on contract-bearing crates:** `workspace_registry`, `tool_face_io`, the session-prompt
-  chain (orient, inject, end_handoff), `hook_compact_session_log`, `bifrost_proxy`,
+- **No tests on contract-bearing crates:** `workspace_registry`, `tool_face_io`, `bifrost_proxy`,
   `intercept_replay`, the binary readers and writers, the writers. About 50 crates in all. `[A+B]`
 
 ## 5. Contract and convention

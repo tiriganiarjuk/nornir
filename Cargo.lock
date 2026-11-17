@@ -1870,6 +1870,7 @@ name = "hook_notify_llm_tts"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde_json",
  "session_event_io",
  "workspace_registry",
  "write_engine",
@@ -1939,6 +1940,7 @@ dependencies = [
 name = "hook_session_end_handoff"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "session_event_io",
  "workspace_registry",
 ]
@@ -1958,6 +1960,7 @@ name = "hook_session_start_orient"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde_json",
  "session_event_io",
  "workspace_registry",
  "write_engine",
@@ -1968,6 +1971,7 @@ name = "hook_stop_llm_tts"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde_json",
  "session_event_io",
  "text_core",
  "workspace_registry",
