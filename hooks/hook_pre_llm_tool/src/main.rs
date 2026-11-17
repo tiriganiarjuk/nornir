@@ -16,8 +16,8 @@
 use std::process::ExitCode;
 
 use hook_decision_core::flags::parse_category_flags;
-use hook_decision_core::paths::{for_matching, is_under, normalize};
-use hook_decision_core::rules::{first_match, rules_of, Rule, RuleSet};
+use hook_decision_core::paths::{is_under, normalize};
+use hook_decision_core::rules::{first_match_for_path, rules_of, Rule, RuleSet};
 use hook_decision_core::{ask_because_undecided, make_decision, DecisionInput, HookDecision, Severity};
 use hook_io::{HookInput, WhenUndecided, FLOOR, PROBING};
 
@@ -80,20 +80,19 @@ fn decide_inner(input: &HookInput, config: &Config, protected: &RuleSet) -> Hook
         .iter()
         .filter(|target| !is_exempt(target, &config.allow_paths))
         .find_map(|target| {
-            first_match(rules_of(protected, PROBING), &for_matching(target))
+            first_match_for_path(rules_of(protected, PROBING), target)
                 .map(|rule| path_decision(target, rule, PROBING, rule.severity.unwrap_or(probing_severity)))
         })
         .unwrap_or(HookDecision::Allow)
 }
 
 fn floor_decision(target: &str, protected: &RuleSet) -> Option<HookDecision> {
-    first_match(rules_of(protected, FLOOR), &for_matching(target))
+    first_match_for_path(rules_of(protected, FLOOR), target)
         .map(|rule| path_decision(target, rule, FLOOR, Severity::Block))
 }
 
-/// The decision of a protected-path rule about the path that matched it. The
-/// rule is matched against the path as `for_matching` gives it; the decision
-/// shows the path as the call reached it.
+/// The decision of a protected-path rule about the path that reached it. The
+/// decision shows the path as the call reached it.
 fn path_decision(target: &str, rule: &Rule, category: &str, severity: Severity) -> HookDecision {
     make_decision(&DecisionInput {
         severity,

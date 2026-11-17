@@ -298,7 +298,7 @@ After schema changes (draupnir regeneration): `nornir_deploy --build gates`
 
 - All tests must pass before committing. Run `cargo test -p {crate}` per crate.
 - A two-faced tool tests like any crate: the feature is off by default, so its library and CLI face link. A crate whose PyO3 code is not behind the feature cannot link a test binary; `nornir_deploy --build <category>` verifies those by import.
-- Full workspace (excluding crates whose PyO3 code is not behind the feature): `cargo test --workspace $(for d in gates/*/ readers/*/ text_writers/*/ binary_readers/*/ binary_writers/*/; do grep -q '^python = ' $d/Cargo.toml || echo "--exclude $(basename $d)"; done) --exclude intercept_io --exclude traffic_interceptor_rewriter`
+- Full workspace: `nornir_test` (at the repo root). It leaves out the crates whose PyO3 code is not behind the feature, names them, and ends with every failed test and `TOTAL passed=N failed=N ignored=N`. `nornir_test -p {crate}` passes its arguments to `cargo test`.
 - Security hooks require dual-direction tests: malicious input IS detected, benign input is NOT flagged.
 - Tests verify specification, not implementation. "Does `severity_rank("error")` return 2?" not "Does the internal BTreeMap have 4 entries?"
 - Pure logic must be testable: takes parameters, returns `Result`, no side effects.

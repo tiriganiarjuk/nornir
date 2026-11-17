@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 use regex::Regex;
 
+use crate::paths::{for_matching, with_pattern_as};
 use crate::{make_decision, parse_severity, DecisionInput, HookDecision, Severity};
 
 const ENTRY_KEYS: [&str; 3] = ["pattern", "description", "severity"];
@@ -123,6 +124,17 @@ pub fn rules_of<'a>(rule_set: &'a RuleSet, category: &str) -> &'a [Rule] {
 /// The first rule that matches the subject, in file order.
 pub fn first_match<'a>(rules: &'a [Rule], subject: &str) -> Option<&'a Rule> {
     rules.iter().find(|rule| rule.is_match(subject))
+}
+
+/// The first protected-path rule a path reaches, in file order: a rule whose
+/// literal pattern the path holds, or one a pattern segment of the path can
+/// match. The path is a normalised path; it is matched as `for_matching`
+/// gives it.
+pub fn first_match_for_path<'a>(rules: &'a [Rule], path: &str) -> Option<&'a Rule> {
+    let matched = for_matching(path);
+    rules
+        .iter()
+        .find(|rule| rule.is_match(&matched) || with_pattern_as(&matched, &rule.pattern).is_some())
 }
 
 /// What is examined, and how a decision about it is worded.
@@ -275,6 +287,18 @@ description = "Unlocking file locks"
         let rule = &rules_of(&rule_set, "subversion")[0];
         assert!(rule.is_match("sudo chflags -R noschg x"));
         assert!(!rule.is_match("chflags schg x"));
+    }
+
+    #[test]
+    fn a_path_reaches_a_rule_it_spells_or_one_its_pattern_can_match() {
+        let rule_set = parsed(GOOD).unwrap();
+        let floor = rules_of(&rule_set, "floor");
+        for reaching in ["/home/u/.ssh/id_rsa", "/home/u/.SSH", "/home/u/.s*/id_*", "/home/u/.ss?"] {
+            assert!(first_match_for_path(floor, reaching).is_some(), "{reaching}");
+        }
+        for elsewhere in ["/home/u/.sshrc", "/home/u/src/*.rs", "/home/u/*", "/home/u/.a*/x"] {
+            assert!(first_match_for_path(floor, elsewhere).is_none(), "{elsewhere}");
+        }
     }
 
     #[test]

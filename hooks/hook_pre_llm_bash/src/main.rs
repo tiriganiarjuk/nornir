@@ -21,9 +21,9 @@
 use std::process::ExitCode;
 
 use hook_decision_core::flags::{parse_category_flags, CategorySeverities};
-use hook_decision_core::paths::{for_matching, is_under, normalize};
+use hook_decision_core::paths::{is_under, normalize};
 use hook_decision_core::rules::{
-    command_subject, decide_category, first_match, parse_rule_set, rules_of, PatternKind, RuleSet,
+    command_subject, decide_category, first_match_for_path, parse_rule_set, rules_of, PatternKind, RuleSet,
 };
 use hook_decision_core::shape::{command_shape, CommandShape, CompoundKind};
 use hook_decision_core::shell::{named_paths, structure};
@@ -145,7 +145,7 @@ fn decide_inner(input: &HookInput, config: &Config) -> HookDecision {
 
 fn floor_decision(command: &str, named: &[String], protected: &RuleSet) -> Option<HookDecision> {
     let floor = rules_of(protected, FLOOR);
-    named.iter().find_map(|path| first_match(floor, &for_matching(path))).map(|rule| {
+    named.iter().find_map(|path| first_match_for_path(floor, path)).map(|rule| {
         make_decision(&DecisionInput {
             severity: Severity::Block,
             category: FLOOR,
@@ -242,7 +242,7 @@ fn probing_decision(command: &str, named: &[String], config: &Config) -> Option<
     named
         .iter()
         .filter(|path| !config.allow_paths.iter().any(|allowed| is_under(path, allowed)))
-        .find_map(|path| first_match(probing, &for_matching(path)))
+        .find_map(|path| first_match_for_path(probing, path))
         .map(|rule| {
             make_decision(&DecisionInput {
                 severity: rule.severity.unwrap_or(severity),

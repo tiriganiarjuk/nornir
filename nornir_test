@@ -1,0 +1,103 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+"""Run the whole nornir workspace's tests as one command, and report the totals.
+
+    nornir_test                    every crate that can link a test binary
+    nornir_test -p hook_io         passed through to cargo test: one crate
+
+A crate whose PyO3 code is not behind the `python` feature cannot link a test
+binary; those are left out, and named. Which crates they are is read from the
+workspace: a member of a PyO3 directory whose Cargo.toml declares no `python`
+feature, and the crates listed in ALWAYS_EXCLUDED.
+
+The run's last lines are its result: every failed test by name, then
+`TOTAL passed=N failed=N ignored=N`. The exit code is 0 only when cargo's is 0
+and no test failed.
+"""
+
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+WORKSPACE = Path(__file__).resolve().parent
+
+# Directories whose crates are PyO3 modules.
+PYO3_DIRECTORIES = ("gates", "readers", "text_writers", "binary_readers", "binary_writers")
+
+# PyO3 crates outside those directories, with no `python` feature.
+ALWAYS_EXCLUDED = ("intercept_io", "traffic_interceptor_rewriter")
+
+RESULT_LINE = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored")
+FAILED_TEST_LINE = re.compile(r"^test (\S+) \.\.\. FAILED")
+
+
+def workspace_members() -> list[str]:
+    """The workspace's member paths, as its Cargo.toml lists them."""
+    manifest = tomllib.loads((WORKSPACE / "Cargo.toml").read_text())
+    return manifest["workspace"]["members"]
+
+
+def declares_python_feature(member: str) -> bool:
+    """Whether a member's Cargo.toml has a `python` feature."""
+    manifest = tomllib.loads((WORKSPACE / member / "Cargo.toml").read_text())
+    return "python" in manifest.get("features", {})
+
+
+def crates_that_cannot_link() -> list[str]:
+    """The crates left out of a workspace run, sorted."""
+    unlinkable = [
+        Path(member).name
+        for member in workspace_members()
+        if Path(member).parts[0] in PYO3_DIRECTORIES and not declares_python_feature(member)
+    ]
+    return sorted([*unlinkable, *ALWAYS_EXCLUDED])
+
+
+def cargo_arguments(passed_through: list[str]) -> list[str]:
+    """The cargo test command line: the given crates, or the whole workspace."""
+    base = ["cargo", "test", "--manifest-path", str(WORKSPACE / "Cargo.toml"), "--no-fail-fast"]
+    if passed_through:
+        return [*base, *passed_through]
+    excluded = crates_that_cannot_link()
+    sys.stderr.write(f"[nornir_test] left out, cannot link a test binary: {', '.join(excluded)}\n")
+    exclusions = [word for crate in excluded for word in ("--exclude", crate)]
+    return [*base, "--workspace", *exclusions]
+
+
+def run_and_tally(arguments: list[str]) -> tuple[int, int, int, list[str], int]:
+    """Run cargo, echo what matters, and return passed, failed, ignored, failed names, exit code."""
+    passed = failed = ignored = 0
+    failed_tests: list[str] = []
+    process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert process.stdout is not None
+    for line in process.stdout:
+        result = RESULT_LINE.match(line)
+        failure = FAILED_TEST_LINE.match(line)
+        if result:
+            passed += int(result.group(1))
+            failed += int(result.group(2))
+            ignored += int(result.group(3))
+        if failure:
+            failed_tests.append(failure.group(1))
+        if failure or line.startswith(("error", "warning", "---- ")) or "panicked at" in line or "fixtures do not get" in line:
+            sys.stdout.write(line)
+    return passed, failed, ignored, failed_tests, process.wait()
+
+
+def main() -> int:
+    passed, failed, ignored, failed_tests, cargo_exit = run_and_tally(cargo_arguments(sys.argv[1:]))
+    for name in failed_tests:
+        sys.stdout.write(f"FAILED {name}\n")
+    sys.stdout.write(f"TOTAL passed={passed} failed={failed} ignored={ignored}\n")
+    if cargo_exit != 0 and failed == 0:
+        sys.stdout.write(f"cargo exited {cargo_exit} with no failed test: a crate did not build\n")
+    return 0 if cargo_exit == 0 and failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
