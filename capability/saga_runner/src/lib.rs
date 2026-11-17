@@ -354,14 +354,31 @@ pub fn run_ruff(file_path: &Path) -> Result<Vec<Issue>, Fault> {
         .collect())
 }
 
-/// Run basedpyright type checker on a file using Saga's embedded config.
-pub fn run_basedpyright(file_path: &Path) -> Result<Vec<Issue>, Fault> {
+/// The interpreter of the project a file belongs to: `.venv/bin/python` in the
+/// nearest directory above the file that holds both it and a `pyproject.toml`.
+/// basedpyright resolves the project's own package and its dependencies through
+/// it; given none, it checks the file against no environment and every import
+/// it makes is unresolved.
+fn project_interpreter(known_as: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(known_as).ok()?;
+    absolute.ancestors().skip(1).find_map(|directory| {
+        let interpreter = directory.join(".venv").join("bin").join("python");
+        (directory.join("pyproject.toml").is_file() && interpreter.is_file()).then_some(interpreter)
+    })
+}
+
+/// Run basedpyright type checker on a file using Saga's embedded config, in the
+/// environment of the project the file is known to belong to.
+pub fn run_basedpyright(source: Source) -> Result<Vec<Issue>, Fault> {
+    let file_path = source.content_at;
     let path_str = file_path.to_string_lossy();
     let config = pyright_config();
-    let output = Command::new("basedpyright")
-        .arg("--outputjson")
-        .arg("--project")
-        .arg(config.as_os_str())
+    let mut command = Command::new("basedpyright");
+    command.arg("--outputjson").arg("--project").arg(config.as_os_str());
+    if let Some(interpreter) = project_interpreter(source.known_as) {
+        command.arg("--pythonpath").arg(interpreter.as_os_str());
+    }
+    let output = command
         .arg(file_path.as_os_str())
         .output()
         .map_err(|io_err| {
@@ -426,7 +443,7 @@ fn examine(source: Source) -> (Vec<Issue>, Vec<Fault>) {
         Some(SourceKind::Rust) => vec![run_gleipnir_rust(source)],
         Some(SourceKind::Svelte) => vec![run_gleipnir_svelte(source)],
         Some(SourceKind::Python) => {
-            vec![run_gleipnir(source), run_ruff(source.content_at), run_basedpyright(source.content_at)]
+            vec![run_gleipnir(source), run_ruff(source.content_at), run_basedpyright(source)]
         }
         None => vec![Err(not_examinable(source.known_as))],
     };
@@ -854,6 +871,45 @@ mod tests {
         let hit = issues.iter().find(|issue| issue.code == "no_direct_file_io").unwrap();
         assert_eq!(hit.detail, gleipnir_core::messages::NO_DIRECT_FILE_IO.detail);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A project directory: a `pyproject.toml`, and `.venv/bin/python` when asked for.
+    fn project(root: &Path, with_interpreter: bool) {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"specimen\"\n").unwrap();
+        if with_interpreter {
+            std::fs::create_dir_all(root.join(".venv/bin")).unwrap();
+            std::fs::write(root.join(".venv/bin/python"), "").unwrap();
+        }
+    }
+
+    #[test]
+    fn a_file_is_checked_in_its_project_s_environment() {
+        let dir = temp_dir("interpreter_found");
+        project(&dir, true);
+        let file = dir.join("src/pkg/logic/pure/plan/simple.py");
+        assert_eq!(project_interpreter(&file), Some(dir.join(".venv/bin/python")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_without_an_environment_takes_the_nearest_one_above_it() {
+        // The specimen shape: a workspace member with no .venv of its own.
+        let dir = temp_dir("interpreter_workspace");
+        project(&dir, true);
+        project(&dir.join("members/tool"), false);
+        let file = dir.join("members/tool/src/tool/cli.py");
+        assert_eq!(project_interpreter(&file), Some(dir.join(".venv/bin/python")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_environment_with_no_project_beside_it_is_not_taken() {
+        let dir = temp_dir("interpreter_none");
+        std::fs::create_dir_all(dir.join(".venv/bin")).unwrap();
+        std::fs::write(dir.join(".venv/bin/python"), "").unwrap();
+        assert_eq!(project_interpreter(&dir.join("loose/script.py")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
