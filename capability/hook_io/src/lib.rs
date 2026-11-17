@@ -16,7 +16,7 @@
 
 pub mod response;
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::ExitCode;
 
@@ -133,12 +133,81 @@ where
     F: FnOnce(&HookInput) -> HookDecision,
 {
     let hook = hook_name();
-    let (decision, tool) = match read_call() {
+    let payload = read_payload();
+    let call = match &payload {
+        Ok(received) => parse_call(received),
+        Err(cause) => Err(cause.clone()),
+    };
+    let (decision, tool) = match call {
         Ok(call) => (decided_or_undecided(when_undecided, &hook, &call, decide_fn), call.tool_name),
         Err(cause) => (undecided(when_undecided, &hook, &cause), "unknown".to_string()),
     };
+    write_decision_log(&hook, payload.as_deref().unwrap_or(""), &decision);
     emit_decision(decision, &tool);
     ExitCode::SUCCESS
+}
+
+// ── The decision log ───────────────────────────────────────────────
+
+/// The decision word of a decision that is logged; `None` for a plain allow.
+fn logged_decision(decision: &HookDecision) -> Option<(&'static str, &str, &str, &str)> {
+    match decision {
+        HookDecision::Allow | HookDecision::AllowWithContext { .. } => None,
+        HookDecision::Warn { category, event, user_reason, .. } => Some(("warn", category, event, user_reason)),
+        HookDecision::Ask { category, event, reason, .. } => Some(("ask", category, event, reason)),
+        HookDecision::Deny { category, event, reason } => Some(("deny", category, event, reason)),
+    }
+}
+
+/// When and where a decision was made.
+struct DecisionSetting<'a> {
+    timestamp: f64,
+    hook: &'a str,
+    workspace: &'a str,
+}
+
+/// One line of the decision log for a call the hook did not simply allow; its
+/// shape is `schemas/tools/hook-decision-log.schema.json`. The call is taken
+/// from the payload as received, so a call the hook could not read is logged too.
+fn decision_log_record(setting: &DecisionSetting, payload: &str, decision: &HookDecision) -> Option<serde_json::Value> {
+    let (decision_word, category, event, detail) = logged_decision(decision)?;
+    let received: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
+    let tool_input = received.get("tool_input").filter(|input| input.is_object()).cloned();
+    let mut record = serde_json::json!({
+        "timestamp": setting.timestamp,
+        "hook": setting.hook,
+        "workspace": setting.workspace,
+        "session": received.get("session_id").and_then(|session| session.as_str()),
+        "tool": received.get("tool_name").and_then(|tool| tool.as_str()),
+        "decision": decision_word,
+        "category": category,
+        "event": event,
+        "detail": detail,
+        "tool_input": tool_input,
+    });
+    if !received.is_object() {
+        record["unread_payload"] = serde_json::Value::String(payload.to_string());
+    }
+    Some(record)
+}
+
+/// Append the decision to `~/ai/logs/<hook>.log.jsonl`. A line that cannot be
+/// written changes nothing about the decision.
+fn write_decision_log(hook: &str, payload: &str, decision: &HookDecision) {
+    let setting = DecisionSetting { timestamp: datagram_io::now(), hook, workspace: &datagram_io::workspace_name() };
+    let Some(record) = decision_log_record(&setting, payload, decision) else {
+        return;
+    };
+    let line = record.to_string();
+    let matches_schema =
+        schemas_embedded::HOOK_DECISION_LOG.validate(&line).map(|checked| checked.valid).unwrap_or(false);
+    if !matches_schema {
+        return;
+    }
+    let logs = write_engine::ai_home().join("logs");
+    if std::fs::create_dir_all(&logs).is_ok() {
+        let _ = write_engine::append_line_fsync(&logs.join(format!("{hook}.log.jsonl")), &line);
+    }
 }
 
 fn hook_name() -> String {
@@ -150,13 +219,13 @@ fn hook_name() -> String {
         .unwrap_or_else(|| "hook".to_string())
 }
 
-/// The call on stdin, or why it could not be examined.
-fn read_call() -> Result<HookInput, String> {
+/// What is on stdin, or why it could not be read.
+fn read_payload() -> Result<String, String> {
     let mut payload = String::new();
     std::io::stdin()
         .read_to_string(&mut payload)
         .map_err(|io_err| format!("its input could not be read ({io_err})"))?;
-    parse_call(&payload)
+    Ok(payload)
 }
 
 /// A payload as a call: valid against the PreToolUse schema, then typed.
@@ -194,7 +263,7 @@ fn emit_decision(decision: HookDecision, tool: &str) {
         HookDecision::Allow => print_allow(),
         HookDecision::AllowWithContext { context } => print_allow_with_context(&context),
         HookDecision::Warn { category, event, user_reason, llm_context } => {
-            notify_and_log('\u{26A0}', &category, &event, &user_reason);
+            notify('\u{26A0}', &category, &user_reason);
             print_warn(&user_reason, &llm_context);
             emit_to_watchtower(&WatchtowerEvent {
                 spoken: Spoken::Warn, category: &category, event: &event,
@@ -202,7 +271,7 @@ fn emit_decision(decision: HookDecision, tool: &str) {
             });
         }
         HookDecision::Ask { category, event, reason, llm_context } => {
-            notify_and_log('\u{2753}', &category, &event, &reason);
+            notify('\u{2753}', &category, &reason);
             print_ask(&reason, &llm_context);
             emit_to_watchtower(&WatchtowerEvent {
                 spoken: Spoken::Ask, category: &category, event: &event,
@@ -210,7 +279,7 @@ fn emit_decision(decision: HookDecision, tool: &str) {
             });
         }
         HookDecision::Deny { category, event, reason } => {
-            notify_and_log('\u{2716}', &category, &event, &reason);
+            notify('\u{2716}', &category, &reason);
             print_deny(&reason);
             emit_to_watchtower(&WatchtowerEvent {
                 spoken: Spoken::Deny, category: &category, event: &event,
@@ -252,35 +321,17 @@ fn print_deny(reason: &str) {
 // ── User notification ───────────────────────────────────────────────
 //
 // Claude Code captures stdout (the reply) and stderr through pipes. A macOS
-// notification and the intercept log are the channels that reach the user.
+// notification is the channel that reaches the user at once; the decision log
+// is the record.
 
-fn notify_and_log(icon: char, category: &str, event: &str, explanation: &str) {
+fn notify(icon: char, category: &str, explanation: &str) {
     let short = explanation.lines().next().unwrap_or(explanation);
-    let workspace = std::env::var("CLAUDE_PROJECT_DIR").unwrap_or_default();
-    let workspace_name = std::path::Path::new(&workspace)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or(workspace);
-
     let title = format!("{} INTERCEPT [{}]", icon, category);
     let _ = std::process::Command::new("terminal-notifier")
         .args(["-title", &title, "-message", short])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-
-    if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(log_path()) {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since_epoch| since_epoch.as_secs())
-            .unwrap_or(0);
-        let _ = writeln!(log, "[{}] [{}] [{}] {} — {}", timestamp, workspace_name, category, event, short);
-    }
-}
-
-fn log_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home).join(".claude").join("intercept.log")
 }
 
 // ── Watchtower emission ───────────────────────────────────────────
@@ -597,6 +648,62 @@ mod tests {
     fn an_undecided_ask_is_high_priority() {
         assert!(matches!(alert_priority(Spoken::Ask, UNDECIDED), datagram_io::Priority::High));
         assert!(matches!(alert_priority(Spoken::Ask, "revert"), datagram_io::Priority::Low));
+    }
+
+    // ── The decision log ─────────────────────────────────────────
+
+    const SETTING: DecisionSetting = DecisionSetting { timestamp: 1_800_000_000.5, hook: "hook_pre_llm_bash", workspace: "tyr" };
+
+    fn deny(category: &str) -> HookDecision {
+        HookDecision::Deny { category: category.into(), event: "an event".into(), reason: "a reason".into() }
+    }
+
+    fn valid_log_line(record: &serde_json::Value) -> bool {
+        schemas_embedded::HOOK_DECISION_LOG.validate(&record.to_string()).unwrap().valid
+    }
+
+    #[test]
+    fn a_denied_call_is_logged_whole() {
+        let payload = r#"{"session_id":"s-1","tool_name":"Bash","tool_input":{"command":"echo a; echo b"}}"#;
+        let record = decision_log_record(&SETTING, payload, &deny("chaining")).unwrap();
+        assert_eq!(record["decision"], "deny");
+        assert_eq!(record["category"], "chaining");
+        assert_eq!(record["session"], "s-1");
+        assert_eq!(record["tool"], "Bash");
+        assert_eq!(record["tool_input"]["command"], "echo a; echo b");
+        assert_eq!(record["hook"], "hook_pre_llm_bash");
+        assert!(valid_log_line(&record));
+    }
+
+    #[test]
+    fn a_warned_and_an_asked_call_are_logged() {
+        let payload = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
+        let warned = HookDecision::Warn {
+            category: "probing".into(), event: "e".into(), user_reason: "u".into(), llm_context: "c".into(),
+        };
+        let asked = ask_because_undecided("hook_pre_llm_tool", "its flags are misspelled");
+        let warned_record = decision_log_record(&SETTING, payload, &warned).unwrap();
+        let asked_record = decision_log_record(&SETTING, payload, &asked).unwrap();
+        assert_eq!(warned_record["decision"], "warn");
+        assert_eq!(asked_record["category"], UNDECIDED);
+        assert!(warned_record["session"].is_null());
+        assert!(valid_log_line(&warned_record) && valid_log_line(&asked_record));
+    }
+
+    #[test]
+    fn an_allowed_call_is_not_logged() {
+        let payload = r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+        assert!(decision_log_record(&SETTING, payload, &HookDecision::Allow).is_none());
+        let with_context = HookDecision::AllowWithContext { context: "c".into() };
+        assert!(decision_log_record(&SETTING, payload, &with_context).is_none());
+    }
+
+    #[test]
+    fn a_payload_the_hook_could_not_read_is_logged_as_received() {
+        let record = decision_log_record(&SETTING, "not json", &deny(UNDECIDED)).unwrap();
+        assert_eq!(record["unread_payload"], "not json");
+        assert!(record["tool"].is_null() && record["tool_input"].is_null());
+        assert!(valid_log_line(&record));
     }
 
     // ── targets ──────────────────────────────────────────────────

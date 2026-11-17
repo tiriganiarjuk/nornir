@@ -220,6 +220,11 @@ static HOOK_POST_TOOL_USE_JSON: &str =
 pub static HOOK_POST_TOOL_USE: EmbeddedValidator =
     EmbeddedValidator::new(HOOK_POST_TOOL_USE_JSON, "hook-post-tool-use");
 
+static HOOK_DECISION_LOG_JSON: &str =
+    include_str!("../../../schemas/tools/hook-decision-log.schema.json");
+pub static HOOK_DECISION_LOG: EmbeddedValidator =
+    EmbeddedValidator::new(HOOK_DECISION_LOG_JSON, "hook-decision-log");
+
 static SYN_POLICY_JSON: &str =
     include_str!("../../../schemas/tools/syn-policy.schema.json");
 pub static SYN_POLICY: EmbeddedValidator =

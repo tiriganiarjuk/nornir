@@ -8,6 +8,7 @@
 //!   rules  — the rules file format, read strictly, and the one way a rule is
 //!            matched against a subject
 //!   flags  — the `--category severity` command line, read strictly
+//!   fixtures — fixture files: concrete calls and the verdict each must get
 //!   paths  — lexical path normalisation, applied before any path is matched
 //!   shape  — whether a command is one command, one in a directory, or several
 //!   shell  — a command line read as text: its structure, the paths it names
@@ -16,6 +17,7 @@
 //! Strict means: a rule, a flag or a severity that cannot be read is an error
 //! the hook reports. Nothing is skipped.
 
+pub mod fixtures;
 pub mod flags;
 pub mod paths;
 pub mod rules;

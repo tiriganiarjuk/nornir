@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hook-decision-log",
+  "description": "One line of a hook's decision log, `~/ai/logs/<hook>.log.jsonl`: one call a PreToolUse hook did not simply allow — it warned, asked, denied, or could not decide. The call is recorded whole, as the hook received it, so the log shows what sessions try to run and how the hook answered. Allowed calls are not logged.",
+  "type": "object",
+  "required": ["timestamp", "hook", "workspace", "session", "tool", "decision", "category", "event", "detail", "tool_input"],
+  "additionalProperties": false,
+  "properties": {
+    "timestamp": {"type": "number", "description": "Seconds since the Unix epoch when the hook decided."},
+    "hook": {"type": "string", "minLength": 1, "description": "The hook binary that decided."},
+    "workspace": {"type": "string", "description": "The workspace the session runs in; empty when the hook was not told."},
+    "session": {"type": ["string", "null"], "description": "The session id the call carried."},
+    "tool": {"type": ["string", "null"], "description": "The tool that was called."},
+    "decision": {"enum": ["warn", "ask", "deny"]},
+    "category": {"type": "string", "minLength": 1, "description": "The category of the rule that decided; `undecided` when the hook could not decide."},
+    "event": {"type": "string", "description": "The decision in one line: the rule's description and the subject, shortened."},
+    "detail": {"type": "string", "description": "What the user was told."},
+    "tool_input": {"type": ["object", "null"], "description": "The call's input, whole: a Bash call's command, a file tool's paths."},
+    "unread_payload": {"type": "string", "description": "The payload as received, when it was not a JSON object the hook could read."}
+  }
+}
