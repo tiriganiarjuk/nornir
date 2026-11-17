@@ -19,8 +19,6 @@ const SHARED_ALLOWED: &[&str] = &[
     r"int\d+",
     r"float\d+",
     r"rgb\d*",
-    r"level\d+",
-    r"phase\d+",
     r"log\d*",
     r"p\d{4,}",
 ];
@@ -95,7 +93,7 @@ mod tests {
     /// One or more names per shared alternative, in the order of SHARED_ALLOWED.
     const SHARED_ALLOWED_NAMES: &[&str] = &[
         "v2", "utf8", "utf_8", "sha256", "md5", "h1", "ipv4", "base64", "int32", "float64",
-        "rgb", "rgb8", "level3", "phase2", "log", "log2", "p1234",
+        "rgb", "rgb8", "log", "log2", "p1234",
     ];
 
     #[test]
@@ -136,10 +134,11 @@ mod tests {
     }
 
     #[test]
-    fn a_numbered_step_is_flagged_in_all_three_languages() {
-        // A numbered step names a sequence. The name is read as an instruction
-        // long after the order it claims has changed.
-        for name in ["step1", "step_1", "step12"] {
+    fn a_numbered_place_in_a_sequence_is_flagged_in_all_three_languages() {
+        // A numbered step, phase or level names a place in a sequence. The name
+        // is read as an instruction long after the order it claims has changed;
+        // a name that says what the thing is carries no number.
+        for name in ["step1", "step_1", "step12", "phase2", "level3"] {
             assert!(python_numbered().is_match(name) && !python_allowed().is_match(name), "{name} in Python");
             assert!(rust_numbered().is_match(name) && !rust_allowed().is_match(name), "{name} in Rust");
             assert!(typescript_numbered().is_match(name) && !typescript_allowed().is_match(name), "{name} in TypeScript");
