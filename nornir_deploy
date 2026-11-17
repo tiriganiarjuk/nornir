@@ -130,6 +130,74 @@ def find_target_dir() -> Path:
     return Path(json.loads(result.stdout)["target_directory"])
 
 
+# --- Fingerprint partners ---
+#
+# saga stamps each sidecar with the fingerprint of the code that examined it, and
+# syn calls a sidecar stale when the fingerprint compiled into syn differs. These
+# crates are compiled into that fingerprint. Every deployed binary that links one
+# (saga, syn, the write hook) must come from one build, or each calls the
+# sidecars the others write stale. Which binaries link them is asked of cargo.
+
+FINGERPRINT_CRATES = frozenset({"saga_runner", "gleipnir_core"})
+
+
+def normal_dependencies(node: dict) -> list[str]:
+    """The package ids a resolved node depends on at run time: dev and build dependencies left out."""
+    return [
+        dependency["pkg"]
+        for dependency in node["deps"]
+        if any(kind["kind"] is None for kind in dependency.get("dep_kinds", [{"kind": None}]))
+    ]
+
+
+def crates_linking(wanted: frozenset[str]) -> set[str]:
+    """The workspace crates that are, or depend at run time on, one of the wanted crates. Exits on failure."""
+    result = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--quiet"],
+        cwd=NORNIR_DIR,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.error("cargo metadata failed: {}", result.stderr.strip())
+        sys.exit(1)
+    metadata = json.loads(result.stdout)
+    names = {package["id"]: package["name"] for package in metadata["packages"]}
+    dependencies = {node["id"]: normal_dependencies(node) for node in metadata["resolve"]["nodes"]}
+    linking = set()
+    for member in metadata["workspace_members"]:
+        reached = set()
+        pending = [member]
+        while pending:
+            current = pending.pop()
+            if current not in reached:
+                reached.add(current)
+                pending.extend(dependencies.get(current, []))
+        if any(names[package] in wanted for package in reached):
+            linking.add(names[member])
+    return linking
+
+
+def category_crates(config: dict) -> list[str]:
+    """Every crate a category deploys, of any kind."""
+    return config.get("crates", []) + config.get("cli_crates", []) + _pyo3_crates(config)
+
+
+def with_fingerprint_partners(requested: list[str], categories: dict) -> list[str]:
+    """The requested categories, and every other that shares the examiner fingerprint with one of them."""
+    linking = crates_linking(FINGERPRINT_CRATES)
+    sharing = [name for name, config in categories.items() if any(crate in linking for crate in category_crates(config))]
+    if not any(name in sharing for name in requested):
+        return requested
+    partners = [name for name in sharing if name not in requested]
+    for partner in partners:
+        logger.warning(
+            "{} links the examiner fingerprint too — deploying it with {}, so saga, syn and the write hook agree",
+            partner, ", ".join(requested),
+        )
+    return requested + partners
+
+
 # --- Build functions ---
 
 def build_cargo(crates: list[str]) -> None:
@@ -474,6 +542,7 @@ def run(args: argparse.Namespace) -> None:
             if name not in categories:
                 logger.error("unknown category: {} (available: {})", name, ", ".join(categories))
                 sys.exit(1)
+        for name in with_fingerprint_partners(requested, categories):
             deploy_category(name, categories[name], crate_dirs, target_dir, skip_maturin=False)
 
     logger.info("DEPLOY COMPLETE")
