@@ -67,6 +67,7 @@ members = [
     "readers/read_tomlx_validate_json",
     "readers/read_directory_json",
     "readers/read_directory_permitted_json",
+    "readers/read_directory_links_followed_json",
     "core/binary_format_core",
     "capability/binary_writer_io",
     "binary_writers/write_bytes_verify_png",

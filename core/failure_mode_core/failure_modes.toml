@@ -140,6 +140,18 @@ standard    = "Cannot list '{directory}' whole — {count} path(s) could not be 
 route       = "Each unreadable path is named above; ask the user why they cannot be read."
 adversarial = "stop"
 
+[directory_links_broken]
+class       = "read_error"
+standard    = "Cannot list '{directory}' with its links followed — {count} link(s) lead to nothing:\n  {report}"
+route       = "Each broken link is named above. What a link leads to is restored, or the link is removed; ask the user which."
+adversarial = "stop"
+
+[directory_links_looping]
+class       = "validation_error"
+standard    = "Cannot list '{directory}' with its links followed — {count} link(s) lead back into a directory being listed, so the listing would never end:\n  {report}"
+route       = "Each link is named above with the directory it leads back to. A tree listed with its links followed holds no link to a directory it sits inside; ask the user which link is wrong."
+adversarial = "stop"
+
 [directory_listing_invalid]
 class       = "validation_error"
 standard    = "The listing of '{directory}' does not match directory-listing: {reason}."

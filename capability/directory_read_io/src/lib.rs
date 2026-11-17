@@ -1,9 +1,17 @@
 //! Directory reading — the one directory walker.
 //!
 //! Lists every entry under a root directory: its path relative to the root, its
-//! kind, a file's size, and — when asked — a file's sha256. A symlink is listed as a
-//! link and never followed, so the walk cannot leave the root or loop. What to keep
-//! from the listing is the caller's to decide; the walk applies no skip list of its own.
+//! kind, a file's size, and — when asked — a file's sha256. What to keep from the
+//! listing is the caller's to decide; the walk applies no skip list of its own.
+//!
+//! What a symlink is to the walk is the caller's choice:
+//! - **listed** (the default) — a symlink is an entry of kind `symlink` and is never
+//!   followed, so the walk stays under the root and always ends.
+//! - **followed** — a link is listed as what it leads to. A link to a file is a file,
+//!   with the size of its target; a link to a directory is a directory, its entries
+//!   listed beneath it under paths through the link, wherever the target is. A link
+//!   that leads to nothing, and a link that leads back into a directory the walk is
+//!   inside, are failures: every one of them named, and no listing.
 //!
 //! What a path the walk cannot read means is the caller's choice too:
 //! - **strict** (the default) — every unreadable path is a failure, all of them named in
@@ -19,7 +27,7 @@
 
 use std::fs;
 use std::io::{ErrorKind, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -28,8 +36,9 @@ use failure_mode_core::Failure;
 use schemas_embedded::{DIRECTORY_LISTING, DIRECTORY_PERMITTED_LISTING};
 
 /// What to list: how deep, whether hidden entries count, whether files are hashed,
-/// which directories the walk stays out of, and what an unreadable path means. The
-/// default enters everything and fails on any path it cannot read.
+/// which directories the walk stays out of, what an unreadable path means, and what a
+/// symlink is. The default enters everything, fails on any path it cannot read, and
+/// lists a symlink without following it.
 #[derive(Debug, Clone, Default)]
 pub struct ListOptions {
     /// `None` lists the whole tree; `Some(1)` lists the root's own entries only.
@@ -46,6 +55,9 @@ pub struct ListOptions {
     /// The listing is what the caller is permitted to see: a path it may not look into is
     /// marked `permitted: false`, a path gone mid-walk is named in `vanished`.
     pub permitted_only: bool,
+    /// A symlink is listed as what it leads to — a file, or a directory with its entries
+    /// beneath it — and the walk goes wherever the link leads.
+    pub follow_symlinks: bool,
 }
 
 /// One entry, by its path relative to the root.
@@ -62,7 +74,8 @@ pub struct DirectoryEntry {
     pub permitted: Option<bool>,
 }
 
-/// What an entry is. A symlink is never followed.
+/// What an entry is. `Symlink` is a link the walk listed; a walk that follows links
+/// lists none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryKind {
@@ -89,6 +102,11 @@ pub enum DirectoryReadError {
     FileUnreadable { path: String, message: String },
     /// Every path the walk could not read, at once.
     EntriesUnreadable { root: String, failures: Vec<String> },
+    /// Every followed link that leads to nothing, at once.
+    LinksBroken { root: String, links: Vec<String> },
+    /// Every followed link that leads back into a directory the walk was inside, at
+    /// once, each with where it leads back to.
+    LinksLooping { root: String, links: Vec<String> },
     /// The listing did not match its own schema — an engine fault.
     ListingInvalid { root: String, message: String },
 }
@@ -101,6 +119,12 @@ impl DirectoryReadError {
             DirectoryReadError::FileUnreadable { path, message } => failure_mode_core::file_unreadable(path, message),
             DirectoryReadError::EntriesUnreadable { root, failures } => {
                 failure_mode_core::directory_partly_unreadable(root, failures.len(), failures.join("\n  "))
+            }
+            DirectoryReadError::LinksBroken { root, links } => {
+                failure_mode_core::directory_links_broken(root, links.len(), links.join("\n  "))
+            }
+            DirectoryReadError::LinksLooping { root, links } => {
+                failure_mode_core::directory_links_looping(root, links.len(), links.join("\n  "))
             }
             DirectoryReadError::ListingInvalid { root, message } => failure_mode_core::directory_listing_invalid(root, message),
         }
@@ -120,13 +144,19 @@ impl std::fmt::Display for DirectoryReadError {
 
 impl std::error::Error for DirectoryReadError {}
 
-/// The walk's working state: the root it lists from, what it found, what vanished, and what it could not read.
+/// The walk's working state: the root it lists from, what it found, what vanished, what it
+/// could not read, and — while it follows links — where it is and which links it refused.
 struct Walk<'a> {
     root: &'a Path,
     options: ListOptions,
     entries: Vec<DirectoryEntry>,
     vanished: Vec<String>,
     failures: Vec<String>,
+    /// The directories the walk is inside, outermost first, each by its real path.
+    /// Kept only while links are followed.
+    inside: Vec<PathBuf>,
+    broken_links: Vec<String>,
+    looping_links: Vec<String>,
 }
 
 /// What a path the walk could not read means, under the caller's choice.
@@ -173,7 +203,20 @@ pub fn list_directory(root: &str, options: ListOptions) -> Result<DirectoryListi
     if !metadata.is_dir() {
         return Err(unreadable("not a directory"));
     }
-    let mut walk = Walk { root: root_path, options, entries: Vec::new(), vanished: Vec::new(), failures: Vec::new() };
+    let inside = match options.follow_symlinks {
+        true => vec![fs::canonicalize(root_path).map_err(|io_err| unreadable(&io_err.to_string()))?],
+        false => Vec::new(),
+    };
+    let mut walk = Walk {
+        root: root_path,
+        options,
+        entries: Vec::new(),
+        vanished: Vec::new(),
+        failures: Vec::new(),
+        inside,
+        broken_links: Vec::new(),
+        looping_links: Vec::new(),
+    };
     match walk_level(&mut walk, root_path, 1) {
         Opened::NotPermitted => return Err(unreadable("permission denied")),
         Opened::Vanished => return Err(unreadable("it vanished while being listed")),
@@ -181,6 +224,14 @@ pub fn list_directory(root: &str, options: ListOptions) -> Result<DirectoryListi
     }
     if !walk.failures.is_empty() {
         return Err(DirectoryReadError::EntriesUnreadable { root: root.to_string(), failures: walk.failures });
+    }
+    if !walk.broken_links.is_empty() {
+        walk.broken_links.sort();
+        return Err(DirectoryReadError::LinksBroken { root: root.to_string(), links: walk.broken_links });
+    }
+    if !walk.looping_links.is_empty() {
+        walk.looping_links.sort();
+        return Err(DirectoryReadError::LinksLooping { root: root.to_string(), links: walk.looping_links });
     }
     walk.entries.sort_by(|left, right| left.path.cmp(&right.path));
     walk.vanished.sort();
@@ -271,7 +322,10 @@ fn visit_entry(walk: &mut Walk<'_>, path: &Path, depth: u32) -> Visited {
         Err(io_err) => return uninspected(walk, path, relative, &io_err),
     };
     if metadata.file_type().is_symlink() {
-        walk.entries.push(entry(relative, EntryKind::Symlink, None, None));
+        match walk.options.follow_symlinks {
+            true => visit_followed_link(walk, path, name, relative, depth),
+            false => walk.entries.push(entry(relative, EntryKind::Symlink, None, None)),
+        }
     } else if metadata.is_dir() {
         visit_directory(walk, path, name, relative, depth);
     } else {
@@ -291,6 +345,26 @@ fn uninspected(walk: &mut Walk<'_>, path: &Path, relative: String, io_err: &std:
     Visited::Done
 }
 
+/// A link the walk follows: listed as what it leads to. A link that leads to nothing is
+/// broken; one that leads to a directory the walk is inside would never end.
+fn visit_followed_link(walk: &mut Walk<'_>, path: &Path, name: &str, relative: String, depth: u32) {
+    let target = match fs::metadata(path) {
+        Ok(target) => target,
+        Err(io_err) if io_err.kind() == ErrorKind::NotFound => return walk.broken_links.push(relative),
+        Err(io_err) => return walk.failures.push(format!("{}: {io_err}", path.display())),
+    };
+    if !target.is_dir() {
+        return visit_file(walk, path, relative, target.len());
+    }
+    match fs::canonicalize(path) {
+        Ok(real_path) if walk.inside.contains(&real_path) => {
+            walk.looping_links.push(format!("{relative} leads back to {}", real_path.display()));
+        }
+        Ok(_) => visit_directory(walk, path, name, relative, depth),
+        Err(io_err) => walk.failures.push(format!("{}: {io_err}", path.display())),
+    }
+}
+
 /// A directory: left out when pruned; listed, then entered within depth.
 fn visit_directory(walk: &mut Walk<'_>, path: &Path, name: &str, relative: String, depth: u32) {
     let pruned = (walk.options.prune_hidden_directories && name.starts_with('.'))
@@ -303,7 +377,17 @@ fn visit_directory(walk: &mut Walk<'_>, path: &Path, name: &str, relative: Strin
     if walk.options.max_depth.is_some_and(|max_depth| depth >= max_depth) {
         return;
     }
-    match walk_level(walk, path, depth + 1) {
+    if walk.options.follow_symlinks {
+        match fs::canonicalize(path) {
+            Ok(real_path) => walk.inside.push(real_path),
+            Err(io_err) => return walk.failures.push(format!("{}: {io_err}", path.display())),
+        }
+    }
+    let opened = walk_level(walk, path, depth + 1);
+    if walk.options.follow_symlinks {
+        walk.inside.pop();
+    }
+    match opened {
         Opened::NotPermitted => walk.entries[index].permitted = Some(false),
         Opened::Vanished => {
             let gone = walk.entries.remove(index);
@@ -558,6 +642,138 @@ mod tests {
         for io_err in [&denied, &gone, &fault] {
             assert_eq!(classify(&ListOptions::default(), io_err), Unreadable::Failure);
         }
+    }
+
+    // ── Links followed ───────────────────────────────────────────
+
+    fn followed() -> ListOptions {
+        ListOptions { follow_symlinks: true, ..ListOptions::default() }
+    }
+
+    /// A project whose `atom` level is a link into a core tree beside it, outside the root.
+    fn project_linked_into_core(test_name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("nornir_directory_read_io_{test_name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("core/source/atom")).unwrap();
+        fs::write(dir.join("core/source/atom/path_absolute.yaml"), "kind: atom").unwrap();
+        let project = dir.join("project/source");
+        fs::create_dir_all(project.join("section")).unwrap();
+        fs::write(project.join("section/identity.yaml"), "x").unwrap();
+        symlink("../../core/source/atom", project.join("atom")).unwrap();
+        (dir, project)
+    }
+
+    #[test]
+    fn a_followed_link_to_a_directory_is_a_directory_with_its_entries_beneath_it() {
+        let (dir, project) = project_linked_into_core("followed_directory");
+        let listing = list_directory(project.to_str().unwrap(), followed()).unwrap();
+        assert_eq!(paths(&listing), ["atom", "atom/path_absolute.yaml", "section", "section/identity.yaml"]);
+        assert_eq!(listing.entries[0].kind, EntryKind::Directory);
+        assert_eq!(listing.entries[1].kind, EntryKind::File);
+        assert_eq!(listing.entries[1].size, Some(10));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_followed_link_to_a_file_is_a_file_with_the_size_of_its_target() {
+        let (dir, project) = project_linked_into_core("followed_file");
+        symlink("../../core/source/atom/path_absolute.yaml", project.join("shared.yaml")).unwrap();
+        let listing = list_directory(project.to_str().unwrap(), followed()).unwrap();
+        let shared = listing.entries.iter().find(|entry| entry.path == "shared.yaml").unwrap();
+        assert_eq!(shared.kind, EntryKind::File);
+        assert_eq!(shared.size, Some(10));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_walk_that_follows_links_lists_no_symlink() {
+        let (dir, project) = project_linked_into_core("followed_no_symlink");
+        symlink("../../core/source/atom/path_absolute.yaml", project.join("shared.yaml")).unwrap();
+        let listing = list_directory(project.to_str().unwrap(), followed()).unwrap();
+        assert!(listing.entries.iter().all(|entry| entry.kind != EntryKind::Symlink));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_same_tree_without_following_lists_the_link_and_nothing_beneath_it() {
+        let (dir, project) = project_linked_into_core("not_followed");
+        let listing = list_directory(project.to_str().unwrap(), ListOptions::default()).unwrap();
+        assert_eq!(paths(&listing), ["atom", "section", "section/identity.yaml"]);
+        assert_eq!(listing.entries[0].kind, EntryKind::Symlink);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn two_links_to_one_directory_list_it_under_each() {
+        let (dir, project) = project_linked_into_core("followed_twice");
+        symlink("../../core/source/atom", project.join("atom_again")).unwrap();
+        let listing = list_directory(project.to_str().unwrap(), followed()).unwrap();
+        assert!(paths(&listing).contains(&"atom/path_absolute.yaml"));
+        assert!(paths(&listing).contains(&"atom_again/path_absolute.yaml"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_hidden_link_is_left_out_like_any_hidden_entry() {
+        let (dir, project) = project_linked_into_core("followed_hidden");
+        symlink("../../core/source/atom", project.join(".atom")).unwrap();
+        let listing = list_directory(project.to_str().unwrap(), followed()).unwrap();
+        assert!(!paths(&listing).iter().any(|path| path.starts_with(".atom")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_followed_link_that_leads_to_nothing_is_refused_by_name() {
+        let (dir, project) = project_linked_into_core("followed_broken");
+        symlink("../../core/source/absent", project.join("enum")).unwrap();
+        symlink("nowhere.yaml", project.join("section/lost.yaml")).unwrap();
+        let error = list_directory(project.to_str().unwrap(), followed()).unwrap_err();
+        assert_eq!(error.failure().mode, "directory_links_broken");
+        assert_eq!(error.error_type(), "read_error");
+        let message = error.to_string();
+        assert!(message.contains("2 link(s)"), "{message}");
+        assert!(message.contains("\n  enum\n  section/lost.yaml"), "{message}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_followed_link_that_leads_back_into_the_walk_is_refused_with_where_it_leads() {
+        let (dir, project) = project_linked_into_core("followed_loop");
+        symlink("..", project.join("section/up")).unwrap();
+        let error = list_directory(project.to_str().unwrap(), followed()).unwrap_err();
+        assert_eq!(error.failure().mode, "directory_links_looping");
+        assert_eq!(error.error_type(), "validation_error");
+        let leads_back_to = fs::canonicalize(&project).unwrap();
+        let message = error.to_string();
+        assert!(message.contains(&format!("section/up leads back to {}", leads_back_to.display())), "{message}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_loop_inside_a_followed_directory_is_refused_too() {
+        let (dir, project) = project_linked_into_core("followed_loop_outside");
+        symlink(".", dir.join("core/source/atom/self")).unwrap();
+        let error = list_directory(project.to_str().unwrap(), followed()).unwrap_err();
+        assert_eq!(error.failure().mode, "directory_links_looping");
+        assert!(error.to_string().contains("atom/self leads back to"), "{error}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_root_that_is_a_link_is_not_a_directory_to_list() {
+        let (dir, project) = project_linked_into_core("followed_root_link");
+        let error = list_directory(project.join("atom").to_str().unwrap(), followed()).unwrap_err();
+        assert_eq!(error.failure().mode, "directory_unlistable");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_followed_json_matches_the_listing_schema() {
+        let (dir, project) = project_linked_into_core("followed_json");
+        let json = read_directory_json(project.to_str().unwrap(), followed()).unwrap();
+        assert!(DIRECTORY_LISTING.is_valid(&json).unwrap());
+        assert!(!json.contains("symlink"), "{json}");
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -1,0 +1,23 @@
+[package]
+name = "read_directory_links_followed_json"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "read_directory_links_followed_json"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "read_directory_links_followed_json"
+path = "src/main.rs"
+
+[features]
+python = ["dep:pyo3", "tool_face_io/python"]
+
+[dependencies]
+pyo3 = { workspace = true, optional = true }
+directory_read_io = { path = "../../capability/directory_read_io" }
+tool_face_io = { path = "../../capability/tool_face_io" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
