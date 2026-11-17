@@ -567,27 +567,99 @@ pub fn extract_module_info(node: Node, source: &[u8]) -> (String, usize) {
     (full_text.to_string(), 0)
 }
 
-/// Get names imported by an import_from_statement.
-///
-/// For `from X import A, B, C`, returns vec!["A", "B", "C"].
+/// Get names imported by an import_from_statement, each by the name it has in
+/// its module: `from X import A, B as C, *` returns `["A", "B", "*"]`.
 pub fn extract_imported_names(node: Node, source: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     let mut past_import = false;
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "import" {
-            past_import = true;
-            continue;
-        }
-        if past_import && child.kind() == "dotted_name" {
-            names.push(node_text(child, source).to_string());
-        }
-        if past_import && child.kind() == "wildcard_import" {
-            names.push("*".to_string());
+        match child.kind() {
+            "import" => past_import = true,
+            "dotted_name" if past_import => names.push(node_text(child, source).to_string()),
+            "aliased_import" if past_import => {
+                names.extend(child.child_by_field_name("name").map(|name| node_text(name, source).to_string()));
+            }
+            "wildcard_import" if past_import => names.push("*".to_string()),
+            _ => {}
         }
     }
     names
+}
+
+/// The local names a file binds to `name` from `module`, at any depth:
+/// `from module import name` binds `name`, `from module import name as other`
+/// binds `other`. Relative imports bind nothing here.
+pub fn bound_names(root: Node, source: &[u8], module: &str, name: &str) -> Vec<String> {
+    find_nodes_by_type(root, "import_from_statement")
+        .into_iter()
+        .filter(|statement| extract_module_info(*statement, source) == (module.to_string(), 0))
+        .flat_map(|statement| import_bindings(statement, "name", source))
+        .filter(|(original, _)| *original == name)
+        .map(|(_, local)| local.to_string())
+        .collect()
+}
+
+/// The local names a file binds to `module` itself, at any depth: `import module`
+/// binds `module`, `import module as other` binds `other`.
+pub fn module_names(root: Node, source: &[u8], module: &str) -> Vec<String> {
+    find_nodes_by_type(root, "import_statement")
+        .into_iter()
+        .flat_map(|statement| import_bindings(statement, "name", source))
+        .filter(|(original, _)| *original == module)
+        .map(|(_, local)| local.to_string())
+        .collect()
+}
+
+/// What each name an import statement binds stands for: `(original, local)`.
+/// `a` binds `("a", "a")`, `a as b` binds `("a", "b")`.
+fn import_bindings<'a>(statement: Node, field: &str, source: &'a [u8]) -> Vec<(&'a str, &'a str)> {
+    let mut cursor = statement.walk();
+    let bindings = statement
+        .children_by_field_name(field, &mut cursor)
+        .filter_map(|child| import_binding(child, source))
+        .collect();
+    bindings
+}
+
+/// The `(original, local)` pair of one imported name, plain or aliased.
+fn import_binding<'a>(child: Node, source: &'a [u8]) -> Option<(&'a str, &'a str)> {
+    match child.kind() {
+        "dotted_name" => Some((node_text(child, source), node_text(child, source))),
+        "aliased_import" => {
+            let original = node_text(child.child_by_field_name("name")?, source);
+            let alias = node_text(child.child_by_field_name("alias")?, source);
+            Some((original, alias))
+        }
+        _ => None,
+    }
+}
+
+/// Every name a file may use for `name`: the name itself, and each alias it is
+/// imported under from one of `modules`.
+pub fn names_for(root: Node, source: &[u8], name: &str, modules: &[&str]) -> Vec<String> {
+    let mut names = vec![name.to_string()];
+    for module in modules {
+        names.extend(bound_names(root, source, module, name));
+    }
+    names
+}
+
+/// The modules an `import` statement brings in, an aliased one by its module's
+/// name: `import os.path, json as serial` returns `["os.path", "json"]`.
+pub fn imported_modules<'a>(node: Node, source: &'a [u8]) -> Vec<&'a str> {
+    let mut cursor = node.walk();
+    let modules = node
+        .named_children(&mut cursor)
+        .filter_map(|child| match child.kind() {
+            "dotted_name" => Some(child),
+            "aliased_import" => child.child_by_field_name("name"),
+            _ => None,
+        })
+        .map(|module| node_text(module, source))
+        .collect();
+    modules
 }
 
 #[cfg(test)]

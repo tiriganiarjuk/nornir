@@ -6,7 +6,8 @@
 
 use crate::classify;
 use crate::parsing::{
-    extract_imported_names, extract_module_info, find_nodes_by_type, node_line, node_text,
+    bound_names, extract_imported_names, extract_module_info, find_nodes_by_type, imported_modules, module_names,
+    node_line, node_text,
 };
 use crate::structures::{CheckConfig, Level, ParsedSource, Severity, V2Classification, Violation, Zone};
 
@@ -95,17 +96,13 @@ pub fn check_no_unsafe_imports(source: &ParsedSource, _config: &CheckConfig) -> 
 
     // Tree-sitter: bare imports
     for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "dotted_name" {
-                let module = node_text(child, source.source_bytes);
-                let parts: Vec<&str> = module.split('.').collect();
-                if parts.len() > 1 && parts[1..].contains(&"unsafe") {
-                    violations.push(violation(
-                        node_line(node),
-                        "importing from quarantine zone".to_string(),
-                    ));
-                }
+        for module in imported_modules(node, source.source_bytes) {
+            let parts: Vec<&str> = module.split('.').collect();
+            if parts.len() > 1 && parts[1..].contains(&"unsafe") {
+                violations.push(violation(
+                    node_line(node),
+                    "importing from quarantine zone".to_string(),
+                ));
             }
         }
     }
@@ -164,12 +161,10 @@ fn check_pathlib_names(node: tree_sitter::Node, source: &[u8]) -> Vec<Violation>
 }
 
 fn classify_bare_import(node: tree_sitter::Node, source: &[u8]) -> Vec<Violation> {
-    let mut cursor = node.walk();
     let line = node_line(node);
-    node.named_children(&mut cursor)
-        .filter(|child| child.kind() == "dotted_name")
-        .filter_map(|child| {
-            let module = node_text(child, source);
+    imported_modules(node, source)
+        .into_iter()
+        .filter_map(|module| {
             let parts: Vec<&str> = module.split('.').collect();
             let top = parts.first().copied().unwrap_or("");
             if parts.contains(&"impure") {
@@ -340,17 +335,13 @@ pub fn check_no_disallowed_stdlib(
     }
 
     for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "dotted_name" {
-                let module = node_text(child, source.source_bytes);
-                let top = module.split('.').next().unwrap_or("");
-                if let Some((_, replacement)) = DISALLOWED_STDLIB.iter().find(|(name, _)| *name == top) {
-                    violations.push(violation(
-                        node_line(node),
-                        format!("'{top}' is superseded — use {replacement}"),
-                    ));
-                }
+        for module in imported_modules(node, source.source_bytes) {
+            let top = module.split('.').next().unwrap_or("");
+            if let Some((_, replacement)) = DISALLOWED_STDLIB.iter().find(|(name, _)| *name == top) {
+                violations.push(violation(
+                    node_line(node),
+                    format!("'{top}' is superseded — use {replacement}"),
+                ));
             }
         }
     }
@@ -397,12 +388,42 @@ const GATE_BYPASS_PARSERS: &[(&str, &str)] = &[
     ("shelve", NO_READER_YET),
 ];
 
-/// Method names that are direct file IO on any receiver. (method, verb, replacement)
+/// A listing, a presence test or a change on disk.
+const DISK_REPLACEMENT: &str = "a compiled tool for anything on disk";
+
+/// Method names that are direct file IO on any receiver, a Path a library hands
+/// back included. Only names a Path holds and a string or a model does not:
+/// `rename`, `replace`, `glob` and `stat` are left out. (method, verb, replacement)
 const DIRECT_FILE_METHODS: &[(&str, &str, &str)] = &[
     ("read_text", "read", READ_REPLACEMENT),
     ("read_bytes", "read", READ_REPLACEMENT),
     ("write_text", "write", WRITE_REPLACEMENT),
     ("write_bytes", "write", WRITE_REPLACEMENT),
+    ("unlink", "change", DISK_REPLACEMENT),
+    ("mkdir", "change", DISK_REPLACEMENT),
+    ("rmdir", "change", DISK_REPLACEMENT),
+    ("touch", "change", DISK_REPLACEMENT),
+    ("symlink_to", "change", DISK_REPLACEMENT),
+    ("hardlink_to", "change", DISK_REPLACEMENT),
+    ("iterdir", "query", DISK_REPLACEMENT),
+    ("rglob", "query", DISK_REPLACEMENT),
+    ("is_file", "query", DISK_REPLACEMENT),
+    ("is_dir", "query", DISK_REPLACEMENT),
+    ("is_symlink", "query", DISK_REPLACEMENT),
+    ("exists", "query", DISK_REPLACEMENT),
+];
+
+/// The functions of `os` that list, test or change what is on disk.
+const OS_DISK_FUNCTIONS: &[&str] = &[
+    "remove", "unlink", "rmdir", "removedirs", "rename", "renames", "replace", "mkdir", "makedirs",
+    "listdir", "scandir", "walk", "fwalk", "stat", "lstat", "chmod", "chown", "lchown", "link",
+    "symlink", "readlink", "truncate", "utime", "open", "fdopen", "mkfifo", "access", "chdir",
+];
+
+/// The functions of `os.path` that look at the disk; the rest only handle a name.
+const OS_PATH_DISK_FUNCTIONS: &[&str] = &[
+    "exists", "lexists", "isfile", "isdir", "islink", "ismount", "getsize", "getmtime", "getatime",
+    "getctime", "samefile", "realpath",
 ];
 
 /// Receivers whose `.open(` is not a file handle. Grows only with a no-fire
@@ -422,19 +443,10 @@ fn parser_violation(line: usize, module_top: &str, replacement: &str, via_suffix
     violation(line, format!("'{module_top}' bypasses the reader gates{via_suffix} — use {replacement}"))
 }
 
-/// Surface A1: `import x[.y] [as z]` — unwraps aliased_import, which the
-/// sibling check's loop never sees.
+/// Surface A1: `import x[.y] [as z]`.
 fn collect_parser_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
     for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            let module_node = match child.kind() {
-                "dotted_name" => Some(child),
-                "aliased_import" => child.child_by_field_name("name"),
-                _ => None,
-            };
-            let Some(module_node) = module_node else { continue };
-            let module = node_text(module_node, source.source_bytes);
+        for module in imported_modules(node, source.source_bytes) {
             if let Some((top, replacement)) = parser_replacement(module) {
                 violations.push(parser_violation(node_line(node), top, replacement, ""));
             }
@@ -592,12 +604,16 @@ fn file_method_violation(call: tree_sitter::Node, func: tree_sitter::Node, sourc
     ))
 }
 
+/// Every call surface, one finding per call: the first surface that names it.
 fn collect_call_surfaces(source: &ParsedSource, violations: &mut Vec<Violation>) {
-    for call in find_nodes_by_type(source.tree.root_node(), "call") {
+    let root = source.tree.root_node();
+    let bytes = source.source_bytes;
+    let holders = os_holders(root, bytes);
+    for call in find_nodes_by_type(root, "call") {
         let Some(func) = call.child_by_field_name("function") else { continue };
-        let bytes = source.source_bytes;
         let hit = dynamic_import_violation(call, func, bytes)
             .or_else(|| open_violation(call, func, bytes))
+            .or_else(|| os_call_violation(call, func, &holders, bytes))
             .or_else(|| file_method_violation(call, func, bytes));
         if let Some(v) = hit {
             violations.push(v);
@@ -607,26 +623,6 @@ fn collect_call_surfaces(source: &ParsedSource, violations: &mut Vec<Violation>)
 
 const PATH_REPLACEMENT: &str = "PurePath for a path's name, and a compiled tool for anything on disk";
 
-/// The names a `from x import ...` statement brings in, an aliased one under
-/// the name it has in its module; `*` for a wildcard.
-fn imported_source_names<'text>(node: tree_sitter::Node, source: &'text [u8]) -> Vec<&'text str> {
-    let mut names = Vec::new();
-    let mut past_import = false;
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "import" => past_import = true,
-            "dotted_name" if past_import => names.push(node_text(child, source)),
-            "aliased_import" if past_import => {
-                names.extend(child.child_by_field_name("name").map(|name| node_text(name, source)));
-            }
-            "wildcard_import" if past_import => names.push("*"),
-            _ => {}
-        }
-    }
-    names
-}
-
 /// Surface C1: `from pathlib import Path [as P]` — every name but the pure ones.
 fn collect_path_from_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
     for node in find_nodes_by_type(source.tree.root_node(), "import_from_statement") {
@@ -634,8 +630,8 @@ fn collect_path_from_imports(source: &ParsedSource, violations: &mut Vec<Violati
         if level != 0 || module != "pathlib" {
             continue;
         }
-        for name in imported_source_names(node, source.source_bytes) {
-            if !PATHLIB_PURE.contains(&name) {
+        for name in extract_imported_names(node, source.source_bytes) {
+            if !PATHLIB_PURE.contains(&name.as_str()) {
                 violations.push(violation(
                     node_line(node),
                     format!("'{name}' from pathlib reaches the filesystem — use {PATH_REPLACEMENT}"),
@@ -648,14 +644,8 @@ fn collect_path_from_imports(source: &ParsedSource, violations: &mut Vec<Violati
 /// Surface C2: `import pathlib [as p]` — the module whole brings Path with it.
 fn collect_whole_pathlib_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
     for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            let module_node = match child.kind() {
-                "dotted_name" => Some(child),
-                "aliased_import" => child.child_by_field_name("name"),
-                _ => None,
-            };
-            if module_node.is_some_and(|module| node_text(module, source.source_bytes) == "pathlib") {
+        for module in imported_modules(node, source.source_bytes) {
+            if module == "pathlib" {
                 violations.push(violation(
                     node_line(node),
                     format!("pathlib imported whole brings Path with it — import PurePath by name: {PATH_REPLACEMENT}"),
@@ -665,12 +655,96 @@ fn collect_whole_pathlib_imports(source: &ParsedSource, violations: &mut Vec<Vio
     }
 }
 
+/// Surface D1: `shutil`, whole or by name — every function it holds works on the disk.
+fn collect_shutil_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
+    let root = source.tree.root_node();
+    let bytes = source.source_bytes;
+    let message = format!("'shutil' works on the disk — use {DISK_REPLACEMENT}");
+    for node in find_nodes_by_type(root, "import_statement") {
+        if imported_modules(node, bytes).iter().any(|module| module.split('.').next() == Some("shutil")) {
+            violations.push(violation(node_line(node), message.clone()));
+        }
+    }
+    for node in find_nodes_by_type(root, "import_from_statement") {
+        let (module, level) = extract_module_info(node, bytes);
+        if level == 0 && module.split('.').next() == Some("shutil") {
+            violations.push(violation(node_line(node), message.clone()));
+        }
+    }
+}
+
+/// Whether `name` of `module` lists, tests or changes what is on disk.
+fn is_os_disk_function(module: &str, name: &str) -> bool {
+    match module {
+        "os" => OS_DISK_FUNCTIONS.contains(&name),
+        "os.path" => OS_PATH_DISK_FUNCTIONS.contains(&name),
+        _ => false,
+    }
+}
+
+/// Surface D2: `from os import remove`, `from os.path import exists` — the disk
+/// functions by name. `os.environ`, `os.sep` and `os.path.join` touch no disk.
+fn collect_os_from_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
+    for node in find_nodes_by_type(source.tree.root_node(), "import_from_statement") {
+        let (module, level) = extract_module_info(node, source.source_bytes);
+        if level != 0 {
+            continue;
+        }
+        for name in extract_imported_names(node, source.source_bytes) {
+            if is_os_disk_function(&module, &name) {
+                violations.push(violation(
+                    node_line(node),
+                    format!("'{name}' from {module} reaches the disk — use {DISK_REPLACEMENT}"),
+                ));
+            }
+        }
+    }
+}
+
+/// The names a file uses for `os` and for `os.path`.
+fn os_holders(root: tree_sitter::Node, source: &[u8]) -> (Vec<String>, Vec<String>) {
+    let mut os_names = module_names(root, source, "os");
+    os_names.push("os".to_string());
+    let mut os_path_names: Vec<String> = os_names.iter().map(|name| format!("{name}.path")).collect();
+    os_path_names.extend(bound_names(root, source, "os", "path"));
+    os_path_names.extend(module_names(root, source, "os.path"));
+    (os_names, os_path_names)
+}
+
+/// Surface D3: `os.remove(...)`, `os.path.exists(...)` — a disk function called
+/// through a name the file uses for `os` or `os.path`.
+fn os_call_violation(
+    call: tree_sitter::Node,
+    func: tree_sitter::Node,
+    holders: &(Vec<String>, Vec<String>),
+    source: &[u8],
+) -> Option<Violation> {
+    if func.kind() != "attribute" {
+        return None;
+    }
+    let object = node_text(func.child_by_field_name("object")?, source);
+    let name = node_text(func.child_by_field_name("attribute")?, source);
+    let (os_names, os_path_names) = holders;
+    let module = if os_names.iter().any(|held| held == object) {
+        "os"
+    } else if os_path_names.iter().any(|held| held == object) {
+        "os.path"
+    } else {
+        return None;
+    };
+    is_os_disk_function(module, name).then(|| {
+        violation(node_line(call), format!("direct disk call ({}) — use {DISK_REPLACEMENT}", node_text(func, source)))
+    })
+}
+
 pub fn check_no_direct_file_io(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
     let mut violations = Vec::new();
     collect_parser_imports(source, &mut violations);
     collect_parser_from_imports(source, &mut violations);
     collect_path_from_imports(source, &mut violations);
     collect_whole_pathlib_imports(source, &mut violations);
+    collect_shutil_imports(source, &mut violations);
+    collect_os_from_imports(source, &mut violations);
     collect_call_surfaces(source, &mut violations);
     violations
 }
@@ -776,19 +850,15 @@ pub fn check_v2_import_boundaries(
 
     // Check bare import_statement nodes
     for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "dotted_name" {
-                let dotted = node_text(child, source.source_bytes).to_string();
-                if let Some(target_class) = classify::classify_import_path(&dotted) {
-                    check_import_legality(
-                        source_class,
-                        target_class,
-                        &dotted,
-                        node_line(node),
-                        &mut violations,
-                    );
-                }
+        for dotted in imported_modules(node, source.source_bytes) {
+            if let Some(target_class) = classify::classify_import_path(dotted) {
+                check_import_legality(
+                    source_class,
+                    target_class,
+                    dotted,
+                    node_line(node),
+                    &mut violations,
+                );
             }
         }
     }
@@ -877,42 +947,67 @@ pub fn check_no_sys_path_mutation(
     source: &ParsedSource,
     _config: &CheckConfig,
 ) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let bytes = source.source_bytes;
+    let holders = sys_path_names(root, bytes);
     let mut violations = Vec::new();
 
-    // Find call expressions: sys.path.insert(...), sys.path.append(...)
-    for node in find_nodes_by_type(source.tree.root_node(), "call") {
-        let func = match node.child_by_field_name("function") {
-            Some(f) => f,
-            None => continue,
+    // Calls that change the list in place: sys.path.insert(...), path.extend(...)
+    for node in find_nodes_by_type(root, "call") {
+        let Some(func) = node.child_by_field_name("function").filter(|func| func.kind() == "attribute") else {
+            continue;
         };
-        let func_text = node_text(func, source.source_bytes);
-        if func_text == "sys.path.insert" || func_text == "sys.path.append" {
+        let held = func.child_by_field_name("object").is_some_and(|object| holds_sys_path(object, &holders, bytes));
+        let method = func.child_by_field_name("attribute").map(|attribute| node_text(attribute, bytes)).unwrap_or("");
+        if held && SYS_PATH_MUTATORS.contains(&method) {
+            let func_text = node_text(func, bytes);
             violations.push(violation(
                 node_line(node),
-                format!(
-                    "{func_text}() manipulates import path — fix the project layout instead"
-                ),
+                format!("{func_text}() manipulates import path — fix the project layout instead"),
             ));
         }
     }
 
-    // Find assignments: sys.path = ..., sys.path[:] = ...
-    for node in find_nodes_by_type(source.tree.root_node(), "assignment") {
-        let left = match node.child_by_field_name("left") {
-            Some(l) => l,
-            None => continue,
-        };
-        let left_text = node_text(left, source.source_bytes);
-        if left_text == "sys.path" || left_text.starts_with("sys.path[") {
-            violations.push(violation(
-                node_line(node),
-                "sys.path assignment manipulates import path — fix the project layout instead"
-                    .to_string(),
-            ));
+    // Assignments: sys.path = ..., sys.path[:] = ..., sys.path += ...
+    for kind in ["assignment", "augmented_assignment"] {
+        for node in find_nodes_by_type(root, kind) {
+            let assigned = node.child_by_field_name("left").map(|left| unsubscripted(left));
+            if assigned.is_some_and(|target| holds_sys_path(target, &holders, bytes)) {
+                violations.push(violation(
+                    node_line(node),
+                    "sys.path assignment manipulates import path — fix the project layout instead".to_string(),
+                ));
+            }
         }
     }
 
     violations
+}
+
+/// The methods of a list that change it in place.
+const SYS_PATH_MUTATORS: &[&str] = &["insert", "append", "extend", "remove", "pop", "clear"];
+
+/// Every expression a file may use for `sys.path`: `sys.path` through each name
+/// it binds `sys` to, and each name it imports `path` from `sys` under.
+fn sys_path_names(root: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut sys_names = module_names(root, source, "sys");
+    sys_names.push("sys".to_string());
+    let mut holders: Vec<String> = sys_names.iter().map(|name| format!("{name}.path")).collect();
+    holders.extend(bound_names(root, source, "sys", "path"));
+    holders
+}
+
+/// Whether an expression is one of the names a file uses for `sys.path`.
+fn holds_sys_path(node: tree_sitter::Node, holders: &[String], source: &[u8]) -> bool {
+    holders.iter().any(|holder| holder == node_text(node, source))
+}
+
+/// A subscript's object (`sys.path` of `sys.path[:]`); any other node itself.
+fn unsubscripted(node: tree_sitter::Node) -> tree_sitter::Node {
+    if node.kind() == "subscript" {
+        return node.child_by_field_name("value").unwrap_or(node);
+    }
+    node
 }
 
 // -------------------------------------------------------------------------
@@ -1253,6 +1348,48 @@ mod tests {
         assert!(check_no_direct_file_io(&parsed, &default_config()).is_empty());
     }
 
+    // -- a module imported under another name is still that module --
+
+    #[test]
+    fn disallowed_stdlib_under_another_name_caught() {
+        // The canary: `import json as serial` leaves the check's dotted_name loop.
+        for code in ["import json as serial\n", "import os, logging as log\n"] {
+            let violations = check_no_disallowed_stdlib(&parse(code), &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn impure_module_under_another_name_caught_in_pure_zone() {
+        for code in ["import subprocess as shell\n", "import myproject.functions.impure.loader as loader\n"] {
+            let parsed = parse_with_path(code, "/project/src/functions/pure/module.py");
+            assert_eq!(check_impure_module_quarantine(&parsed, &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn impure_pathlib_name_under_another_name_caught_in_pure_zone() {
+        let parsed = parse_with_path("from pathlib import Path as Location\n", "/project/src/functions/pure/module.py");
+        let violations = check_impure_module_quarantine(&parsed, &default_config());
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("impure name"), "{}", violations[0].message);
+    }
+
+    #[test]
+    fn v2_same_level_import_under_another_name_blocked() {
+        let code = "import mypackage.logic.pure.check.simple as sibling\n";
+        let parsed = parse_with_path(code, "/project/src/mypackage/logic/pure/other/simple.py");
+        let violations = check_v2_import_boundaries(&parsed, &default_config());
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("level violation"));
+    }
+
+    #[test]
+    fn before_validator_under_another_name_caught() {
+        let parsed = parse("from pydantic import BeforeValidator as Coerce\n");
+        assert_eq!(check_no_before_validators(&parsed, &default_config()).len(), 1);
+    }
+
     #[test]
     fn pydantic_import_not_flagged() {
         let parsed = parse("from pydantic import BaseModel\n");
@@ -1562,6 +1699,73 @@ mod tests {
         assert!(v[0].message.starts_with("'*' from pathlib"), "{}", v[0].message);
     }
 
+    // fire: os, shutil, and a Path a library hands back
+
+    #[test]
+    fn direct_io_shutil_caught_whole_by_name_and_under_another_name() {
+        for code in ["import shutil\n", "import shutil as files\n", "from shutil import rmtree\n"] {
+            let v = direct_io(code);
+            assert_eq!(v.len(), 1, "{code}");
+            assert!(v[0].message.starts_with("'shutil' works on the disk"), "{code}");
+        }
+    }
+
+    #[test]
+    fn direct_io_os_disk_call_caught() {
+        // The specimen shape: with Path refused, the same reach through os.
+        for (shown, code) in [
+            ("os.remove", "import os\nos.remove(target)\n"),
+            ("os.makedirs", "import os\nos.makedirs(folder, exist_ok=True)\n"),
+            ("os.path.exists", "import os\nif os.path.exists(target):\n    pass\n"),
+            ("system.listdir", "import os as system\nnames = system.listdir(folder)\n"),
+            ("path.getsize", "from os import path\nsize = path.getsize(target)\n"),
+        ] {
+            let v = direct_io(code);
+            assert_eq!(v.len(), 1, "{code}");
+            assert_eq!(v[0].message, format!("direct disk call ({shown}) — use a compiled tool for anything on disk"));
+        }
+    }
+
+    #[test]
+    fn direct_io_os_disk_function_by_name_caught() {
+        for (name, code) in [
+            ("remove", "from os import remove\n"),
+            ("walk", "from os import walk as tree_walk\n"),
+            ("isfile", "from os.path import isfile\n"),
+        ] {
+            let v = direct_io(code);
+            assert_eq!(v.len(), 1, "{code}");
+            assert!(v[0].message.starts_with(&format!("'{name}' from os")), "{code}: {}", v[0].message);
+        }
+    }
+
+    #[test]
+    fn direct_io_os_that_touches_no_disk_not_flagged() {
+        let code = "import os\nfrom os import path, environ\nhome = os.environ[\"HOME\"]\nsep = os.sep\nfull = os.path.join(root, name)\nstem = path.splitext(name)[0]\n";
+        let v = direct_io(code);
+        assert!(v.is_empty(), "{:?}", v.iter().map(|x| &x.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn direct_io_disk_method_on_a_path_from_a_library_caught() {
+        for (method, code) in [
+            ("unlink", "workdir = tempfile_root()\nworkdir.unlink()\n"),
+            ("mkdir", "config.output_dir.mkdir(parents=True)\n"),
+            ("exists", "if settings.cache.exists():\n    pass\n"),
+            ("iterdir", "for entry in project.root.iterdir():\n    pass\n"),
+        ] {
+            let v = direct_io(code);
+            assert_eq!(v.len(), 1, "{code}");
+            assert!(v[0].message.contains(&format!("(.{method})")), "{code}: {}", v[0].message);
+        }
+    }
+
+    #[test]
+    fn direct_io_string_methods_that_share_a_path_s_name_not_flagged() {
+        let code = "title = name.replace(\"-\", \" \")\nlabel = record.rename()\nmatches = pattern.glob\n";
+        assert!(direct_io(code).is_empty());
+    }
+
     // -- no_before_validators --
 
     #[test]
@@ -1603,6 +1807,28 @@ mod tests {
         let violations = check_no_sys_path_mutation(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("sys.path assignment"));
+    }
+
+    #[test]
+    fn sys_path_reached_another_way_caught() {
+        // The canaries: the list extended, added to, or reached under another name.
+        for code in [
+            "import sys\nsys.path.extend([\"/some/path\"])\n",
+            "import sys\nsys.path += [\"/some/path\"]\n",
+            "import sys\nsys.path[:] = [\"/some/path\"]\n",
+            "from sys import path\npath.insert(0, \"/some/path\")\n",
+            "from sys import path as search\nsearch.append(\"/some/path\")\n",
+            "import sys as system\nsystem.path.append(\"/some/path\")\n",
+        ] {
+            assert_eq!(check_no_sys_path_mutation(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_list_named_path_that_is_not_sys_path_ok() {
+        for code in ["from os import path\nparts = path.split(name)\n", "path = []\npath.append(step)\n"] {
+            assert!(check_no_sys_path_mutation(&parse(code), &default_config()).is_empty(), "{code}");
+        }
     }
 
     #[test]

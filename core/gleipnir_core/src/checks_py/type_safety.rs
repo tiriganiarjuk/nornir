@@ -6,7 +6,7 @@
 
 use crate::parsing::{
     annotation_contains_name, bare_names_in_annotation, collect_union_leaves,
-    count_union_members, find_nodes_by_type, find_type_annotations, node_field, node_line,
+    count_union_members, find_nodes_by_type, find_type_annotations, names_for, node_field, node_line,
     node_text, walk_tree,
 };
 use crate::structures::{CheckConfig, ParsedSource, Severity, Violation};
@@ -54,12 +54,23 @@ pub fn check_no_json_value(source: &ParsedSource, _config: &CheckConfig) -> Vec<
     violations
 }
 
-pub fn check_no_any_types(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+/// The modules `Any` is imported from.
+const ANY_MODULES: &[&str] = &["typing", "typing_extensions"];
+/// The modules `Callable` is imported from.
+const CALLABLE_MODULES: &[&str] = &["typing", "typing_extensions", "collections.abc"];
 
+/// Whether a type node holds any of the names a file uses for one type.
+fn contains_any_of(type_node: tree_sitter::Node, names: &[String], source: &[u8]) -> bool {
+    names.iter().any(|name| annotation_contains_name(type_node, name, source))
+}
+
+pub fn check_no_any_types(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let any_names = names_for(root, source.source_bytes, "Any", ANY_MODULES);
     let mut violations = Vec::new();
 
-    for type_node in find_type_annotations(source.tree.root_node(), source.source_bytes) {
-        if annotation_contains_name(type_node, "Any", source.source_bytes) {
+    for type_node in find_type_annotations(root, source.source_bytes) {
+        if contains_any_of(type_node, &any_names, source.source_bytes) {
             let text = node_text(type_node, source.source_bytes);
             violations.push(violation(
                 node_line(type_node),
@@ -220,9 +231,11 @@ pub fn check_union_member_count(source: &ParsedSource, config: &CheckConfig) -> 
 /// bypassing the static import graph that gleipnir enforces. If a function needs
 /// to call another function, it must import it directly.
 pub fn check_no_callable_params(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let callable_names = names_for(root, source.source_bytes, "Callable", CALLABLE_MODULES);
     let mut violations = Vec::new();
 
-    for func in find_nodes_by_type(source.tree.root_node(), "function_definition") {
+    for func in find_nodes_by_type(root, "function_definition") {
         let params = match node_field(func, "parameters") {
             Some(p) => p,
             None => continue,
@@ -235,7 +248,7 @@ pub fn check_no_callable_params(source: &ParsedSource, _config: &CheckConfig) ->
                 Some(t) => t,
                 None => continue,
             };
-            if annotation_contains_name(type_node, "Callable", source.source_bytes) {
+            if contains_any_of(type_node, &callable_names, source.source_bytes) {
                 let param_name = node_field(param, "name")
                     .map(|n| node_text(n, source.source_bytes))
                     .unwrap_or_else(|| node_text(param, source.source_bytes));
@@ -259,9 +272,11 @@ pub fn check_no_callable_type_aliases(
     source: &ParsedSource,
     _config: &CheckConfig,
 ) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let callable_names = names_for(root, source.source_bytes, "Callable", CALLABLE_MODULES);
     let mut violations = Vec::new();
 
-    for node in find_nodes_by_type(source.tree.root_node(), "type_alias_statement") {
+    for node in find_nodes_by_type(root, "type_alias_statement") {
         let mut cursor = node.walk();
         let type_children: Vec<_> = node
             .named_children(&mut cursor)
@@ -283,7 +298,7 @@ pub fn check_no_callable_type_aliases(
             .map(|n| node_text(n, source.source_bytes))
             .unwrap_or("<unknown>");
 
-        if annotation_contains_name(value_node, "Callable", source.source_bytes) {
+        if contains_any_of(value_node, &callable_names, source.source_bytes) {
             violations.push(violation(
                 node_line(node),
                 format!(
@@ -300,9 +315,11 @@ pub fn check_no_callable_type_aliases(
 // -------------------------------------------------------------------------
 
 pub fn check_no_any_type_aliases(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let any_names = names_for(root, source.source_bytes, "Any", ANY_MODULES);
     let mut violations = Vec::new();
 
-    for node in find_nodes_by_type(source.tree.root_node(), "type_alias_statement") {
+    for node in find_nodes_by_type(root, "type_alias_statement") {
         // Extract alias name (second named child of kind "type" wrapping an identifier)
         // and value (last named child of kind "type")
         let mut cursor = node.walk();
@@ -327,7 +344,7 @@ pub fn check_no_any_type_aliases(source: &ParsedSource, _config: &CheckConfig) -
             .map(|n| node_text(n, source.source_bytes))
             .unwrap_or("<unknown>");
 
-        if annotation_contains_name(value_node, "Any", source.source_bytes) {
+        if contains_any_of(value_node, &any_names, source.source_bytes) {
             violations.push(violation(
                 node_line(node),
                 format!("type alias '{alias_name}' launders Any — use Any directly so type holes cluster visibly"),
@@ -1002,6 +1019,29 @@ mod tests {
         assert!(violations[0].message.contains("Any"));
     }
 
+    #[test]
+    fn any_under_another_name_caught() {
+        // The canary: Any imported under a respectable name.
+        for code in [
+            "from typing import Any as Unknown\ndef load(value: Unknown) -> int:\n    return 1\n",
+            "from typing_extensions import Any as Payload\nrows: list[Payload] = []\n",
+        ] {
+            assert_eq!(check_no_any_types(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn any_alias_through_a_renamed_import_caught() {
+        let parsed = parse("from typing import Any as Unknown\ntype JsonNode = dict[str, Unknown]\n");
+        assert_eq!(check_no_any_type_aliases(&parsed, &default_config()).len(), 1);
+    }
+
+    #[test]
+    fn a_name_that_is_not_any_is_not_any() {
+        let parsed = parse("from mypkg.models import Unknown\ndef load(value: Unknown) -> int:\n    return 1\n");
+        assert!(check_no_any_types(&parsed, &default_config()).is_empty());
+    }
+
     // -- no_bare_collections --
 
     #[test]
@@ -1176,6 +1216,18 @@ mod tests {
         let parsed = parse("def run(x: int, y: str) -> None:\n    pass\n");
         let violations = check_no_callable_params(&parsed, &default_config());
         assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn callable_under_another_name_caught() {
+        for code in [
+            "from typing import Callable as Handler\ndef run(on_done: Handler[[int], str]) -> None:\n    pass\n",
+            "from collections.abc import Callable as Hook\ndef run(on_done: Hook) -> None:\n    pass\n",
+        ] {
+            assert_eq!(check_no_callable_params(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+        let alias = parse("from typing import Callable as Handler\ntype Step = Handler[[int], int]\n");
+        assert_eq!(check_no_callable_type_aliases(&alias, &default_config()).len(), 1);
     }
 
     #[test]

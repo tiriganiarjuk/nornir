@@ -6,7 +6,7 @@
 //! no_general_lambda, no_default_factory, no_recursion.
 
 use crate::messages;
-use crate::parsing::{find_nodes_by_type, node_field, node_line, node_text};
+use crate::parsing::{bound_names, find_nodes_by_type, module_names, names_for, node_field, node_line, node_text};
 use crate::structures::{CheckConfig, CheckMessages, ParsedSource, Severity, Violation};
 
 fn violation(line: usize, message: String) -> Violation {
@@ -26,25 +26,29 @@ fn violation(line: usize, message: String) -> Violation {
 // no_cast
 // -------------------------------------------------------------------------
 
-fn is_cast_call(node: tree_sitter::Node, source: &[u8]) -> bool {
+/// Whether a call is to the function `name`: by one of the local names the file
+/// uses for it, or as an attribute of that name on any object.
+fn calls_named(node: tree_sitter::Node, name: &str, local_names: &[String], source: &[u8]) -> bool {
     let func = match node.child_by_field_name("function") {
         Some(f) => f,
         None => return false,
     };
     match func.kind() {
-        "identifier" => node_text(func, source) == "cast",
+        "identifier" => local_names.iter().any(|local| local == node_text(func, source)),
         "attribute" => {
             func.child_by_field_name("attribute")
-                .is_some_and(|a| node_text(a, source) == "cast")
+                .is_some_and(|a| node_text(a, source) == name)
         }
         _ => false,
     }
 }
 
 pub fn check_no_cast(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let cast_names = names_for(root, source.source_bytes, "cast", &["typing", "typing_extensions"]);
     let mut violations = Vec::new();
-    for node in find_nodes_by_type(source.tree.root_node(), "call") {
-        if is_cast_call(node, source.source_bytes) {
+    for node in find_nodes_by_type(root, "call") {
+        if calls_named(node, "cast", &cast_names, source.source_bytes) {
             violations.push(violation(node_line(node), "typing.cast() usage".to_string()));
         }
     }
@@ -599,20 +603,11 @@ pub fn check_no_default_factory(source: &ParsedSource, _config: &CheckConfig) ->
 /// bypass the lambda ban while producing the same ungreppable, untestable
 /// closures. If you need to bind arguments, write a named function.
 pub fn check_no_partial(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let partial_names = names_for(root, source.source_bytes, "partial", &["functools"]);
     let mut violations = Vec::new();
-    for node in find_nodes_by_type(source.tree.root_node(), "call") {
-        let func = match node.child_by_field_name("function") {
-            Some(f) => f,
-            None => continue,
-        };
-        let is_partial = match func.kind() {
-            "identifier" => node_text(func, source.source_bytes) == "partial",
-            "attribute" => func
-                .child_by_field_name("attribute")
-                .is_some_and(|a| node_text(a, source.source_bytes) == "partial"),
-            _ => false,
-        };
-        if is_partial {
+    for node in find_nodes_by_type(root, "call") {
+        if calls_named(node, "partial", &partial_names, source.source_bytes) {
             violations.push(violation(
                 node_line(node),
                 "functools.partial() — write a named function instead".to_string(),
@@ -631,28 +626,40 @@ pub fn check_no_partial(source: &ParsedSource, _config: &CheckConfig) -> Vec<Vio
 /// re.sub with a callable replacement encourages lambda and partial patterns.
 /// Use re.finditer() with a loop instead — explicit, readable, no callbacks.
 pub fn check_no_re_sub(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let bytes = source.source_bytes;
+    let mut re_names = module_names(root, bytes, "re");
+    re_names.push("re".to_string());
+    let sub_names = bound_names(root, bytes, "re", "sub");
     let mut violations = Vec::new();
-    for node in find_nodes_by_type(source.tree.root_node(), "call") {
-        let func = match node.child_by_field_name("function") {
-            Some(f) => f,
-            None => continue,
-        };
-        if func.kind() == "attribute" {
-            let object = func.child_by_field_name("object");
-            let attr = func.child_by_field_name("attribute");
-            if let (Some(obj), Some(attr)) = (object, attr) {
-                if node_text(obj, source.source_bytes) == "re"
-                    && node_text(attr, source.source_bytes) == "sub"
-                {
-                    violations.push(violation(
-                        node_line(node),
-                        "re.sub() — use re.finditer() with a loop instead".to_string(),
-                    ));
-                }
-            }
+    for node in find_nodes_by_type(root, "call") {
+        if is_re_sub_call(node, &re_names, &sub_names, bytes) {
+            violations.push(violation(
+                node_line(node),
+                "re.sub() — use re.finditer() with a loop instead".to_string(),
+            ));
         }
     }
     violations
+}
+
+/// Whether a call is `re.sub`: through a name the file uses for `re`, or
+/// through a name it imported `sub` from `re` under.
+fn is_re_sub_call(call: tree_sitter::Node, module_names: &[String], sub_names: &[String], source: &[u8]) -> bool {
+    let Some(func) = call.child_by_field_name("function") else {
+        return false;
+    };
+    let named = |node: tree_sitter::Node, names: &[String]| names.iter().any(|name| name == node_text(node, source));
+    match func.kind() {
+        "identifier" => named(func, sub_names),
+        "attribute" => {
+            let object = func.child_by_field_name("object");
+            let attribute = func.child_by_field_name("attribute");
+            object.is_some_and(|object| named(object, module_names))
+                && attribute.is_some_and(|attribute| node_text(attribute, source) == "sub")
+        }
+        _ => false,
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -784,6 +791,18 @@ mod tests {
         let parsed = parse("from typing import cast\nx = cast(int, value)\n");
         let violations = check_no_cast(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn cast_under_another_name_caught() {
+        let parsed = parse("from typing import cast as trust\nx = trust(int, value)\n");
+        assert_eq!(check_no_cast(&parsed, &default_config()).len(), 1);
+    }
+
+    #[test]
+    fn a_function_that_is_not_cast_is_not_cast() {
+        let parsed = parse("from mypkg.shapes import trust\nx = trust(int, value)\n");
+        assert!(check_no_cast(&parsed, &default_config()).is_empty());
     }
 
     #[test]
@@ -1177,6 +1196,12 @@ mod tests {
     }
 
     #[test]
+    fn partial_under_another_name_caught() {
+        let parsed = parse("from functools import partial as bind\ncallback = bind(resolve, my_values)\n");
+        assert_eq!(check_no_partial(&parsed, &default_config()).len(), 1);
+    }
+
+    #[test]
     fn no_partial_clean_code_ok() {
         let code = "def resolve(values: dict, match: str) -> str:\n    return values[match]\n";
         let parsed = parse(code);
@@ -1200,6 +1225,24 @@ mod tests {
         let parsed = parse(code);
         let violations = check_no_re_sub(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn re_sub_under_another_name_caught() {
+        for code in [
+            "from re import sub\nresult = sub(r'pattern', callback_fn, text)\n",
+            "from re import sub as replace\nresult = replace(r'pattern', callback_fn, text)\n",
+            "import re as regex\nresult = regex.sub(r'pattern', callback_fn, text)\n",
+        ] {
+            assert_eq!(check_no_re_sub(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_sub_that_is_not_re_sub_ok() {
+        for code in ["result = sub(first, second)\n", "import operator\nresult = operator.sub(first, second)\n"] {
+            assert!(check_no_re_sub(&parse(code), &default_config()).is_empty(), "{code}");
+        }
     }
 
     #[test]

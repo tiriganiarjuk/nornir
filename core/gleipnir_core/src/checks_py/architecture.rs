@@ -10,7 +10,7 @@
 
 use crate::classify;
 use crate::parsing::{
-    extract_module_info, find_nodes_by_type, node_field, node_line, node_text,
+    extract_module_info, find_nodes_by_type, imported_modules, node_field, node_line, node_text,
 };
 use crate::structures::{CheckConfig, Level, ParsedSource, Severity, Violation, Zone};
 
@@ -520,10 +520,7 @@ fn import_module_path<'a>(node: tree_sitter::Node, source: &'a [u8]) -> Option<&
         return node_field(node, "module_name").map(|n| node_text(n, source));
     }
     if node.kind() == "import_statement" {
-        let mut cursor = node.walk();
-        return node.named_children(&mut cursor)
-            .find(|c| c.kind() == "dotted_name")
-            .map(|n| node_text(n, source));
+        return imported_modules(node, source).first().copied();
     }
     None
 }
@@ -621,12 +618,7 @@ pub fn check_structures_import_boundary(
     }
 
     for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() != "dotted_name" {
-                continue;
-            }
-            let module = node_text(child, source.source_bytes);
+        for module in imported_modules(node, source.source_bytes) {
             let parts: Vec<&str> = module.split('.').collect();
             let top = parts.first().copied().unwrap_or("");
 
@@ -687,12 +679,7 @@ pub fn check_v2_structure_import_boundary(
     }
 
     for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() != "dotted_name" {
-                continue;
-            }
-            let module = node_text(child, source.source_bytes);
+        for module in imported_modules(node, source.source_bytes) {
             let parts: Vec<&str> = module.split('.').collect();
             let top = parts.first().copied().unwrap_or("");
 
@@ -1755,6 +1742,20 @@ mod tests {
         assert!(violations.is_empty());
     }
 
+    #[test]
+    fn structures_import_under_another_name_caught() {
+        let parsed = parse("import myproject.functions.pure.helper as helper\n");
+        assert_eq!(check_structures_import_boundary(&parsed, &default_config()).len(), 1);
+    }
+
+    #[test]
+    fn imports_under_another_name_are_counted() {
+        let code = (0..5).map(|i| format!("import stdlib_{i} as alias_{i}\n")).collect::<String>() + "def work(): pass\n";
+        let violations = check_import_count(&parse(&code), &default_config());
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("external/stdlib"));
+    }
+
     // -- classes_only_in_structures --
 
     #[test]
@@ -2121,6 +2122,15 @@ mod tests {
         let violations = check_v2_structure_import_boundary(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("outside data zone"));
+    }
+
+    #[test]
+    fn v2_structure_logic_import_under_another_name_caught() {
+        let parsed = parse_with_path(
+            "import regin.logic.pure.helpers.composed as helpers\n",
+            "/project/src/pkg/structure/model/foo.py",
+        );
+        assert_eq!(check_v2_structure_import_boundary(&parsed, &default_config()).len(), 1);
     }
 
     // -- v2_structure_bases with RootModel --
