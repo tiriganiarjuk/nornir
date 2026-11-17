@@ -18,13 +18,17 @@ pub struct Permission {
 /// Security-system access: enforcement source, deployed tools, the hooks'
 /// decision logs, hook config.
 /// Tyr operates the security system, so every Tyr launch carries this.
+///
+/// The paths are under the home directory of whoever builds the binary, taken
+/// when it is compiled: the grant is a constant of the binary, and nothing in a
+/// launch's environment moves it.
 static SECURITY_INFRASTRUCTURE: Permission = Permission {
     name: "Security Infrastructure",
     paths: &[
-        "/Users/johnny/ai/smidja/nornir/",
-        "/Users/johnny/ai/tools/",
-        "/Users/johnny/ai/logs/",
-        "/Users/johnny/.claude/",
+        concat!(env!("HOME"), "/ai/smidja/nornir/"),
+        concat!(env!("HOME"), "/ai/tools/"),
+        concat!(env!("HOME"), "/ai/logs/"),
+        concat!(env!("HOME"), "/.claude/"),
     ],
 };
 
@@ -70,8 +74,27 @@ mod tests {
     #[test]
     fn tyr_allow_paths_are_colon_joined() {
         let paths = allow_paths_for_persona("tyr").unwrap();
-        assert!(paths.contains("/Users/johnny/ai/smidja/nornir/"));
+        assert!(paths.contains("/ai/smidja/nornir/"));
         assert!(paths.contains(':'));
+    }
+
+    #[test]
+    fn every_granted_path_is_an_absolute_directory_under_the_builder_s_home() {
+        let home = env!("HOME");
+        for path in SECURITY_INFRASTRUCTURE.paths {
+            assert!(path.starts_with('/'), "{path}");
+            assert!(path.starts_with(home), "{path}");
+            assert!(path.ends_with('/'), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_grant_does_not_follow_the_launch_environment() {
+        let before = allow_paths_for_persona("tyr");
+        std::env::set_var("HOME", "/somewhere/else");
+        let after = allow_paths_for_persona("tyr");
+        std::env::set_var("HOME", env!("HOME"));
+        assert_eq!(before, after);
     }
 
     #[test]

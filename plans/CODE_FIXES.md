@@ -22,8 +22,6 @@ check it in one lookup.
 
 Each phase is committed on its own. A finished item leaves this list and its section below.
 
-- **Phase 2 — cc_launch.** Refuse to launch when `.SYSTEM_PROMPT.xml` cannot be written (§3);
-  `process::exit` only in `main()` (§5); the hard-coded home paths (§5). One commit each.
 - **Phase 3 — interception removal.** Tag nornir `archive/interception-v1` and push it. Remove
   `capability/intercept_io`, `interceptors/traffic_interceptor_rewriter`,
   `interceptors/INTERCEPT_DESIGN.md` and the `~/ai/smidja/bifrost` repo; their items leave this
@@ -111,7 +109,6 @@ readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
   `binary_writers/write_bytes_verify_quantized_mesh`, `interceptors/traffic_interceptor_rewriter`. `[A+B]`
 - **`capability/intercept_io`** is a PyO3 module in the capability tier, depended on by nothing,
   in no deploy category. Decide: move, or remove. `[A+B]`
-- **cc_launch hard-codes `/Users/johnny/...`** in `permissions.rs:24-31`. `[A+B]`
 - **Two ways to find `announce`:** `relay_mic_to_voice` uses `$PATH` (`:181, 233`); every other
   site uses `ai_home()/tools/bin`. `[A+B]`
 - **Data with no schema file:** the cc_launch fragment library, announce's `announce.toml`,
