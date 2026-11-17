@@ -47,19 +47,49 @@ directly as a library.
 
 **Waits on:** nothing.
 
-## Binary readers and writers → `tool_face_io::py_contract`
+## Binary readers and writers → one tool, two faces, on `tool_face_io`
 
-`binary_readers/read_png_verify_heights` (`src/lib.rs:88-110`), `binary_writers/write_bytes_verify_png`
-(`src/lib.rs:49-64`) and `binary_writers/write_bytes_verify_quantized_mesh` build the
-`{"ok", "data", "error"}` dict by hand. They move onto `capability/tool_face_io::py_contract`,
-which every other PyO3 tool returns through, so the result has exactly the contract's two
-outcomes.
+`binary_readers/read_png_verify_heights`, `binary_writers/write_bytes_verify_png` and
+`binary_writers/write_bytes_verify_quantized_mesh` are PyO3-only: `src/lib.rs` alone, `pyo3` a plain
+dependency, the `{"ok", "data", "error"}` dict built by hand (`read_png_verify_heights/src/lib.rs:88-110`,
+`write_bytes_verify_png/src/lib.rs:49-64`). So they have no CLI face, link no test binary, and
+have no tests. The rule that a built tool is a CLI binary first is binding for them
+(`HOW_A_NORNIR_TOOL_IS_MADE.md` § A built tool is a CLI binary first). Each moves to the two-faced
+structure the gates, readers and text writers use.
 
-The binary reader carries `payload` beside `data`, so its move needs a `py_contract` form that
-carries the payload too.
+**The target shape** — `NORNIR_CONVENTIONS.md` § Tool Structure, worked example
+`readers/read_toml_validate_json/`, which every step below copies:
 
-**Waits on:** the binary reader's form, for `read_png_verify_heights` only. The two writers can
-move now.
+1. `Cargo.toml`: `pyo3` becomes optional; a feature `python = ["dep:pyo3", "tool_face_io/python"]`;
+   `[lib]` is `cdylib` + `rlib`; a `[[bin]]` with the crate's name at `src/main.rs`.
+2. `src/lib.rs`: the tool is one function over its engine (`binary_writer_io` / `binary_reader_io`),
+   returning `Result<Option<String>, E>` where `E` is the engine's typed error with
+   `error_type()`. The PyO3 face is a `#[cfg(feature = "python")]` module whose function hands
+   that result to `tool_face_io::py_contract`. No dict is built by hand.
+3. `src/main.rs`: the CLI face — arguments through `tool_face_io::positional_args`, wrong
+   arguments through `cli_usage` (exit 2), the result through `cli_report` (exit 0 / 1, failure
+   class on stderr's first line).
+4. `tests/cli_contract.rs`, as the worked example has: success, refusal, wrong arguments.
+5. `deploy_categories.toml` needs no new entry: the crate stays in `pyo3_crates`, and
+   `nornir_deploy` builds and verifies the CLI face from the `python` feature and the `[[bin]]`
+   (`MUST_READ_BEFORE_BUILDING.md` § deploy_categories.toml Reference).
+6. Build with `nornir_deploy --build binary_readers,binary_writers`; run `cargo test -p <crate>`
+   (the feature off, so the test binary links). Done is deployed, both faces verified.
+
+**Waits on — a stop, by `MUST_READ_BEFORE_BUILDING.md` § Approved interfaces.** No approved
+interface covers a CLI that carries bytes:
+
+- **The writers' CLI face**: how the bytes and the stated shape arrive (bytes on stdin and the
+  shape as arguments, or a path to read), and what success prints, since a write hands nothing
+  back.
+- **The reader, both faces**: `read_png_verify_heights` returns `payload` bytes beside `data`, and
+  `tool_face_io` has no form that carries a payload — neither `py_contract` nor a CLI report.
+  What the CLI face prints (the description on stdout and the payload to a path? both on stdout?)
+  is a new contract.
+
+The author decides these shapes; each becomes its own row in the Approved interfaces table.
+Then the two writers convert first, and the reader after `tool_face_io` gains its payload form.
+A session that reaches this entry stops here and asks.
 
 ## `hook_session_start_inject`'s reply → `hook_io::response::SessionStartResponse`
 
