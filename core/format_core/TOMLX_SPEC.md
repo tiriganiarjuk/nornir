@@ -1,7 +1,8 @@
 # .tomlx Format Specification
 
-**Version:** 0.3.0
-**Status:** Implemented in `format_core::tomlx`; read by the `read_tomlx_*` readers
+**Version:** 0.4.0
+**Status:** The authority for `format_core::tomlx` and the `read_tomlx_*` readers. Where the
+engine and this document differ, the engine is changed to match.
 **Authors:** Human-AI Collaboration
 
 ## Abstract
@@ -26,7 +27,11 @@ Machine needs:   SESSION_TTL_SECONDS = 900 (efficient, typed)
 
 **Core Principles:**
 
-1. **Valid TOML** - Every .tomlx file is valid TOML (annotations are in comments)
+1. **A superset of TOML** - Every .tomlx file is valid TOML, and everything TOML can express
+   behaves exactly as it does in TOML: the same values, the same comments, and no null, since
+   TOML has none. What tomlx adds lives in comments — the annotations — and in the conversions
+   they ask for. A value that only an annotation can carry into the output (a date-time, §2.7) is
+   refused without one, exactly as the TOML reader refuses it (§1.6).
 2. **Zero ambiguity** - Sections are either annotated or not, never mixed
 3. **Explicit over implicit** - All conversions require explicit annotations
 4. **Helpful errors** - Parser guides users to fixes, not stack traces
@@ -47,7 +52,9 @@ Section headers may include annotations in trailing comments:
 **Annotation format:**
 - Starts after `#` following section header
 - Key-value pairs separated by `,`
-- Keys and values are case-sensitive
+- Annotation keys and values are case-insensitive — `target=Seconds` is `target=seconds`, and a
+  path reference matches its base whatever the case of either. TOML's own keys stay
+  case-sensitive, as in TOML.
 - Whitespace around `=` and `,` is ignored
 
 **Required annotation:** At least one of `target=` or `type=`
@@ -63,6 +70,7 @@ Section headers may include annotations in trailing comments:
 |--------|------|-------------|
 | a target unit of one family (§2.3) | Unit conversion | Numeric values with unit annotations; angles may be written in parts (§2.6) |
 | `path` | Path expansion | String paths with reference annotations |
+| `epoch_seconds`, `epoch_ms`, `iso_utc`, `iso_zoned` | Date-time conversion | Instants written readably, delivered as epoch integers or canonical ISO strings — or the reverse (§2.7) |
 
 **Type declarations (type=):**
 
@@ -89,7 +97,8 @@ field_name = value  # annotation=value
 
 ### 1.3 Inline Human Comments
 
-Human-readable comments may follow annotations using ` // ` delimiter (space-padded):
+Human-readable comments may follow an annotation — on a field or on a section header — using the
+` // ` delimiter (space-padded):
 
 ```toml
 session = 15    # unit=minutes // idle user timeout
@@ -102,14 +111,8 @@ cache = 4       # unit=hours   // CDN refresh interval
 2. Left side: machine annotation (parsed)
 3. Right side: human comment (discarded)
 
-**Why space-padded?** Bare `//` appears in valid paths:
-```toml
-# These are safe - no false split
-url = "http://example.com"      # path=base // API endpoint
-share = "//network/share"       # path=absolute // Windows UNC
-```
-
-Paths don't contain ` // ` with spaces. Human comments naturally do.
+**Why space-padded?** The split looks only inside the comment, and only for ` // ` with a space on
+each side, which annotations never contain and human notes naturally do.
 
 **Rationale:** Preserves columnar scannability. Eyes scan: field names → values → units → descriptions. The ` // ` provides clear visual separation between machine and human content.
 
@@ -117,8 +120,9 @@ Paths don't contain ` // ` with spaces. Human comments naturally do.
 
 ### 1.4 Section Rules (Zero Ambiguity)
 
-**Sections with `target=` (unit conversion or path expansion):**
-- ALL fields MUST have appropriate annotations (`# unit=` or `# path=`)
+**Sections with `target=` (unit, path or date-time conversion):**
+- ALL fields MUST have appropriate annotations (`# unit=`, `# path=`, or a date-time field's own, §2.7)
+- A field's comment is its annotation, optionally followed by ` // ` and a human note
 - Missing annotation = ERROR
 
 **Sections with `type=` only (no `target=`):**
@@ -133,9 +137,17 @@ Paths don't contain ` // ` with spaces. Human comments naturally do.
 - Values are converted AND schema is generated
 
 **Non-annotated sections (no `target=` or `type=`):**
-- NO fields MAY have unit/path annotations
-- Annotation present = ERROR (orphan annotation)
-- Section passes through as regular TOML
+- Section passes through as regular TOML, with comments of any kind on its header and its fields
+- A comment that reads as an annotation (`unit=`, `path=`, `target=`, `type=`) = ERROR (orphan
+  annotation); every other comment is for people
+
+### 1.6 Values JSON Cannot Carry
+
+TOML has date-times (offset, local date-time, local date, local time), and floats that may be
+`nan`, `inf` or `-inf`. JSON has none of these, so the TOML reader refuses them
+(`file_value_not_json`). tomlx refuses them in exactly the same way: never converted to a string,
+never to `null`. The one exception is a date-time under a date-time target (§2.7), where the
+annotation names the form it is converted to.
 
 ### 1.5 What an Annotation Can Attach To (Fail Closed)
 
@@ -200,7 +212,8 @@ The parser converts `value` from `source_unit` to `target_unit`.
 | days | `d`, `day` | 86400 |
 | weeks | `w`, `week`, `wk` | 604800 |
 
-**Valid targets:** `seconds`, `ms`, `milliseconds`
+**Valid targets:** `seconds` (also `s`, `sec`, `secs`) and `milliseconds` (also `ms`, `millis`).
+An alias names the same target as its full name.
 
 #### Size Units (Decimal)
 
@@ -320,6 +333,7 @@ Unit and target names are case-insensitive. The name recorded in `section_units`
 4. Unknown unit = ERROR (with suggestions from the target's family)
 5. Conversion: `output = input × (source_base / target_base)`
 6. The source and target factors are joined before the one division, so a whole-number factor converts exactly: `36 km/h` is `10 m/s`, and a value already in its target unit is unchanged
+7. A converted value with no fractional part is delivered as an integer: `1.5 # unit=minutes` under `target=seconds` is `90`. This applies to converted values only; a number outside an annotated section keeps its TOML type, so `1.0` stays `1.0`
 
 ### 2.5 Example
 
@@ -354,11 +368,6 @@ east = 500        # unit=m
   "margin": {
     "west": 2000,
     "east": 500
-  },
-  "section_units": {
-    "ttl": "seconds",
-    "sizes": "bytes",
-    "margin": "meters"
   }
 }
 ```
@@ -396,12 +405,52 @@ bearing = 270                # unit=deg
     "latitude": 56.54013888888889,
     "longitude": -61.7109,
     "bearing": 270
-  },
-  "section_units": {
-    "camp": "degrees"
   }
 }
 ```
+
+### 2.7 Date-Time Conversion
+
+An instant is written in the form a person reads, and delivered in the form a program computes
+with — or the reverse. The section's target names what the program receives; each field's
+annotation names how its value is written.
+
+**Targets:**
+
+| Target | Delivered as |
+|--------|--------------|
+| `epoch_seconds` | integer seconds since 1970-01-01T00:00:00Z |
+| `epoch_ms` | integer milliseconds since the same instant |
+| `iso_utc` | an RFC 3339 string in UTC, ending `Z`: `"2026-11-17T07:00:00Z"` |
+| `iso_zoned` | an RFC 3339 string with the offset of the zone the section names: `[x]  # target=iso_zoned, tz=Europe/Helsinki` |
+
+**Field annotations — how the value is written:**
+
+| Annotation | The value | Example |
+|------------|-----------|---------|
+| `time=offset` | a TOML offset date-time | `start = 2026-11-17T09:00:00+02:00  # time=offset` |
+| `time=local, tz=<zone>` | a TOML local date-time, in the named IANA zone | `start = 2026-11-17T09:00:00  # time=local, tz=Europe/Helsinki` |
+| `time=date, tz=<zone>` | a TOML local date, as midnight in the named zone | `day = 2026-11-17  # time=date, tz=UTC` |
+| `time=iso` | a quoted RFC 3339 string with an offset or `Z` | `start = "2026-11-17T07:00:00Z"  # time=iso` |
+| `time=epoch_seconds` | an integer of epoch seconds | `start = 1763362800  # time=epoch_seconds` |
+| `time=epoch_ms` | an integer of epoch milliseconds | `start = 1763362800000  # time=epoch_ms` |
+
+Any written form converts to any target; the epoch forms written in the file are the reverse
+direction, turned into ISO for a program that wants readable instants.
+
+**Rules:**
+
+1. A local date-time or local date has no instant without a zone, so `tz=` is required for
+   `time=local` and `time=date`; zones are IANA names (`Europe/Helsinki`, `UTC`)
+2. A local time that occurs twice in its zone (clocks going back) or never (clocks going forward)
+   = ERROR. The engine does not choose one
+3. Nothing relative or locale-shaped: no `now`, no `tomorrow`, no `17/11/2026`. A value that is not
+   one of the written forms above = ERROR
+4. Precision is never lost silently: a value with fractional seconds converted to `epoch_seconds`
+   = ERROR; `epoch_ms` and the ISO targets keep milliseconds
+5. Instants are Unix time, without leap seconds
+6. A TOML local time (a time of day with no date) is not an instant and = ERROR under a date-time
+   target
 
 ---
 
@@ -443,12 +492,16 @@ session = "session/"  # path=cache
 **Parameters (first section only):**
 - `target=path` - Required, triggers path mode
 - `base=<path>` - Primary base path (optional but common)
-- `<name>=<path>` - Additional named bases (arbitrary names)
+- `<name>=<path>` - Additional named bases, under any name except the ten reserved ones:
+  `target`, `type`, `expand`, `schema`, `section_types`, `section_units`, `section_paths`,
+  `home`, `absolute`, `config`. A reserved name = ERROR, so no base can shadow a built-in
+  reference
 - `expand=<mode>` - Expansion mode (optional, default: `user`)
 
 **Subsequent sections:**
 - `target=path` only - bases inherited from first declaration
-- Any base definition = ERROR (redeclaration not allowed)
+- Any base definition, a new name or an existing one, and any `expand=`, = ERROR. Nothing in a
+  later header is dropped silently
 
 **Expansion modes:**
 | Mode | Behavior |
@@ -464,7 +517,7 @@ session = "session/"  # path=cache
 field = "path/value"  # path=<reference>
 ```
 
-### 3.3 Path References
+### 3.4 Path References
 
 **Built-in references (reserved):**
 
@@ -478,18 +531,26 @@ field = "path/value"  # path=<reference>
 - Any name defined in section header: `base`, `logs`, `cache`, etc.
 - Reference to undefined name = ERROR
 
-### 3.4 Path Processing
+A path value is a filesystem path. URLs do not belong in path mode; a field that holds one goes
+in a section without a target.
+
+### 3.5 Path Processing
 
 1. Resolve the reference to its base path
 2. If `home`: base = user's home directory
 3. If `absolute`: base = "" (empty)
-4. If `config`: base = directory containing the .tomlx file
+4. If `config`: base = the absolute path of the directory holding the .tomlx file; a file named
+   without a directory is in the current directory, and its base is that directory's absolute path
 5. If user-defined: base = value from section header
-6. Apply expansion (~ and/or $VAR based on `expand` setting)
+6. Expand the **base** (`~` and/or `$VAR`, per the `expand` setting). The field's value is taken
+   literally: a `~` or `$VAR` written in a value is not expanded
 7. Concatenate: `base + field_value`
-8. Normalize path (resolve `..`, remove duplicate `/`)
+8. Normalize: resolve `.` and `..`, collapse a doubled `/`. A trailing `/` is kept — it says the
+   path names a directory
+9. Every part must resolve: an unset `HOME` under `home` or `expand=user`, or an unset variable
+   under `expand=env`, = ERROR (§1.5)
 
-### 3.5 Example
+### 3.6 Example
 
 **Input:** (file at `/project/config.tomlx`)
 ```toml
@@ -512,13 +573,6 @@ local = "data/"           # path=config
     "rc": "/Users/johnny/.myapprc",
     "etc": "/etc/myapp",
     "local": "/project/data/"
-  },
-  "section_paths": {
-    "paths": {
-      "base": "/Users/johnny/ai/phoenix/",
-      "logs": "/var/log/myapp/",
-      "expand": "user"
-    }
   }
 }
 ```
@@ -600,12 +654,14 @@ verbose = true
 categories = ["web", "api", "backend"]
 ```
 
-**Output:**
+**Output** of `read_tomlx_json_schema` (§5):
 ```json
 {
-  "limits": {"max_connections": 100, "max_retries": 3, "buffer_size": 8192},
-  "flags": {"debug": false, "verbose": true},
-  "tags": {"categories": ["web", "api", "backend"]},
+  "data": {
+    "limits": {"max_connections": 100, "max_retries": 3, "buffer_size": 8192},
+    "flags": {"debug": false, "verbose": true},
+    "tags": {"categories": ["web", "api", "backend"]}
+  },
   "schema": {
     "type": "object",
     "properties": {
@@ -631,8 +687,7 @@ categories = ["web", "api", "backend"]
         }
       }
     }
-  },
-  "section_types": {"limits": "int", "flags": "bool", "tags": "list[str]"}
+  }
 }
 ```
 
@@ -646,70 +701,28 @@ When `type=` is declared, the parser validates that values match the declared ty
 - `type=bool` requires boolean values (`true`/`false`)
 - `type=list[T]` requires array where all items match type T
 
-Type mismatch = ERROR with educational message.
+Type mismatch = ERROR with educational message. The values are checked before the schema is
+derived, so the data a schema reader returns always matches the schema it returns.
 
 ---
 
-## 5. Output Schema
+## 5. Output
 
-### 5.1 JSON Structure
+A `.tomlx` file is read through one of three nornir readers. Each returns the tool contract
+(`MUST_READ_BEFORE_BUILDING.md` § Approved interfaces); what follows is the `data` it carries on
+success.
 
-```json
-{
-  "<section_name>": {
-    "<field_name>": "<converted_value>",
-    ...
-  },
-  ...
-  "schema": {
-    "type": "object",
-    "properties": { ... }
-  },
-  "section_types": {
-    "<section_name>": "<type>",
-    ...
-  },
-  "section_units": {
-    "<section_name>": "<target_unit>",
-    ...
-  },
-  "section_paths": {
-    "<section_name>": {
-      "<reference_name>": "<expanded_base>",
-      ...
-      "expand": "<mode>"
-    },
-    ...
-  }
-}
-```
+| Reader | `data` |
+|--------|--------|
+| `read_tomlx_json` | the converted document as JSON |
+| `read_tomlx_validate_json` | the converted document, validated against a schema named at call time; the schema describes values in their target units |
+| `read_tomlx_json_schema` | `{"data": <the converted document>, "schema": <a JSON Schema derived from the type= annotations>}`; a file with no `type=` section has nothing to derive from and is refused (`tomlx_without_annotations`) |
 
-### 5.2 Metadata Sections
+The converted document has the file's own tables and keys. A section without `target=` or `type=`
+comes through exactly as the TOML reader gives it.
 
-**`schema`:** Generated JSON Schema (if any type annotations present).
-- Only present when at least one section has `type=`
-- JSON Schema draft-07 format
-- Enables downstream: Pydantic model generation, type validation
-
-**`section_types`:** Maps section names to their declared types.
-- Only includes sections with `type=` annotations
-- Values are the type string as declared (e.g., `"int"`, `"list[str]"`)
-- Enables downstream: type checking, documentation
-
-**`section_units`:** Maps section names to their target units.
-- Only includes sections with unit conversion targets
-- Enables downstream: constant naming, semantic validation
-
-**`section_paths`:** Maps section names to their path configuration.
-- Only includes sections with `target=path`
-- Contains all expanded base paths and the expand mode
-- Enables downstream: documentation, re-relativization
-
-### 5.3 Non-annotated Sections
-
-Sections without `target=` or `type=` annotations:
-- Pass through unchanged as regular TOML→JSON
-- Do NOT appear in `schema`, `section_types`, `section_units`, or `section_paths`
+The engine also tracks, for each annotated section, its declared type, its target unit and its
+path bases. These are internal to `format_core::tomlx` and are not part of any reader's output.
 
 ---
 
