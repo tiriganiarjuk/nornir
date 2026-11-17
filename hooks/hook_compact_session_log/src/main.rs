@@ -3,14 +3,13 @@
 //! Usage (in ~/.claude/settings.json):
 //!     hook_compact_session_log --project-dir $CLAUDE_PROJECT_DIR
 
-use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use datagram_core::{Datagram, DatagramKind, Priority};
-use serde::Deserialize;
+use session_event_io::{PostCompact, SessionId};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -25,25 +24,11 @@ struct Cli {
 }
 
 // ---------------------------------------------------------------------------
-// PostCompact event input (stdin JSON from Claude Code)
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct CompactEvent {
-    #[serde(default)]
-    session_id: String,
-    #[serde(default)]
-    compact_summary: String,
-    #[serde(default)]
-    cwd: String,
-}
-
-// ---------------------------------------------------------------------------
 // Tasks
 // ---------------------------------------------------------------------------
 
-fn persist_summary(session_id: &str, compact_summary: &str) {
-    if session_id.is_empty() || compact_summary.is_empty() {
+fn persist_summary(session_id: &SessionId, compact_summary: &str) {
+    if compact_summary.is_empty() {
         return;
     }
 
@@ -83,7 +68,7 @@ fn emit_datagram(workspace: &str) {
     datagram_io::emit(&datagram);
 }
 
-fn announce_compaction(workspace: &str, project_dir: Option<&str>) {
+fn announce_compaction(workspace: &str, project_dir: &str) {
     let control_voice = write_engine::ai_home().join("control/voice");
     if control_voice.join("SILENT.lock").exists() {
         return;
@@ -95,9 +80,7 @@ fn announce_compaction(workspace: &str, project_dir: Option<&str>) {
     let announce = write_engine::ai_home().join("tools/bin/announce");
     let mut cmd = Command::new(&announce);
     cmd.args(["--severity", "info"]);
-    if let Some(dir) = project_dir {
-        cmd.args(["--source", dir]);
-    }
+    cmd.args(["--source", project_dir]);
     cmd.arg(format!("{workspace} compacted"));
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -112,30 +95,17 @@ fn announce_compaction(workspace: &str, project_dir: Option<&str>) {
 fn main() -> ExitCode {
     let args = Cli::parse();
 
-    let mut input = String::new();
-    if io::stdin().read_to_string(&mut input).is_err() {
-        return ExitCode::SUCCESS;
-    }
+    session_event_io::run_event_hook(|event: PostCompact| {
+        let project_dir = session_event_io::project_dir(args.project_dir.as_deref(), &event.cwd);
 
-    let event: CompactEvent = match serde_json::from_str(&input) {
-        Ok(e) => e,
-        Err(_) => return ExitCode::SUCCESS,
-    };
+        // Extract workspace name from project dir path
+        let workspace = project_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "workspace".to_string());
 
-    // Resolve project dir: CLI --project-dir > stdin cwd > None
-    let project_dir = args.project_dir
-        .map(|p| p.display().to_string())
-        .or_else(|| if event.cwd.is_empty() { None } else { Some(event.cwd.clone()) });
-
-    // Extract workspace name from project dir path
-    let workspace = project_dir.as_deref()
-        .and_then(|p| std::path::Path::new(p).file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "workspace".to_string());
-
-    persist_summary(&event.session_id, &event.compact_summary);
-    emit_datagram(&workspace);
-    announce_compaction(&workspace, project_dir.as_deref());
-
-    ExitCode::SUCCESS
+        persist_summary(&event.session_id, &event.compact_summary);
+        emit_datagram(&workspace);
+        announce_compaction(&workspace, &project_dir.display().to_string());
+    })
 }

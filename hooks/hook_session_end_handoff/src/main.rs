@@ -14,36 +14,19 @@
 //! Usage (in ~/.claude/settings.json, SessionEnd, matcher "clear"):
 //!     hook_session_end_handoff
 
-use std::io::{self, Read};
 use std::process::ExitCode;
 
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct SessionEndEvent {
-    #[serde(default)]
-    session_id: String,
-    #[serde(default)]
-    cwd: String,
-    #[serde(default)]
-    reason: String,
-}
+use session_event_io::SessionEnd;
 
 fn main() -> ExitCode {
-    let mut input = String::new();
-    if io::stdin().read_to_string(&mut input).is_err() {
-        return ExitCode::SUCCESS;
-    }
+    session_event_io::run_event_hook(hand_off)
+}
 
-    let event: SessionEndEvent = match serde_json::from_str(&input) {
-        Ok(e) => e,
-        Err(_) => return ExitCode::SUCCESS,
-    };
-
+fn hand_off(event: SessionEnd) {
     // Belt and braces: settings.json matches on "clear", but the handoff must
     // never fire for logout/exit — those end the process, nothing consumes it.
-    if event.reason != "clear" || event.session_id.is_empty() || event.cwd.is_empty() {
-        return ExitCode::SUCCESS;
+    if event.reason != "clear" {
+        return;
     }
 
     let workspace = std::path::Path::new(&event.cwd)
@@ -58,6 +41,4 @@ fn main() -> ExitCode {
     if prompt.exists() {
         let _ = std::fs::copy(&prompt, workspace_registry::clear_handoff_path(&workspace));
     }
-
-    ExitCode::SUCCESS
 }

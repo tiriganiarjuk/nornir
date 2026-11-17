@@ -210,6 +210,19 @@ fn decide(input: &HookInput) -> HookDecision {
 }
 ```
 
+A hook that acts on a session event — SessionStart, SessionEnd, Stop, Notification, PostCompact —
+reads it through `session_event_io`: the payload validated against the event's schema in
+`schemas/tools/`, its session id one plain path segment, then typed.
+
+```rust
+fn main() -> ExitCode {
+    session_event_io::run_event_hook(|event: SessionStart| { ... })
+}
+```
+
+An event the hook cannot read is not acted on: the failure goes to stderr under the CLI
+contract, the hook exits 1, and a payload that arrived and was refused is raised as an alert.
+
 Shared rule parsing lives in `hook_io::rules`. Use `parse_toml_table()` and `parse_rule_array()` — do not reimplement TOML parsing in hook binaries. A hook's reply is built with `hook_io::response`: one response type per Claude Code hook event, exposing only what that event accepts, so an invalid reply does not compile. The module's own documentation maps each term to the wire format.
 
 ### Senders (thin wrappers on datagram_io)
@@ -246,6 +259,7 @@ Before writing logic, check if it already exists:
 | A tool's CLI face and PyO3 face: arguments, outcome presentation under both contracts | `tool_face_io` |
 | Hook stdin/stdout/decision contract | `hook_io` |
 | Hook rule parsing from TOML | `hook_io::rules` |
+| A session event hook's stdin: the event validated against its schema, typed, its session id safe to join into a path | `session_event_io` |
 | Gate I/O orchestration (compile-time schema) | `gate_io` |
 | Reader I/O: format→JSON + schema loaded by name at call time | `reader_io` |
 | Validating JSON against a schema loaded by name | `reader_io::validate_against_named_schema` |
@@ -272,6 +286,7 @@ nornir_deploy --build gates          # single category
 nornir_deploy --build readers,text_writers  # the reader and text writer modules (maturin, like gates); they share reader_io
 nornir_deploy --build binary_readers,binary_writers  # the binary reader and writer modules (maturin, like gates)
 nornir_deploy --build hooks,writers  # multiple categories
+nornir_deploy --build session_hooks  # the hooks that act on a session event
 nornir_deploy --list                 # show categories and crate counts
 ```
 

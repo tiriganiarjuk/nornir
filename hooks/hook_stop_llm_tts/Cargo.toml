@@ -8,9 +8,8 @@ name = "hook_stop_llm_tts"
 path = "src/main.rs"
 
 [dependencies]
+session_event_io = { path = "../../capability/session_event_io" }
 text_core = { path = "../../core/text_core" }
 write_engine = { path = "../../capability/write_engine" }
 workspace_registry = { path = "../../capability/workspace_registry" }
 clap = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }

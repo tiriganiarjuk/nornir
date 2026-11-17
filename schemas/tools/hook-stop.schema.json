@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hook-stop",
+  "description": "What a Stop hook reads on stdin, as far as the session hooks depend on it: the directory the session is working in and the assistant's last message, which may be empty. Claude Code sends further fields; they are allowed and unread. A payload without both cannot be acted on, and the hook that receives it says so.",
+  "type": "object",
+  "required": ["cwd", "last_assistant_message"],
+  "properties": {
+    "cwd": {"type": "string", "minLength": 1},
+    "last_assistant_message": {"type": "string"}
+  }
+}

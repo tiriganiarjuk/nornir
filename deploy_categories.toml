@@ -11,6 +11,15 @@ crates = [
     "hook_pre_llm_bash",
     "hook_post_llm_tool",
     "hook_post_llm_read",
+]
+verify = "stdin"
+verify_input = '{"tool_name":"Test","tool_input":{}}'
+
+# The hooks that act on a session event. Run with nothing on stdin, each refuses
+# for want of its event and exits 1 — which proves it loads and checks its input,
+# and has no effect.
+[session_hooks]
+crates = [
     "hook_stop_llm_tts",
     "hook_notify_llm_tts",
     "hook_compact_session_log",
@@ -18,8 +27,8 @@ crates = [
     "hook_session_start_inject",
     "hook_session_end_handoff",
 ]
-verify = "stdin"
-verify_input = '{"tool_name":"Test","tool_input":{}}'
+verify = "exit_codes"
+valid_exit_codes = [1]
 
 [writers]
 crates = [

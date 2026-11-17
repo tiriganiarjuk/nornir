@@ -8,11 +8,11 @@ name = "hook_compact_session_log"
 path = "src/main.rs"
 
 [dependencies]
+session_event_io = { path = "../../capability/session_event_io" }
 write_engine = { path = "../../capability/write_engine" }
 workspace_registry = { path = "../../capability/workspace_registry" }
 datagram_core = { path = "../../core/datagram_core" }
 datagram_io = { path = "../../capability/datagram_io" }
 time_core = { path = "../../core/time_core" }
 clap = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }

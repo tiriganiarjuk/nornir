@@ -97,6 +97,7 @@ members = [
     "dispatchers/split_jsonl_batches",
     "core/hook_decision_core",
     "capability/hook_io",
+    "capability/session_event_io",
     "capability/datagram_io",
     "hooks/hook_pre_subagent_tool",
     "hooks/hook_pre_subagent_bash",

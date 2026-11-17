@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hook-post-compact",
+  "description": "What a PostCompact hook reads on stdin, as far as the session hooks depend on it: the session that was compacted, the directory it is working in, and the summary the compaction produced, which may be empty. Claude Code sends further fields; they are allowed and unread. A payload without all three cannot be acted on, and the hook that receives it says so.",
+  "type": "object",
+  "required": ["session_id", "cwd", "compact_summary"],
+  "properties": {
+    "session_id": {"type": "string", "minLength": 1},
+    "cwd": {"type": "string", "minLength": 1},
+    "compact_summary": {"type": "string"}
+  }
+}

@@ -524,3 +524,31 @@ standard    = "The quality check did not run on '{path}': {instrument} failed â€
 route       = "The file was not examined, so it is not known to be clean. Report this message to the user before relying on the file."
 adversarial = "stop"
 alert       = "high"
+
+[session_event_unreadable]
+class       = "read_error"
+standard    = "The {event} event on stdin could not be read: {reason}."
+route       = "The hook did nothing. Report this message to the user."
+adversarial = "stop"
+alert       = "high"
+
+[session_event_not_json]
+class       = "parse_error"
+standard    = "What arrived on stdin for the {event} event is not JSON: {reason}."
+route       = "The hook did nothing. Claude Code sends this event as JSON; report this message to the user."
+adversarial = "stop"
+alert       = "high"
+
+[session_event_not_matching_schema]
+class       = "validation_error"
+standard    = "What arrived on stdin is not a {event} event.\n{report}"
+route       = "The hook did nothing. Claude Code's payload and this hook's schema no longer agree; report this message to the user."
+adversarial = "stop"
+alert       = "high"
+
+[session_id_not_plain]
+class       = "validation_error"
+standard    = "The session id '{session_id}' cannot name a directory: {reason}."
+route       = "The hook did nothing. A session id is one plain path segment; report this message to the user."
+adversarial = "stop"
+alert       = "high"

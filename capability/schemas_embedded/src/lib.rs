@@ -220,6 +220,31 @@ static HOOK_POST_TOOL_USE_JSON: &str =
 pub static HOOK_POST_TOOL_USE: EmbeddedValidator =
     EmbeddedValidator::new(HOOK_POST_TOOL_USE_JSON, "hook-post-tool-use");
 
+static HOOK_SESSION_START_JSON: &str =
+    include_str!("../../../schemas/tools/hook-session-start.schema.json");
+pub static HOOK_SESSION_START: EmbeddedValidator =
+    EmbeddedValidator::new(HOOK_SESSION_START_JSON, "hook-session-start");
+
+static HOOK_SESSION_END_JSON: &str =
+    include_str!("../../../schemas/tools/hook-session-end.schema.json");
+pub static HOOK_SESSION_END: EmbeddedValidator =
+    EmbeddedValidator::new(HOOK_SESSION_END_JSON, "hook-session-end");
+
+static HOOK_STOP_JSON: &str =
+    include_str!("../../../schemas/tools/hook-stop.schema.json");
+pub static HOOK_STOP: EmbeddedValidator =
+    EmbeddedValidator::new(HOOK_STOP_JSON, "hook-stop");
+
+static HOOK_NOTIFICATION_JSON: &str =
+    include_str!("../../../schemas/tools/hook-notification.schema.json");
+pub static HOOK_NOTIFICATION: EmbeddedValidator =
+    EmbeddedValidator::new(HOOK_NOTIFICATION_JSON, "hook-notification");
+
+static HOOK_POST_COMPACT_JSON: &str =
+    include_str!("../../../schemas/tools/hook-post-compact.schema.json");
+pub static HOOK_POST_COMPACT: EmbeddedValidator =
+    EmbeddedValidator::new(HOOK_POST_COMPACT_JSON, "hook-post-compact");
+
 static HOOK_DECISION_LOG_JSON: &str =
     include_str!("../../../schemas/tools/hook-decision-log.schema.json");
 pub static HOOK_DECISION_LOG: EmbeddedValidator =

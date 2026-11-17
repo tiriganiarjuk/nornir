@@ -8,7 +8,7 @@ name = "hook_session_start_inject"
 path = "src/main.rs"
 
 [dependencies]
+session_event_io = { path = "../../capability/session_event_io" }
 write_engine = { path = "../../capability/write_engine" }
 workspace_registry = { path = "../../capability/workspace_registry" }
-serde = { workspace = true }
 serde_json = { workspace = true }

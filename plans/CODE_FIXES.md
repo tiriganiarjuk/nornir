@@ -22,10 +22,6 @@ check it in one lookup.
 
 Each phase is committed on its own. A finished item leaves this list and its section below.
 
-- **Phase 1 — lifecycle hooks, one primitive.** One schema-validated payload reader for orient,
-  inject, end_handoff, stop_tts, notify_tts and compact_session_log, with its tests: session ids
-  checked before they reach a path (§1), payloads under a schema (§2), stdin parsing and
-  project-dir resolution in one place (§7).
 - **Phase 2 — cc_launch.** Refuse to launch when `.SYSTEM_PROMPT.xml` cannot be written (§3);
   `process::exit` only in `main()` (§5); the hard-coded home paths (§5). One commit each.
 - **Phase 3 — interception removal.** Tag nornir `archive/interception-v1` and push it. Remove
@@ -57,8 +53,7 @@ readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
 
 ## 1. Critical — security
 
-- **Session ids from outside are joined into paths unchecked.** No `validate_path_segment` in
-  `hook_compact_session_log:60-62`, `hook_session_start_orient:92`, `hook_session_start_inject:97`,
+- **A session id from outside is joined into a path unchecked.** No `validate_path_segment` in
   `daemons/bifrost_proxy/src/main.rs:233` (id from request metadata). `[B]`
 
 ## 2. Critical — fail open
@@ -66,10 +61,6 @@ readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
 - **The live interception path fails open on schema mismatch; the PyO3 path fails closed.**
   `bifrost_proxy/src/main.rs:248-255` forwards; `traffic_interceptor_rewriter/src/lib.rs:94-99`
   errors. `[A+B]`
-
-- **Lifecycle-hook payloads have no schema.** Orient, inject, end_handoff, stop_tts, notify_tts and
-  compact_session_log each declare a local struct with `#[serde(default)]` on every field — a
-  renamed Claude Code field becomes `""` silently. `[A+B]`
 
 ## 3. Malfunction — wrong behaviour today
 
@@ -166,6 +157,5 @@ Each of these is one missing primitive, not many local problems.
   derivation, the persona-to-grant table. `[A+B]`
 - **dep_resolve** — `dep_resolve_file` and `dep_resolve_function` near-identical;
   `detect_project_root` three times. `[A+B]`
-- **Lifecycle hooks** reimplement stdin parsing and project-dir resolution six times. `[A+B]`
 - **Smaller:** `compute_batches` (split_jsonl_batches:70), the watcher's helpers, announce's
   cache state machine and queue encoding. `[A+B]`

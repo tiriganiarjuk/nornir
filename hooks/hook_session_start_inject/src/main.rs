@@ -12,21 +12,10 @@
 //!
 //! Path: ~/ai/control/workspaces/{workspace}/{session_id}/SYSTEM_PROMPT.xml
 
-use std::io::{self, Read};
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct SessionEvent {
-    #[serde(default)]
-    source: String,
-    #[serde(default)]
-    session_id: String,
-    #[serde(default)]
-    cwd: String,
-}
+use session_event_io::SessionStart;
 
 fn announce(workspace: &str, source: &str, project_dir: &str) {
     let control_voice = write_engine::ai_home().join("control/voice");
@@ -76,20 +65,12 @@ fn integrity_banner(payload_bytes: usize, prompt_path: &Path) -> String {
     )
 }
 
-fn run() -> Option<(String, String, String)> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input).ok()?;
-
-    let event: SessionEvent = serde_json::from_str(&input).ok()?;
-
+/// The system prompt to put back into the session, when this start calls for it.
+fn prompt_to_inject(event: &SessionStart) -> Option<String> {
     // Only re-inject on compact, resume, or clear — not startup
     match event.source.as_str() {
         "compact" | "resume" | "clear" => {}
         _ => return None,
-    }
-
-    if event.session_id.is_empty() || event.cwd.is_empty() {
-        return None;
     }
 
     let workspace = workspace_name(&event.cwd);
@@ -117,28 +98,25 @@ fn run() -> Option<(String, String, String)> {
         }
     })?;
 
-    let content = if content.len() > PREVIEW_RISK_BYTES {
-        format!("{}{content}", integrity_banner(content.len(), &prompt_path))
+    if content.len() > PREVIEW_RISK_BYTES {
+        Some(format!("{}{content}", integrity_banner(content.len(), &prompt_path)))
     } else {
-        content
-    };
-
-    Some((content, event.source, event.cwd))
+        Some(content)
+    }
 }
 
 fn main() -> ExitCode {
-    if let Some((context, source, cwd)) = run() {
-        let ws = workspace_name(&cwd);
-        announce(&ws, &source, &cwd);
+    session_event_io::run_event_hook(|event: SessionStart| {
+        if let Some(context) = prompt_to_inject(&event) {
+            announce(&workspace_name(&event.cwd), &event.source, &event.cwd);
 
-        let output = serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context
-            }
-        });
-        println!("{}", output);
-    }
-
-    ExitCode::SUCCESS
+            let output = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": context
+                }
+            });
+            println!("{}", output);
+        }
+    })
 }

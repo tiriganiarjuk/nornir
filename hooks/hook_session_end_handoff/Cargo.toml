@@ -8,6 +8,5 @@ name = "hook_session_end_handoff"
 path = "src/main.rs"
 
 [dependencies]
+session_event_io = { path = "../../capability/session_event_io" }
 workspace_registry = { path = "../../capability/workspace_registry" }
-serde = { workspace = true }
-serde_json = { workspace = true }

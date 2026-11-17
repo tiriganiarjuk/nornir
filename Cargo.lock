@@ -1837,8 +1837,8 @@ dependencies = [
  "clap",
  "datagram_core",
  "datagram_io",
- "serde",
  "serde_json",
+ "session_event_io",
  "time_core",
  "workspace_registry",
  "write_engine",
@@ -1870,8 +1870,7 @@ name = "hook_notify_llm_tts"
 version = "0.1.0"
 dependencies = [
  "clap",
- "serde",
- "serde_json",
+ "session_event_io",
  "workspace_registry",
  "write_engine",
 ]
@@ -1940,8 +1939,7 @@ dependencies = [
 name = "hook_session_end_handoff"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
+ "session_event_io",
  "workspace_registry",
 ]
 
@@ -1949,8 +1947,8 @@ dependencies = [
 name = "hook_session_start_inject"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
+ "session_event_io",
  "workspace_registry",
  "write_engine",
 ]
@@ -1960,8 +1958,7 @@ name = "hook_session_start_orient"
 version = "0.1.0"
 dependencies = [
  "clap",
- "serde",
- "serde_json",
+ "session_event_io",
  "workspace_registry",
  "write_engine",
 ]
@@ -1971,8 +1968,7 @@ name = "hook_stop_llm_tts"
 version = "0.1.0"
 dependencies = [
  "clap",
- "serde",
- "serde_json",
+ "session_event_io",
  "text_core",
  "workspace_registry",
  "write_engine",
@@ -4028,6 +4024,20 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "session_event_io"
+version = "0.1.0"
+dependencies = [
+ "datagram_io",
+ "error_core",
+ "failure_mode_core",
+ "path_core",
+ "schema_core",
+ "schemas_embedded",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

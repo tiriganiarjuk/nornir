@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hook-session-end",
+  "description": "What a SessionEnd hook reads on stdin, as far as the session hooks depend on it: the session that is ending, the directory it was working in, and why it ends (clear, logout, and the others Claude Code names). Claude Code sends further fields; they are allowed and unread. A payload without all three cannot be acted on, and the hook that receives it says so.",
+  "type": "object",
+  "required": ["session_id", "cwd", "reason"],
+  "properties": {
+    "session_id": {"type": "string", "minLength": 1},
+    "cwd": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1}
+  }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "session_event_io"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+failure_mode_core = { path = "../../core/failure_mode_core" }
+path_core = { path = "../../core/path_core" }
+schema_core = { path = "../../core/schema_core" }
+error_core = { path = "../../core/error_core" }
+schemas_embedded = { path = "../schemas_embedded" }
+datagram_io = { path = "../datagram_io" }

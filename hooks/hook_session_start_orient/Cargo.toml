@@ -8,8 +8,7 @@ name = "hook_session_start_orient"
 path = "src/main.rs"
 
 [dependencies]
+session_event_io = { path = "../../capability/session_event_io" }
 workspace_registry = { path = "../../capability/workspace_registry" }
 write_engine = { path = "../../capability/write_engine" }
 clap = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
