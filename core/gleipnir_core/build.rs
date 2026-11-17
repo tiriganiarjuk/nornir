@@ -4,13 +4,18 @@
 //! fails the build here. So does a check named in gleipnir_matrix.toml that has no entry.
 //! A check table that names a check with no entry fails when the generated code compiles,
 //! because the constant it refers to does not exist.
+//!
+//! Also compiles `LOGIC_FINGERPRINT`: one hash over every file that decides what gleipnir
+//! reports — the files under src/ and the three data files. The build only reads them.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MESSAGES: &str = "gleipnir_messages.toml";
 const MATRIX: &str = "gleipnir_matrix.toml";
+const STATISTICS: &str = "gleipnir_statistics.toml";
+const SOURCES: &str = "src";
 const INVENTORY: &str = "../../deploy_categories.toml";
 const FIELDS: [&str; 4] = ["detail", "signal", "direction", "canary"];
 const SEVERITIES: [&str; 3] = ["blocked", "error", "warning"];
@@ -22,6 +27,8 @@ const READERS_SLOT: &str = "{readers}";
 fn main() -> Result<(), String> {
     println!("cargo:rerun-if-changed={MESSAGES}");
     println!("cargo:rerun-if-changed={MATRIX}");
+    println!("cargo:rerun-if-changed={STATISTICS}");
+    println!("cargo:rerun-if-changed={SOURCES}");
     println!("cargo:rerun-if-changed={INVENTORY}");
 
     let messages = read_table(MESSAGES)?;
@@ -44,7 +51,72 @@ fn main() -> Result<(), String> {
 
     let out_dir = std::env::var("OUT_DIR").map_err(|e| format!("OUT_DIR: {e}"))?;
     std::fs::write(Path::new(&out_dir).join("gleipnir_messages.rs"), generated)
-        .map_err(|e| format!("writing the generated check messages: {e}"))
+        .map_err(|e| format!("writing the generated check messages: {e}"))?;
+    std::fs::write(Path::new(&out_dir).join("gleipnir_logic_fingerprint.rs"), fingerprint_constant(&logic_fingerprint()?))
+        .map_err(|write_error| format!("writing the generated logic fingerprint: {write_error}"))
+}
+
+/// The Rust constant holding the logic fingerprint.
+fn fingerprint_constant(fingerprint: &str) -> String {
+    let mut constant = String::new();
+    let _ = writeln!(constant, "/// The fingerprint of gleipnir's check logic: one hash over every file under src/");
+    let _ = writeln!(constant, "/// and over {MATRIX}, {MESSAGES} and {STATISTICS},");
+    let _ = writeln!(constant, "/// compiled by the build script. Two builds of the same files carry the same value.");
+    let _ = writeln!(constant, "pub const LOGIC_FINGERPRINT: &str = {fingerprint:?};");
+    constant
+}
+
+/// One hash over every logic file, in sorted path order: each file's path, its length
+/// and its content. FNV-1a, 64 bits, as 16 hex digits.
+fn logic_fingerprint() -> Result<String, String> {
+    let mut hash = FNV_OFFSET_BASIS;
+    for file in logic_files()? {
+        let content = std::fs::read(&file).map_err(|read_error| format!("{}: {read_error}", file.display()))?;
+        hash = fnv1a(hash, file.to_string_lossy().as_bytes());
+        hash = fnv1a(hash, &(content.len() as u64).to_le_bytes());
+        hash = fnv1a(hash, &content);
+    }
+    Ok(format!("{hash:016x}"))
+}
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a over the bytes, continuing from the hash so far.
+fn fnv1a(hash_so_far: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash_so_far, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME))
+}
+
+/// Every file that decides what gleipnir reports, sorted: the three data files and
+/// the files under src/.
+fn logic_files() -> Result<Vec<PathBuf>, String> {
+    let mut files = vec![PathBuf::from(MATRIX), PathBuf::from(MESSAGES), PathBuf::from(STATISTICS)];
+    collect_source_files(Path::new(SOURCES), &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+/// The files under a directory, at any depth. A hidden entry is left out: the hidden
+/// files under src/ are the sidecars saga writes beside a source, and they decide nothing.
+fn collect_source_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(directory).map_err(|read_error| format!("{}: {read_error}", directory.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|read_error| format!("{}: {read_error}", directory.display()))?.path();
+        if is_hidden(&path) {
+            continue;
+        }
+        if path.is_dir() {
+            collect_source_files(&path, files)?;
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Whether a path's last component starts with a dot.
+fn is_hidden(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.'))
 }
 
 fn read_table(file: &str) -> Result<toml::Table, String> {

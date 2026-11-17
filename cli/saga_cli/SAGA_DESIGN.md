@@ -53,23 +53,34 @@ The sidecar's shape is `schemas/tools/sanity-report.schema.json`. A report is
 validated against it before it is written, and a sidecar is validated against
 it when it is loaded.
 
-### The content hash and the four states
+### The content hash, the examiner and the four states
 
-A report records `content_hash`: the sha256 of the source as it was examined.
-From it, `saga_runner::sidecar_state(source file)` says how the sidecar stands
-to the source now. It is the one definition of sidecar currency, used by saga
-and by syn.
+A report records two things about its own making:
+
+- `content_hash` — the sha256 of the source as it was examined;
+- `examined_by` — the fingerprint of what examined it,
+  `saga_runner::examiner_fingerprint()`: one hash over gleipnir's check logic
+  (`gleipnir_core::LOGIC_FINGERPRINT`, compiled by gleipnir's build script from
+  every file under its `src/` and from `gleipnir_matrix.toml`,
+  `gleipnir_messages.toml` and `gleipnir_statistics.toml`) and over the texts
+  compiled into saga — `v1_legacy_projects.toml`, `ruff.toml` and
+  `pyrightconfig.json`.
+
+From the two, `saga_runner::sidecar_state(source file)` says how the sidecar
+stands to the source and to saga now. It is the one definition of sidecar
+currency, used by saga and by syn.
 
 | State | Meaning |
 |---|---|
 | `missing` | the source has no sidecar |
-| `current` | the sidecar loads, and its hash is the source's hash now |
-| `stale` | the sidecar loads, and its hash differs from the source's hash now, or it records no hash, or the source cannot be hashed |
+| `current` | the sidecar loads, its examiner is this saga's, and its hash is the source's hash now |
+| `stale` | the sidecar loads, and its examiner is another than this saga's or it records none; or its hash differs from the source's hash now, or it records no hash, or the source cannot be hashed |
 | `unreadable` | the sidecar is there and does not load |
 
-The hash follows the source's content. A sidecar is current for the instruments
-that wrote it: after a change to the checks themselves, `saga <dir> --force`
-writes every sidecar with the checks as they now are.
+The hash follows the source's content, and the examiner follows the checks: a
+saga built from changed check logic, data files, routing list or instrument
+configuration finds every sidecar stale, and `saga <dir>` writes each of them
+with the checks as they now are.
 
 ---
 
@@ -79,7 +90,9 @@ The path decides the mode: a file or a directory.
 
 ### File mode
 
-- `saga <file>` examines the file and prints the report as JSON on stdout.
+- `saga <file>` examines the file and prints the report as JSON on stdout. A
+  file that is not there, and a stdin that cannot be read, are the failure
+  `file_unreadable`.
 - `--sidecar` also writes the sidecar. A sidecar that cannot be written is a
   failure.
 - `--stdin` examines content read from stdin under the path's name: the
@@ -160,7 +173,7 @@ Rust and Svelte files each have one set of checks.
 | Crate | Tier | Holds |
 |---|---|---|
 | `core/saga_core` | core, pure | the report types (`SanityReport`, `Issue`, `Fault`), the sidecar naming, `SourceKind` |
-| `capability/saga_runner` | capability, I/O | running the instruments, report generation, sidecar save and load, `sidecar_state`, the directory walk, the orphan sweep, the V1 routing list |
+| `capability/saga_runner` | capability, I/O | running the instruments, report generation, sidecar save and load, `examiner_fingerprint`, `sidecar_state`, the directory walk, the orphan sweep, the V1 routing list |
 | `cli/saga_cli` | binary `saga` | argument parsing, the directory, check, strip and file modes |
 
 Two more consumers link `saga_runner`:

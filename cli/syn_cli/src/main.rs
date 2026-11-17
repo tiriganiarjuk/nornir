@@ -211,7 +211,7 @@ fn build_overrides(args: &Args) -> Result<FilterOverrides, Failure> {
     let custom_filter = match &args.custom_filter {
         Some(expression) => Some(
             syn_core::compile_filter(expression)
-                .map_err(|reason| failure_mode_core::policy_filter_invalid("--filter", reason))?,
+                .map_err(|reason| failure_mode_core::command_line_filter_invalid("--filter", reason))?,
         ),
         None => None,
     };
@@ -318,7 +318,15 @@ mod tests {
     fn a_filter_that_does_not_compile_is_refused_not_dropped() {
         let args = args_from(&["syn", "--filter", ".[[["]).unwrap();
         let refused = build_overrides(&args).err().map(|failure| (failure.mode, failure.class));
-        assert_eq!(refused, Some(("policy_filter_invalid", "validation_error")));
+        assert_eq!(refused, Some(("command_line_filter_invalid", "validation_error")));
+    }
+
+    #[test]
+    fn a_refused_filter_is_reported_as_the_option_s_and_names_no_policy_file() {
+        let args = args_from(&["syn", "--filter", ".[[["]).unwrap();
+        let message = build_overrides(&args).err().map(|failure| failure.to_string()).unwrap_or_default();
+        assert!(message.starts_with("The filter given with --filter is not a usable jq expression"), "{message}");
+        assert!(!message.contains("policy file"), "{message}");
     }
 
     #[test]

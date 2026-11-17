@@ -309,17 +309,30 @@ fn run_check(search_dir: &Path, wanted: Option<SourceKind>) -> Result<(), String
 // Main
 // =============================================================================
 
+/// The content handed over on stdin. A stdin that cannot be read is a refusal.
+fn stdin_content() -> Result<String, String> {
+    let mut content = String::new();
+    std::io::stdin()
+        .read_to_string(&mut content)
+        .map_err(|io_err| refusal(failure_mode_core::file_unreadable("stdin", io_err)))?;
+    Ok(content)
+}
+
+/// The refusal of a file that is not there to examine; `None` for a file that is.
+fn unreadable_file_refusal(file: &Path) -> Option<String> {
+    std::fs::metadata(file)
+        .err()
+        .map(|io_err| refusal(failure_mode_core::file_unreadable(file.display(), io_err)))
+}
+
 fn run_file(args: &Args) -> Result<(), String> {
     let project_root = args.project_dir.as_deref();
 
     let report = if args.stdin {
-        let mut content = String::new();
-        std::io::stdin().read_to_string(&mut content)
-            .map_err(|io_err| format!("[saga] failed to read stdin: {}", io_err))?;
-        saga_runner::generate_report_from_content(&args.path, &content, project_root)
+        saga_runner::generate_report_from_content(&args.path, &stdin_content()?, project_root)
     } else {
-        if !args.path.exists() {
-            return Err(format!("[saga] file not found: {}", args.path.display()));
+        if let Some(not_there) = unreadable_file_refusal(&args.path) {
+            return Err(not_there);
         }
         saga_runner::generate_report(&args.path, project_root)
     };
@@ -376,6 +389,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_that_is_not_there_is_refused_with_its_failure_class_on_the_first_line() {
+        let missing = Path::new("/nonexistent/saga_cli/missing.rs");
+        let message = unreadable_file_refusal(missing).unwrap_or_default();
+        let mut lines = message.lines();
+        assert_eq!(lines.next(), Some("read_error"));
+        assert!(lines.next().is_some_and(|line| line.starts_with("Cannot read '/nonexistent/saga_cli/missing.rs'")));
+    }
+
+    #[test]
+    fn a_file_that_is_there_is_not_refused() {
+        assert_eq!(unreadable_file_refusal(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml").as_path()), None);
+    }
+
+    #[test]
+    fn a_refusal_opens_with_the_failure_class_and_carries_the_message_after_it() {
+        let message = refusal(failure_mode_core::file_unreadable("stdin", "stream did not contain valid UTF-8"));
+        assert_eq!(message.lines().next(), Some("read_error"));
+        assert!(message.contains("Cannot read 'stdin': stream did not contain valid UTF-8."), "{message}");
+    }
 
     #[test]
     fn a_source_of_the_wanted_kind_is_wanted() {

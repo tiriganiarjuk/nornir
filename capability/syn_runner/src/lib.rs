@@ -145,8 +145,8 @@ fn syn_fault(about: &Path, failure: &Failure) -> LocatedFault {
 }
 
 /// The fault of a loaded sidecar that does not describe its source as it is now:
-/// the source is gone, or holds other content than saga examined. `None` for a
-/// current sidecar.
+/// the source is gone, or holds other content than saga examined, or was
+/// examined by other checks than saga's now. `None` for a current sidecar.
 fn currency_fault(qa_file: &Path) -> Option<LocatedFault> {
     let source = saga_runner::source_path_from_qa(qa_file)?;
     if !source.exists() {
@@ -180,13 +180,32 @@ pub fn load_sidecars(qa_files: &[PathBuf]) -> (Vec<SanityReport>, Vec<LocatedFau
     (reports, faults)
 }
 
+/// The fault of one source file that has no sidecar: saga has not examined it,
+/// and the fault names the command that does. `None` for every other path — a
+/// directory, a sidecar, a file of no kind saga examines, a source with its
+/// sidecar.
+fn unexamined_source_fault(path: &Path) -> Option<LocatedFault> {
+    if !path.is_file() {
+        return None;
+    }
+    SourceKind::of_file_name(path.file_name()?.to_str()?)?;
+    if saga_runner::qa_path(path).exists() {
+        return None;
+    }
+    Some(syn_fault(path, &failure_mode_core::sidecar_absent(path.display())))
+}
+
 /// The sidecars under a path and their reports. A tree that cannot be listed whole
 /// is a fault naming what could not be read: its files are not known to be clean.
+/// One source file without a sidecar is a fault too: it was not examined.
 pub fn discover_and_load(
     path: &Path,
     target: Target,
     wanted: Option<SourceKind>,
 ) -> (Vec<SanityReport>, Vec<LocatedFault>) {
+    if let Some(unexamined) = unexamined_source_fault(path) {
+        return (Vec::new(), vec![unexamined]);
+    }
     match find_qa_files(path, target, wanted) {
         Ok(qa_files) => load_sidecars(&qa_files),
         Err(failure) => (Vec::new(), vec![syn_fault(path, &failure)]),
@@ -524,8 +543,67 @@ mod tests {
         assert_eq!(faults.len(), 1, "{faults:?}");
         assert_eq!(faults[0].tool, "syn");
         assert_eq!(faults[0].mode, "sidecar_stale");
-        assert!(faults[0].message.contains("older than its source"), "{}", faults[0].message);
+        assert!(faults[0].message.contains("is stale"), "{}", faults[0].message);
         assert!(faults[0].message.contains(&format!("saga {} --sidecar", source.display())), "{}", faults[0].message);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_examined_by_other_checks_gives_its_report_and_the_stale_fault() {
+        let (dir, _source, sidecar) = source_with_sidecar("load_other_examiner");
+        let mut report: Value = serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        report["examined_by"] = "0000000000000000".into();
+        std::fs::write(&sidecar, report.to_string()).unwrap();
+
+        let (reports, faults) = load_sidecars(&[sidecar]);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert_eq!(faults[0].mode, "sidecar_stale");
+        assert!(faults[0].message.contains("other than saga's checks now"), "{}", faults[0].message);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_source_file_without_a_sidecar_gives_a_fault_naming_the_command_that_examines_it() {
+        let dir = temp_dir("unexamined_file").canonicalize().unwrap();
+        let source = dir.join("lib.rs");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+
+        let (reports, faults) = discover_and_load(&source, Target::Src, None);
+        assert!(reports.is_empty());
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert_eq!(faults[0].tool, "syn");
+        assert_eq!(faults[0].mode, "sidecar_absent");
+        assert_eq!(faults[0].class, "validation_error");
+        assert!(faults[0].message.contains("has not examined it"), "{}", faults[0].message);
+        assert!(faults[0].message.contains(&format!("saga {} --sidecar", source.display())), "{}", faults[0].message);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_source_file_with_its_sidecar_gives_its_report_and_no_fault() {
+        let (dir, source, _sidecar) = source_with_sidecar("examined_file");
+        let (reports, faults) = discover_and_load(&source, Target::Src, None);
+        assert_eq!(reports.len(), 1);
+        assert!(faults.is_empty(), "{faults:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_of_sources_without_sidecars_and_a_file_of_no_kind_give_no_fault() {
+        let dir = temp_dir("unexamined_directory").canonicalize().unwrap();
+        std::fs::write(dir.join("lib.rs"), "fn main() {}\n").unwrap();
+        let notes = dir.join("notes.txt");
+        std::fs::write(&notes, "nothing saga examines\n").unwrap();
+
+        for path in [dir.as_path(), notes.as_path()] {
+            let (reports, faults) = discover_and_load(path, Target::All, None);
+            assert!(reports.is_empty(), "{}", path.display());
+            assert!(faults.is_empty(), "{}: {faults:?}", path.display());
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -57,6 +57,10 @@ pub struct SanityReport {
     pub relative_path: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content_hash: String,
+    /// The fingerprint of what examined the source: the check logic and the
+    /// configuration of the saga that wrote the report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub examined_by: String,
     #[serde(default)]
     pub generated_at: String,
     #[serde(default)]
@@ -194,6 +198,23 @@ mod tests {
         for sidecar_name in ["lib.rs", "lib.rs.qa", ".notes.txt.qa", ".Makefile.qa", ".qa", "..py.qa"] {
             assert_eq!(SourceKind::of_sidecar_name(sidecar_name), None, "{sidecar_name}");
         }
+    }
+
+    #[test]
+    fn a_report_carries_what_examined_it_through_its_json() {
+        let report = SanityReport { file: "/p/a.py".into(), examined_by: "0123abcd".into(), ..Default::default() };
+        let json = serde_json::to_string(&report).unwrap();
+        let read_back: SanityReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(read_back.examined_by, "0123abcd");
+    }
+
+    #[test]
+    fn a_report_that_records_no_examiner_has_no_such_key_and_reads_back_empty() {
+        let report = SanityReport { file: "/p/a.py".into(), ..Default::default() };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("examined_by"), "{json}");
+        let read_back: SanityReport = serde_json::from_str(&json).unwrap();
+        assert!(read_back.examined_by.is_empty());
     }
 
     #[test]

@@ -22,10 +22,27 @@ fn violation(line: usize, message: impl Into<String>) -> Violation {
 // Shared: test context detection
 // -------------------------------------------------------------------------
 
-/// True when the file lives under a `tests/` directory — a Rust integration-test
-/// file, where every function is test code whether or not it carries `#[test]`.
+/// True for a Rust integration-test file — one under a crate's `tests/`
+/// directory, where every function is test code whether or not it carries
+/// `#[test]`. The path has a `tests` directory, and no `src` directory below the
+/// last one: a crate kept under `tests/` as a fixture has its own `src/`, and
+/// that is production code.
 pub(crate) fn path_is_test_file(file_path: &str) -> bool {
-    file_path.contains("/tests/")
+    let Some((_, below_tests)) = file_path.rsplit_once("/tests/") else {
+        return false;
+    };
+    let directories_below = below_tests.rsplit_once('/').map_or("", |(directories, _file_name)| directories);
+    !directories_below.split('/').any(|directory| directory == "src")
+}
+
+// -------------------------------------------------------------------------
+// Shared: macro names
+// -------------------------------------------------------------------------
+
+/// The name a macro is invoked by: the last `::` segment of its path, so
+/// `std::panic` and `panic` are the same macro.
+fn macro_base_name(macro_path: &str) -> &str {
+    macro_path.rsplit("::").next().unwrap_or(macro_path).trim()
 }
 
 /// Check if a node is test code: the file is an integration-test file, or the
@@ -159,7 +176,7 @@ fn find_panicking_macros(source: &ParsedSource) -> Vec<Violation> {
             None => continue,
         };
 
-        let macro_name = node_text(macro_node, source.source_bytes);
+        let macro_name = macro_base_name(node_text(macro_node, source.source_bytes));
         if !PANICKING_MACROS.contains(&macro_name) {
             continue;
         }
@@ -344,7 +361,7 @@ pub fn check_no_println(source: &ParsedSource, _config: &CheckConfig) -> Vec<Vio
         };
 
         let macro_name = node_text(macro_node, source.source_bytes);
-        let name = macro_name.trim_end_matches('!');
+        let name = macro_base_name(macro_name.trim_end_matches('!'));
 
         if !FORBIDDEN_MACROS.contains(&name) {
             continue;
@@ -1040,9 +1057,92 @@ mod tests {
         assert!(violations.is_empty());
     }
 
+    // -- macros by the last segment of their path --
+
+    #[test]
+    fn a_macro_s_base_name_is_the_last_segment_of_its_path() {
+        assert_eq!(macro_base_name("std::panic"), "panic");
+        assert_eq!(macro_base_name("::core::unreachable"), "unreachable");
+        assert_eq!(macro_base_name("println"), "println");
+    }
+
+    #[test]
+    fn a_macro_s_base_name_is_not_a_suffix_of_its_last_segment() {
+        assert_eq!(macro_base_name("my_panic"), "my_panic");
+        assert_eq!(macro_base_name("helpers::not_println"), "not_println");
+    }
+
+    #[test]
+    fn panicking_macros_invoked_by_a_qualified_path_are_caught() {
+        for (name, invocation) in [
+            ("panic", r#"std::panic!("bad state")"#),
+            ("unreachable", "core::unreachable!()"),
+            ("todo", "::std::todo!()"),
+            ("unimplemented", "std::unimplemented!()"),
+        ] {
+            let parsed = parse(&format!("fn production_code() -> i32 {{ {invocation} }}"));
+            let violations = check_no_unwrap(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{invocation} should be caught");
+            assert!(violations[0].message.contains(&format!("{name}!()")), "{}", violations[0].message);
+        }
+    }
+
+    #[test]
+    fn a_macro_that_only_ends_in_a_panicking_name_is_ok() {
+        for invocation in [r#"my_panic!("bad state")"#, "helpers::not_unreachable!()", "todo_list!()"] {
+            let parsed = parse(&format!("fn production_code() -> i32 {{ {invocation} }}"));
+            let violations = check_no_unwrap(&parsed, &default_config());
+            assert!(violations.is_empty(), "{invocation} is not a panicking macro");
+        }
+    }
+
+    #[test]
+    fn print_macros_invoked_by_a_qualified_path_are_caught() {
+        for (name, invocation) in [
+            ("println", r#"std::println!("hello")"#),
+            ("print", r#"std::print!("hello")"#),
+            ("dbg", "std::dbg!(1)"),
+        ] {
+            let parsed = parse(&format!("fn process() {{ {invocation}; }}"));
+            let violations = check_no_println(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{invocation} should be caught");
+            assert!(violations[0].message.contains(&format!("{name}!()")), "{}", violations[0].message);
+        }
+    }
+
+    #[test]
+    fn a_macro_that_only_ends_in_a_print_name_is_ok() {
+        for invocation in [r#"not_println!("hello")"#, r#"log::my_print!("hello")"#, "my_dbg!(1)"] {
+            let parsed = parse(&format!("fn process() {{ {invocation}; }}"));
+            let violations = check_no_println(&parsed, &default_config());
+            assert!(violations.is_empty(), "{invocation} is not a print macro");
+        }
+    }
+
     // -- test context by path --
 
     const HELPER_WITH_UNWRAP: &str = "fn helper() -> i32 { let x: Option<i32> = Some(1); x.unwrap() }";
+
+    #[test]
+    fn a_file_under_a_crate_s_tests_directory_is_a_test_file() {
+        assert!(path_is_test_file("/x/crate/tests/cli.rs"));
+        assert!(path_is_test_file("/x/crate/tests/common/mod.rs"));
+    }
+
+    #[test]
+    fn a_file_under_a_src_directory_below_tests_or_under_no_tests_directory_is_not_a_test_file() {
+        assert!(!path_is_test_file("/x/tests/fixtures/crate/src/lib.rs"));
+        assert!(!path_is_test_file("/x/tests/src/lib.rs"));
+        assert!(!path_is_test_file("/x/crate/src/lib.rs"));
+        assert!(!path_is_test_file("/x/tests_data/src/lib.rs"));
+    }
+
+    #[test]
+    fn unwrap_in_a_fixture_crate_s_src_below_tests_caught() {
+        let parsed = parse_at("/x/tests/fixtures/crate/src/lib.rs", HELPER_WITH_UNWRAP);
+        let violations = check_no_unwrap(&parsed, &default_config());
+        assert_eq!(violations.len(), 1, "a fixture crate's src/ is production code");
+    }
 
     #[test]
     fn tests_directory_segment_is_a_test_file() {

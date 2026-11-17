@@ -28,6 +28,8 @@ pub mod messages {
     include!(concat!(env!("OUT_DIR"), "/gleipnir_messages.rs"));
 }
 
+include!(concat!(env!("OUT_DIR"), "/gleipnir_logic_fingerprint.rs"));
+
 static STATISTICS_TOML: &str = include_str!("../gleipnir_statistics.toml");
 
 pub static STATISTICS: LazyLock<StatisticsToml> = LazyLock::new(|| {
@@ -286,6 +288,17 @@ fn run_svelte_raw_checks(file_path: &str, source_str: &str, violations: &mut Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_logic_fingerprint_is_sixteen_hex_digits() {
+        assert_eq!(LOGIC_FINGERPRINT.len(), 16, "{LOGIC_FINGERPRINT}");
+        assert!(LOGIC_FINGERPRINT.chars().all(|digit| matches!(digit, '0'..='9' | 'a'..='f')), "{LOGIC_FINGERPRINT}");
+    }
+
+    #[test]
+    fn the_logic_fingerprint_is_not_the_hash_of_no_files() {
+        assert_ne!(LOGIC_FINGERPRINT, "cbf29ce484222325");
+    }
 
     #[test]
     fn a_violation_carries_its_check_s_four_message_fields() {

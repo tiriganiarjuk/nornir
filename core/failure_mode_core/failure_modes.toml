@@ -479,13 +479,19 @@ adversarial = "stop"
 [sidecar_not_matching]
 class       = "validation_error"
 standard    = "The sidecar '{path}' does not match sanity-report: {reason}."
-route       = "The sidecar was written by an older saga, or changed after saga wrote it. Report this message to the user; the sidecars are regenerated with saga --force."
+route       = "The sidecar was written by another saga, or changed after saga wrote it. saga on the sidecar's directory writes it again."
 adversarial = "stop"
 
 [sidecar_stale]
 class       = "validation_error"
-standard    = "The sidecar '{path}' is older than its source: '{source}' holds other content than saga examined."
-route       = "What the sidecar records describes the source as it was. saga {source} --sidecar refreshes it."
+standard    = "The sidecar '{path}' is stale: '{source}' holds other content than saga examined, or the checks that examined it are other than saga's checks now."
+route       = "What the sidecar records describes another source, or what other checks found. saga {source} --sidecar refreshes it."
+adversarial = "stop"
+
+[sidecar_absent]
+class       = "validation_error"
+standard    = "'{source}' has no sidecar: saga has not examined it."
+route       = "The file is not known to be clean. saga {source} --sidecar examines it."
 adversarial = "stop"
 
 [sidecar_source_absent]
@@ -504,6 +510,12 @@ adversarial = "stop"
 class       = "validation_error"
 standard    = "The filter in the policy file '{path}' is not a usable jq expression: {reason}."
 route       = "Syn applies no policy from a file it cannot use, and no default in its place. Report this message to the user."
+adversarial = "stop"
+
+[command_line_filter_invalid]
+class       = "validation_error"
+standard    = "The filter given with {option} is not a usable jq expression: {reason}."
+route       = "Give {option} one jq expression, evaluated against one issue."
 adversarial = "stop"
 
 [quality_check_not_run]

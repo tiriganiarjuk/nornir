@@ -28,7 +28,7 @@ given:
 | The path is | Syn reads |
 |---|---|
 | a `.qa` file | that sidecar |
-| a source file | its sidecar, `.{file name}.qa` beside it, when there is one |
+| a source file | its sidecar, `.{file name}.qa` beside it; a `py`, `rs` or `svelte` file without one is a fault |
 | a directory | every sidecar in the tree, narrowed by `--target` and `--kind` |
 
 A directory is walked the way saga walks it: hidden directories and
@@ -99,14 +99,19 @@ known to be clean. No filter hides a fault. Syn reports:
 - a sidecar that does not load — unreadable, or not matching the sanity-report
   schema; it contributes no report;
 - a sidecar that is **stale** — its source holds other content than saga
-  examined; its report is still used, and the fault names the command that
-  refreshes it;
+  examined, or it was examined by other checks than saga's now; its report is
+  still used, and the fault names the command that refreshes it;
 - a sidecar whose source file is gone; its report is still used;
+- one source file that has no sidecar, when the path names that file — saga has
+  not examined it, and the fault names the command that does. A directory's
+  sources without sidecars are listed by `saga <dir> --check`;
 - a directory tree that could not be listed whole.
 
 Whether a sidecar is stale is decided by `saga_runner::sidecar_state`, the one
-definition of sidecar currency (see `cli/saga_cli/SAGA_DESIGN.md`). Reports
-handed over on stdin are taken as they are.
+definition of sidecar currency (see `cli/saga_cli/SAGA_DESIGN.md`): it compares
+the sidecar's `content_hash` with the source, and its `examined_by` with the
+examiner fingerprint of the saga crates syn is built with. Reports handed over
+on stdin are taken as they are.
 
 ### Decision
 

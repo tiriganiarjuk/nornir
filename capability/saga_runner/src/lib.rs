@@ -40,6 +40,33 @@ static V1_LEGACY_PATHS: LazyLock<Vec<String>> = LazyLock::new(|| {
     parsed.projects.into_iter().map(|entry| entry.path).collect()
 });
 
+/// The fingerprint of what examines a source in this saga, computed at first use:
+/// gleipnir's logic fingerprint with the texts compiled in here — the V1 routing
+/// list and the two instrument configurations.
+static EXAMINER_FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
+    combined_fingerprint(&[gleipnir_core::LOGIC_FINGERPRINT, V1_LEGACY_PROJECTS_TOML, RUFF_TOML, PYRIGHTCONFIG_JSON])
+});
+
+/// One sha256 over the parts in order, each preceded by its length, so the same
+/// text divided differently gives another fingerprint.
+fn combined_fingerprint(parts: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// The fingerprint of what examines a source in this saga: gleipnir's check logic
+/// and data files, the V1 routing list, and the ruff and basedpyright
+/// configurations. Every report records it as `examined_by`, and a sidecar that
+/// records another is stale.
+pub fn examiner_fingerprint() -> &'static str {
+    EXAMINER_FINGERPRINT.as_str()
+}
+
 /// The AI root, `$HOME/ai/`, with its closing slash.
 fn ai_root() -> String {
     format!("{}/ai/", std::env::var("HOME").unwrap_or_default())
@@ -356,6 +383,7 @@ fn assemble_report(
         file: file_path.to_string_lossy().to_string(),
         relative_path,
         content_hash,
+        examined_by: examiner_fingerprint().to_string(),
         generated_at: timestamp_now(),
         elapsed_ms,
         issues,
@@ -458,10 +486,12 @@ pub fn load_qa_file(qa_file: &Path) -> Result<SanityReport, Failure> {
 pub enum SidecarState {
     /// The source has no sidecar.
     Missing,
-    /// The sidecar records the source as it is now.
+    /// The sidecar records the source as it is now, examined by this saga's
+    /// checks and configuration.
     Current,
     /// The sidecar records other content than the source holds now, or records
-    /// no hash, or the source cannot be hashed.
+    /// no hash, or the source cannot be hashed; or it records another examiner
+    /// than this saga's, or none.
     Stale,
     /// The sidecar is there and does not load.
     Unreadable,
@@ -488,8 +518,15 @@ fn state_of_loaded(recorded_hash: &str, source_hash_now: Option<&str>) -> Sideca
     }
 }
 
+/// Whether a report was written by the examiner named: it records an examiner,
+/// and it is that one.
+fn was_examined_by(recorded_examiner: &str, examiner: &str) -> bool {
+    !recorded_examiner.is_empty() && recorded_examiner == examiner
+}
+
 /// The state of a source file's sidecar: the one definition of whether a sidecar
-/// is current.
+/// is current. A sidecar that loads is current when this saga's examiner wrote it
+/// and the hash it recorded is the source's hash now.
 pub fn sidecar_state(source_file: &Path) -> SidecarState {
     let sidecar = qa_path(source_file);
     if !sidecar.exists() {
@@ -498,6 +535,9 @@ pub fn sidecar_state(source_file: &Path) -> SidecarState {
     let Ok(report) = load_qa_file(&sidecar) else {
         return SidecarState::Unreadable;
     };
+    if !was_examined_by(&report.examined_by, examiner_fingerprint()) {
+        return SidecarState::Stale;
+    }
     let source_hash_now = directory_read_io::file_sha256(&source_file.to_string_lossy()).ok();
     state_of_loaded(&report.content_hash, source_hash_now.as_deref())
 }
@@ -843,6 +883,77 @@ mod tests {
         std::fs::write(&source, "fn main() { let changed = 1; }\n").unwrap();
         assert_eq!(sidecar_state(&source), SidecarState::Stale);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rewrite a source's sidecar with its `examined_by` set to the value, or
+    /// taken out when there is none.
+    fn rewrite_examined_by(source: &Path, examined_by: Option<&str>) {
+        let sidecar = qa_path(source);
+        let mut report: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        let fields = report.as_object_mut().unwrap();
+        match examined_by {
+            Some(examiner) => fields.insert("examined_by".into(), examiner.into()),
+            None => fields.remove("examined_by"),
+        };
+        std::fs::write(&sidecar, report.to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_saved_sidecar_records_this_saga_s_examiner() {
+        let (dir, source) = source_with_sidecar("state_examiner");
+        let loaded = load_qa_file(&qa_path(&source)).unwrap();
+        assert_eq!(loaded.examined_by, examiner_fingerprint());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_rewritten_with_its_own_examiner_is_still_current() {
+        let (dir, source) = source_with_sidecar("state_same_examiner");
+        rewrite_examined_by(&source, Some(examiner_fingerprint()));
+        assert_eq!(sidecar_state(&source), SidecarState::Current);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_examined_by_other_logic_is_stale() {
+        let (dir, source) = source_with_sidecar("state_other_examiner");
+        rewrite_examined_by(&source, Some("0000000000000000"));
+        assert_eq!(sidecar_state(&source), SidecarState::Stale);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_that_records_no_examiner_is_stale() {
+        let (dir, source) = source_with_sidecar("state_no_examiner");
+        rewrite_examined_by(&source, None);
+        assert_eq!(load_qa_file(&qa_path(&source)).unwrap().examined_by, "");
+        assert_eq!(sidecar_state(&source), SidecarState::Stale);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_report_was_examined_by_the_examiner_it_records() {
+        assert!(was_examined_by("abc", "abc"));
+    }
+
+    #[test]
+    fn a_report_recording_another_examiner_or_none_was_not_examined_by_it() {
+        assert!(!was_examined_by("abc", "def"));
+        assert!(!was_examined_by("", "abc"));
+        assert!(!was_examined_by("", ""));
+    }
+
+    #[test]
+    fn the_examiner_fingerprint_is_one_sha256_and_the_same_at_every_call() {
+        assert_eq!(examiner_fingerprint().len(), 64);
+        assert_eq!(examiner_fingerprint(), examiner_fingerprint());
+    }
+
+    #[test]
+    fn a_fingerprint_follows_every_part_and_how_the_text_is_divided() {
+        assert_eq!(combined_fingerprint(&["ab", "c"]), combined_fingerprint(&["ab", "c"]));
+        assert_ne!(combined_fingerprint(&["ab", "c"]), combined_fingerprint(&["ab", "d"]));
+        assert_ne!(combined_fingerprint(&["ab", "c"]), combined_fingerprint(&["a", "bc"]));
     }
 
     #[test]

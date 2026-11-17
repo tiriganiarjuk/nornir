@@ -85,11 +85,13 @@ pub fn check_no_bare_collections(source: &ParsedSource, _config: &CheckConfig) -
     violations
 }
 
-/// Python builtin type names treated as "simple" for union member classification.
-/// Parameterized forms (e.g. list[int], dict[str, float]) are also simple.
-const SIMPLE_TYPE_NAMES: &[&str] = &[
+/// Python's builtin type names: the one list for both checks that ask whether a
+/// name is a builtin type. `union_member_count` counts a union member with one of
+/// these names as "simple", bare or parameterized (list[int], dict[str, float]);
+/// `no_implicit_type_aliases` takes one as a type-shaped operand of a `|` alias.
+const BUILTIN_TYPE_NAMES: &[&str] = &[
     "int", "str", "float", "bool", "bytes", "complex", "bytearray", "memoryview",
-    "list", "dict", "tuple", "set", "frozenset", "object",
+    "list", "dict", "tuple", "set", "frozenset", "object", "type",
 ];
 
 /// Classify whether a union leaf node is a simple (builtin) type.
@@ -100,7 +102,7 @@ fn is_simple_type(node: tree_sitter::Node, source: &[u8]) -> bool {
     match node.kind() {
         "identifier" => {
             let text = node_text(node, source);
-            SIMPLE_TYPE_NAMES.contains(&text.as_ref())
+            BUILTIN_TYPE_NAMES.contains(&text.as_ref())
         }
         // tree-sitter uses "generic_type" for parameterized types in annotations (list[int])
         // and "subscript" in expression context
@@ -113,7 +115,7 @@ fn is_simple_type(node: tree_sitter::Node, source: &[u8]) -> bool {
             if let Some(base_node) = base {
                 if base_node.kind() == "identifier" {
                     let text = node_text(base_node, source);
-                    return SIMPLE_TYPE_NAMES.contains(&text.as_ref());
+                    return BUILTIN_TYPE_NAMES.contains(&text.as_ref());
                 }
             }
             false
@@ -358,12 +360,6 @@ fn is_type_alias_value(node: tree_sitter::Node, source: &[u8]) -> &'static str {
     ""
 }
 
-/// Builtin type names that are type-shaped operands of a `|` alias.
-const ALIAS_BUILTIN_TYPE_NAMES: &[&str] = &[
-    "int", "str", "float", "bool", "bytes", "list", "dict", "set", "tuple", "frozenset",
-    "object", "type",
-];
-
 /// CapWords: starts uppercase and contains at least one lowercase letter.
 fn is_cap_words(name: &str) -> bool {
     name.starts_with(|c: char| c.is_ascii_uppercase())
@@ -387,7 +383,7 @@ fn is_type_shaped_operand(node: tree_sitter::Node, source: &[u8]) -> bool {
         "none" | "subscript" => true,
         "identifier" => {
             let name = node_text(node, source);
-            name == "None" || ALIAS_BUILTIN_TYPE_NAMES.contains(&name) || is_cap_words(name)
+            name == "None" || BUILTIN_TYPE_NAMES.contains(&name) || is_cap_words(name)
         }
         "attribute" => node
             .child_by_field_name("attribute")
@@ -706,6 +702,28 @@ mod tests {
         assert!(violations[0].message.contains("simple types"));
     }
 
+    /// The four builtin type names that pin the one list in both of its uses.
+    const PINNED_BUILTIN_TYPE_NAMES: [&str; 4] = ["type", "complex", "bytearray", "memoryview"];
+
+    #[test]
+    fn each_pinned_builtin_name_is_a_simple_union_member() {
+        for name in PINNED_BUILTIN_TYPE_NAMES {
+            let parsed = parse(&format!("x: int | str | float | bool | {name}\n"));
+            let violations = check_union_member_count(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{name}"); // 5 simple, cap 4
+            assert!(violations[0].message.contains("simple types"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_only_resembles_a_pinned_builtin_is_a_named_union_member() {
+        for name in PINNED_BUILTIN_TYPE_NAMES {
+            let parsed = parse(&format!("x: int | str | float | bool | {name}_like\n"));
+            let violations = check_union_member_count(&parsed, &default_config());
+            assert!(violations.is_empty(), "{name}_like"); // 4 simple, 1 named
+        }
+    }
+
     #[test]
     fn union_member_count_messages_carry_no_numbers() {
         let simple = parse("x: int | str | float | bool | bytes\n");
@@ -788,6 +806,25 @@ mod tests {
             let violations = check_no_implicit_type_aliases(&parsed, &default_config());
             assert_eq!(violations.len(), 1, "{code}");
             assert!(violations[0].message.contains("Union"), "{code}");
+        }
+    }
+
+    #[test]
+    fn each_pinned_builtin_name_is_a_type_shaped_alias_operand() {
+        for name in PINNED_BUILTIN_TYPE_NAMES {
+            let parsed = parse(&format!("Maybe = {name} | None\n"));
+            let violations = check_no_implicit_type_aliases(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{name}");
+            assert!(violations[0].message.contains("Union"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_only_resembles_a_pinned_builtin_is_not_a_type_shaped_alias_operand() {
+        for name in PINNED_BUILTIN_TYPE_NAMES {
+            let parsed = parse(&format!("merged = {name}_like | None\n"));
+            let violations = check_no_implicit_type_aliases(&parsed, &default_config());
+            assert!(violations.is_empty(), "{name}_like");
         }
     }
 
