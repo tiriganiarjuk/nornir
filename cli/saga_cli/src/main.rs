@@ -342,10 +342,15 @@ fn run_file(args: &Args) -> Result<(), String> {
         eprintln!("[saga] wrote {}", sidecar.display());
     }
 
-    let json = serde_json::to_string_pretty(&report)
-        .map_err(|json_err| format!("[saga] json serialization failed: {}", json_err))?;
-    println!("{}", json);
+    println!("{}", report_json(&report, &report.file)?);
     Ok(())
+}
+
+/// The report of a file as JSON text. A report that cannot be written as JSON is
+/// refused as `sanity_report_invalid`.
+fn report_json<Report: serde::Serialize>(report: &Report, file: &str) -> Result<String, String> {
+    serde_json::to_string_pretty(report)
+        .map_err(|json_err| refusal(failure_mode_core::sanity_report_invalid(file, json_err)))
 }
 
 fn main() {
@@ -409,6 +414,25 @@ mod tests {
         let message = refusal(failure_mode_core::file_unreadable("stdin", "stream did not contain valid UTF-8"));
         assert_eq!(message.lines().next(), Some("read_error"));
         assert!(message.contains("Cannot read 'stdin': stream did not contain valid UTF-8."), "{message}");
+    }
+
+    #[test]
+    fn a_report_is_handed_over_as_json() {
+        let report = saga_runner::generate_report(Path::new("/nonexistent/saga_cli/missing.rs"), None);
+        let json = report_json(&report, &report.file).unwrap_or_default();
+        assert!(json.contains("\"file\": \"/nonexistent/saga_cli/missing.rs\""), "{json}");
+    }
+
+    #[test]
+    fn a_report_that_cannot_be_written_as_json_is_refused_with_its_failure_class_on_the_first_line() {
+        let keyed_by_a_pair = std::collections::HashMap::from([((1, 2), 3)]);
+        let message = report_json(&keyed_by_a_pair, "/project/a.py").unwrap_err();
+        let mut lines = message.lines();
+        assert_eq!(lines.next(), Some("validation_error"));
+        assert!(
+            lines.next().is_some_and(|line| line.starts_with("The report for '/project/a.py' does not match sanity-report")),
+            "{message}"
+        );
     }
 
     #[test]

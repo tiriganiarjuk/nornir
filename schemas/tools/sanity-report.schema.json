@@ -9,7 +9,7 @@
     "file": {"type": "string", "minLength": 1, "description": "The source file's absolute path."},
     "relative_path": {"type": "string", "minLength": 1, "description": "The path a report shows for the file."},
     "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 of the source as examined. Absent when the source could not be hashed; a fault then says why."},
-    "examined_by": {"type": "string", "minLength": 1, "description": "The fingerprint of what examined the source: gleipnir's check logic and data files, and saga's routing list and instrument configurations. A sidecar that records none, or another than the reading saga's own, is stale."},
+    "examined_by": {"type": "string", "minLength": 1, "description": "The fingerprint of what examined the source: gleipnir's check logic, data files and grammars, saga's own code, routing list and instrument configurations, and the versions of the installed ruff and basedpyright. A report examined under a forced routing version records the fingerprint with `+forced-v1` or `+forced-v2` after it. A sidecar that records none, or another than the reading saga's own, is stale."},
     "generated_at": {"type": "string", "pattern": "^[0-9]+Z$", "description": "Seconds since the Unix epoch, UTC."},
     "elapsed_ms": {"type": "integer", "minimum": 0},
     "issues": {

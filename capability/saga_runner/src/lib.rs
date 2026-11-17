@@ -40,11 +40,75 @@ static V1_LEGACY_PATHS: LazyLock<Vec<String>> = LazyLock::new(|| {
     parsed.projects.into_iter().map(|entry| entry.path).collect()
 });
 
-/// The fingerprint of what examines a source in this saga, computed at first use:
-/// gleipnir's logic fingerprint with the texts compiled in here — the V1 routing
-/// list and the two instrument configurations.
+/// Every file under this crate's `src/`, by its path under `src/`, with its text.
+/// The routing and the running of the instruments live here and shape a report, so
+/// the text is part of the examiner. A test holds the list to the directory.
+const OWN_SOURCES: &[(&str, &str)] = &[("lib.rs", include_str!("lib.rs"))];
+
+/// Everything that decides what a report holds, as texts.
+#[derive(Debug, Clone, Copy)]
+struct ExaminerInputs<'a> {
+    /// `gleipnir_core::LOGIC_FINGERPRINT`.
+    gleipnir_logic: &'a str,
+    /// This crate's source files: path under `src/`, and text.
+    own_sources: &'a [(&'a str, &'a str)],
+    routing_list: &'a str,
+    ruff_configuration: &'a str,
+    pyright_configuration: &'a str,
+    /// What the installed ruff answers to `--version`.
+    ruff_version: &'a str,
+    /// What the installed basedpyright answers to `--version`.
+    basedpyright_version: &'a str,
+}
+
+/// The fingerprint of the inputs: one sha256 over all of them in a fixed order.
+fn fingerprint_of_examiner(inputs: ExaminerInputs) -> String {
+    let mut parts = vec![inputs.gleipnir_logic];
+    for (path, text) in inputs.own_sources {
+        parts.extend([*path, *text]);
+    }
+    parts.extend([
+        inputs.routing_list,
+        inputs.ruff_configuration,
+        inputs.pyright_configuration,
+        inputs.ruff_version,
+        inputs.basedpyright_version,
+    ]);
+    combined_fingerprint(&parts)
+}
+
+/// The version text of an instrument from what it printed: the first line, or the
+/// marker `<instrument>:unavailable` when it printed nothing or could not be run.
+fn version_text(instrument: &str, printed: Option<&str>) -> String {
+    printed
+        .and_then(|output| output.lines().next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map_or_else(|| format!("{instrument}:unavailable"), str::to_string)
+}
+
+/// Ask the instrument on PATH for its version.
+fn installed_version(instrument: &str) -> String {
+    let printed = Command::new(instrument)
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+    version_text(instrument, printed.as_deref())
+}
+
+/// The fingerprint of what examines a source in this saga, computed at first use, so
+/// each instrument is asked for its version once per process.
 static EXAMINER_FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
-    combined_fingerprint(&[gleipnir_core::LOGIC_FINGERPRINT, V1_LEGACY_PROJECTS_TOML, RUFF_TOML, PYRIGHTCONFIG_JSON])
+    fingerprint_of_examiner(ExaminerInputs {
+        gleipnir_logic: gleipnir_core::LOGIC_FINGERPRINT,
+        own_sources: OWN_SOURCES,
+        routing_list: V1_LEGACY_PROJECTS_TOML,
+        ruff_configuration: RUFF_TOML,
+        pyright_configuration: PYRIGHTCONFIG_JSON,
+        ruff_version: &installed_version("ruff"),
+        basedpyright_version: &installed_version("basedpyright"),
+    })
 });
 
 /// One sha256 over the parts in order, each preceded by its length, so the same
@@ -59,12 +123,24 @@ fn combined_fingerprint(parts: &[&str]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// The fingerprint of what examines a source in this saga: gleipnir's check logic
-/// and data files, the V1 routing list, and the ruff and basedpyright
-/// configurations. Every report records it as `examined_by`, and a sidecar that
-/// records another is stale.
+/// The fingerprint of what examines a source in this saga under default routing:
+/// gleipnir's logic fingerprint, this crate's own source, the V1 routing list, the
+/// ruff and basedpyright configurations, and the versions of the installed ruff and
+/// basedpyright. A report examined under default routing records it as
+/// `examined_by`, and a sidecar that records another is stale.
 pub fn examiner_fingerprint() -> &'static str {
     EXAMINER_FINGERPRINT.as_str()
+}
+
+/// What a report examined under the routing records as `examined_by`: the
+/// fingerprint itself under default routing, and the fingerprint with the forced
+/// version appended under a forced one — which is another examiner than the default.
+fn examined_by_under(fingerprint: &str, routing: VersionOverride) -> String {
+    match routing {
+        VersionOverride::Auto => fingerprint.to_string(),
+        VersionOverride::ForceV1 => format!("{fingerprint}+forced-v1"),
+        VersionOverride::ForceV2 => format!("{fingerprint}+forced-v2"),
+    }
 }
 
 /// The AI root, `$HOME/ai/`, with its closing slash.
@@ -106,6 +182,11 @@ std::thread_local! {
 /// on this thread.
 pub fn set_version_override(version: VersionOverride) {
     VERSION_OVERRIDE.with(|cell| cell.set(version));
+}
+
+/// The version override set on this thread.
+fn version_override() -> VersionOverride {
+    VERSION_OVERRIDE.with(|cell| cell.get())
 }
 
 fn use_v2(file_path: &Path) -> bool {
@@ -383,7 +464,7 @@ fn assemble_report(
         file: file_path.to_string_lossy().to_string(),
         relative_path,
         content_hash,
-        examined_by: examiner_fingerprint().to_string(),
+        examined_by: examined_by_under(examiner_fingerprint(), version_override()),
         generated_at: timestamp_now(),
         elapsed_ms,
         issues,
@@ -954,6 +1035,122 @@ mod tests {
         assert_eq!(combined_fingerprint(&["ab", "c"]), combined_fingerprint(&["ab", "c"]));
         assert_ne!(combined_fingerprint(&["ab", "c"]), combined_fingerprint(&["ab", "d"]));
         assert_ne!(combined_fingerprint(&["ab", "c"]), combined_fingerprint(&["a", "bc"]));
+    }
+
+    fn examiner_inputs() -> ExaminerInputs<'static> {
+        ExaminerInputs {
+            gleipnir_logic: "logic",
+            own_sources: &[("lib.rs", "source")],
+            routing_list: "routing",
+            ruff_configuration: "ruff configuration",
+            pyright_configuration: "pyright configuration",
+            ruff_version: "ruff 1.0.0",
+            basedpyright_version: "basedpyright 1.0.0",
+        }
+    }
+
+    #[test]
+    fn the_same_examiner_inputs_give_the_same_fingerprint() {
+        assert_eq!(fingerprint_of_examiner(examiner_inputs()), fingerprint_of_examiner(examiner_inputs()));
+        assert_eq!(fingerprint_of_examiner(examiner_inputs()).len(), 64);
+    }
+
+    #[test]
+    fn an_examiner_fingerprint_differs_when_any_one_input_differs() {
+        let same = examiner_inputs();
+        let changed = [
+            ExaminerInputs { gleipnir_logic: "other logic", ..same },
+            ExaminerInputs { own_sources: &[("lib.rs", "other source")], ..same },
+            ExaminerInputs { own_sources: &[("routing.rs", "source")], ..same },
+            ExaminerInputs { own_sources: &[("lib.rs", "source"), ("routing.rs", "")], ..same },
+            ExaminerInputs { routing_list: "other routing", ..same },
+            ExaminerInputs { ruff_configuration: "other ruff configuration", ..same },
+            ExaminerInputs { pyright_configuration: "other pyright configuration", ..same },
+            ExaminerInputs { ruff_version: "ruff 1.0.1", ..same },
+            ExaminerInputs { ruff_version: "ruff:unavailable", ..same },
+            ExaminerInputs { basedpyright_version: "basedpyright 1.0.1", ..same },
+        ];
+        for inputs in changed {
+            assert_ne!(fingerprint_of_examiner(inputs), fingerprint_of_examiner(same), "{inputs:?}");
+        }
+    }
+
+    #[test]
+    fn an_instrument_s_version_is_the_first_line_it_printed() {
+        assert_eq!(version_text("ruff", Some("ruff 0.9.1\nmore\n")), "ruff 0.9.1");
+        assert_eq!(version_text("basedpyright", Some("  basedpyright 1.2.3  \n")), "basedpyright 1.2.3");
+    }
+
+    #[test]
+    fn an_instrument_that_printed_nothing_or_could_not_be_run_is_unavailable() {
+        assert_eq!(version_text("ruff", None), "ruff:unavailable");
+        assert_eq!(version_text("ruff", Some("")), "ruff:unavailable");
+        assert_eq!(version_text("basedpyright", Some("  \nlater\n")), "basedpyright:unavailable");
+    }
+
+    #[test]
+    fn an_instrument_that_is_not_installed_has_the_unavailable_version() {
+        assert_eq!(installed_version("saga-runner-no-such-instrument"), "saga-runner-no-such-instrument:unavailable");
+    }
+
+    /// The path under `src/` of every file there that is not hidden, sorted.
+    fn files_under(directory: &Path, prefix: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if entry.path().is_dir() {
+                found.extend(files_under(&entry.path(), &format!("{prefix}{name}/")));
+            } else {
+                found.push(format!("{prefix}{name}"));
+            }
+        }
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn the_fingerprinted_sources_are_every_file_under_src() {
+        let on_disk = files_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), "");
+        let fingerprinted: Vec<&str> = OWN_SOURCES.iter().map(|(path, _)| *path).collect();
+        assert_eq!(fingerprinted, on_disk);
+    }
+
+    #[test]
+    fn a_report_examined_under_default_routing_records_the_fingerprint_itself() {
+        assert_eq!(examined_by_under("abc", VersionOverride::Auto), "abc");
+    }
+
+    #[test]
+    fn a_report_examined_under_a_forced_version_records_another_examiner() {
+        assert_eq!(examined_by_under("abc", VersionOverride::ForceV1), "abc+forced-v1");
+        assert_eq!(examined_by_under("abc", VersionOverride::ForceV2), "abc+forced-v2");
+    }
+
+    #[test]
+    fn a_sidecar_written_under_a_forced_version_is_stale() {
+        for forced in [VersionOverride::ForceV1, VersionOverride::ForceV2] {
+            set_version_override(forced);
+            let (dir, source) = source_with_sidecar("state_forced");
+            let recorded = load_qa_file(&qa_path(&source)).unwrap().examined_by;
+            set_version_override(VersionOverride::Auto);
+
+            assert_ne!(recorded, examiner_fingerprint());
+            assert_eq!(sidecar_state(&source), SidecarState::Stale);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_sidecar_written_after_a_forced_version_is_reset_is_current() {
+        set_version_override(VersionOverride::ForceV1);
+        set_version_override(VersionOverride::Auto);
+        let (dir, source) = source_with_sidecar("state_unforced");
+        assert_eq!(sidecar_state(&source), SidecarState::Current);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -58,13 +58,20 @@ it when it is loaded.
 A report records two things about its own making:
 
 - `content_hash` — the sha256 of the source as it was examined;
-- `examined_by` — the fingerprint of what examined it,
-  `saga_runner::examiner_fingerprint()`: one hash over gleipnir's check logic
-  (`gleipnir_core::LOGIC_FINGERPRINT`, compiled by gleipnir's build script from
-  every file under its `src/` and from `gleipnir_matrix.toml`,
-  `gleipnir_messages.toml` and `gleipnir_statistics.toml`) and over the texts
-  compiled into saga — `v1_legacy_projects.toml`, `ruff.toml` and
-  `pyrightconfig.json`.
+- `examined_by` — the fingerprint of what examined it. Under default routing
+  it is `saga_runner::examiner_fingerprint()`, one hash over:
+
+  | Part | What it covers |
+  |---|---|
+  | gleipnir's check logic | `gleipnir_core::LOGIC_FINGERPRINT`, compiled by gleipnir's build script from every file under its `src/`, from `gleipnir_matrix.toml`, `gleipnir_messages.toml` and `gleipnir_statistics.toml`, from `deploy_categories.toml` (it fills the `{readers}` slot of the message texts), and from the name and version of every `tree-sitter*` package in the workspace `Cargo.lock` |
+  | saga's own code | every file under `capability/saga_runner/src/`, compiled in |
+  | the routing list | `v1_legacy_projects.toml`, compiled in |
+  | the instrument configurations | `ruff.toml` and `pyrightconfig.json`, compiled in |
+  | the installed instruments | the first line of `ruff --version` and of `basedpyright --version`, asked once per process; an instrument that cannot be asked is recorded as `ruff:unavailable` or `basedpyright:unavailable` |
+
+  A report examined under `--test v1` or `--test v2` records the fingerprint
+  with `+forced-v1` or `+forced-v2` appended: a forced run is another examiner
+  than the default one.
 
 From the two, `saga_runner::sidecar_state(source file)` says how the sidecar
 stands to the source and to saga now. It is the one definition of sidecar
@@ -78,9 +85,11 @@ currency, used by saga and by syn.
 | `unreadable` | the sidecar is there and does not load |
 
 The hash follows the source's content, and the examiner follows the checks: a
-saga built from changed check logic, data files, routing list or instrument
-configuration finds every sidecar stale, and `saga <dir>` writes each of them
-with the checks as they now are.
+saga built from changed check logic, data files, grammars, saga code, routing
+list or instrument configuration, and a saga that finds another ruff or
+basedpyright installed, finds every sidecar stale, and `saga <dir>` writes each
+of them with the checks as they now are. A sidecar written under `--test` is
+stale to a plain `saga <dir>`, which writes it under default routing.
 
 ---
 
@@ -95,6 +104,8 @@ The path decides the mode: a file or a directory.
   `file_unreadable`.
 - `--sidecar` also writes the sidecar. A sidecar that cannot be written is a
   failure.
+- A report that cannot be written as JSON is the failure
+  `sanity_report_invalid`.
 - `--stdin` examines content read from stdin under the path's name: the
   content is held in a temporary file, and gleipnir applies its rules by the
   path the file is known by.

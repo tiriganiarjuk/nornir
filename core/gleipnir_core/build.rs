@@ -5,8 +5,10 @@
 //! A check table that names a check with no entry fails when the generated code compiles,
 //! because the constant it refers to does not exist.
 //!
-//! Also compiles `LOGIC_FINGERPRINT`: one hash over every file that decides what gleipnir
-//! reports — the files under src/ and the three data files. The build only reads them.
+//! Also compiles `LOGIC_FINGERPRINT`: one hash over everything that decides what gleipnir
+//! reports — the files under src/, the three data files, the inventory that fills the
+//! readers slot, and the versions of the tree-sitter crates the workspace lock file pins.
+//! The build only reads them.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -17,6 +19,10 @@ const MATRIX: &str = "gleipnir_matrix.toml";
 const STATISTICS: &str = "gleipnir_statistics.toml";
 const SOURCES: &str = "src";
 const INVENTORY: &str = "../../deploy_categories.toml";
+/// The workspace lock file, relative to this crate's manifest directory.
+const LOCK_FILE: &str = "../../Cargo.lock";
+/// The prefix of the name of every crate that parses a source for gleipnir.
+const GRAMMAR_PREFIX: &str = "tree-sitter";
 const FIELDS: [&str; 4] = ["detail", "signal", "direction", "canary"];
 const SEVERITIES: [&str; 3] = ["blocked", "error", "warning"];
 
@@ -25,11 +31,16 @@ const SEVERITIES: [&str; 3] = ["blocked", "error", "warning"];
 const READERS_SLOT: &str = "{readers}";
 
 fn main() -> Result<(), String> {
-    println!("cargo:rerun-if-changed={MESSAGES}");
-    println!("cargo:rerun-if-changed={MATRIX}");
-    println!("cargo:rerun-if-changed={STATISTICS}");
-    println!("cargo:rerun-if-changed={SOURCES}");
-    println!("cargo:rerun-if-changed={INVENTORY}");
+    // One line per logic file, and none for the src directory: cargo watches a named
+    // directory whole, and saga writes hidden sidecars under src/. A new source file is
+    // declared with `mod` in a file that is watched, so it reruns this script too.
+    let files = logic_files()?;
+    for file in &files {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
+    let lock_file = lock_file_path()?;
+    println!("cargo:rerun-if-changed={}", lock_file.display());
+    let grammars = grammar_versions(&read_table(&lock_file.to_string_lossy())?)?;
 
     let messages = read_table(MESSAGES)?;
     let readers = deployed_readers()?;
@@ -52,31 +63,77 @@ fn main() -> Result<(), String> {
     let out_dir = std::env::var("OUT_DIR").map_err(|e| format!("OUT_DIR: {e}"))?;
     std::fs::write(Path::new(&out_dir).join("gleipnir_messages.rs"), generated)
         .map_err(|e| format!("writing the generated check messages: {e}"))?;
-    std::fs::write(Path::new(&out_dir).join("gleipnir_logic_fingerprint.rs"), fingerprint_constant(&logic_fingerprint()?))
+    let fingerprint = logic_fingerprint(&files, &grammars)?;
+    std::fs::write(Path::new(&out_dir).join("gleipnir_logic_fingerprint.rs"), fingerprint_constant(&fingerprint))
         .map_err(|write_error| format!("writing the generated logic fingerprint: {write_error}"))
 }
 
 /// The Rust constant holding the logic fingerprint.
 fn fingerprint_constant(fingerprint: &str) -> String {
     let mut constant = String::new();
-    let _ = writeln!(constant, "/// The fingerprint of gleipnir's check logic: one hash over every file under src/");
-    let _ = writeln!(constant, "/// and over {MATRIX}, {MESSAGES} and {STATISTICS},");
+    let _ = writeln!(constant, "/// The fingerprint of gleipnir's check logic: one hash over every file under src/,");
+    let _ = writeln!(constant, "/// over {MATRIX}, {MESSAGES}, {STATISTICS} and deploy_categories.toml,");
+    let _ = writeln!(constant, "/// and over the versions of the tree-sitter crates in the workspace Cargo.lock,");
     let _ = writeln!(constant, "/// compiled by the build script. Two builds of the same files carry the same value.");
     let _ = writeln!(constant, "pub const LOGIC_FINGERPRINT: &str = {fingerprint:?};");
     constant
 }
 
-/// One hash over every logic file, in sorted path order: each file's path, its length
-/// and its content. FNV-1a, 64 bits, as 16 hex digits.
-fn logic_fingerprint() -> Result<String, String> {
+/// One hash over every logic file, in sorted path order — each file's path, its length
+/// and its content — and then over every grammar's name and version, each preceded by
+/// its length. FNV-1a, 64 bits, as 16 hex digits.
+fn logic_fingerprint(files: &[PathBuf], grammars: &[(String, String)]) -> Result<String, String> {
     let mut hash = FNV_OFFSET_BASIS;
-    for file in logic_files()? {
-        let content = std::fs::read(&file).map_err(|read_error| format!("{}: {read_error}", file.display()))?;
+    for file in files {
+        let content = std::fs::read(file).map_err(|read_error| format!("{}: {read_error}", file.display()))?;
         hash = fnv1a(hash, file.to_string_lossy().as_bytes());
         hash = fnv1a(hash, &(content.len() as u64).to_le_bytes());
         hash = fnv1a(hash, &content);
     }
+    for (name, version) in grammars {
+        for text in [name, version] {
+            hash = fnv1a(hash, &(text.len() as u64).to_le_bytes());
+            hash = fnv1a(hash, text.as_bytes());
+        }
+    }
     Ok(format!("{hash:016x}"))
+}
+
+/// The workspace lock file, found from this crate's manifest directory.
+fn lock_file_path() -> Result<PathBuf, String> {
+    let manifest_directory =
+        std::env::var("CARGO_MANIFEST_DIR").map_err(|variable_error| format!("CARGO_MANIFEST_DIR: {variable_error}"))?;
+    Ok(Path::new(&manifest_directory).join(LOCK_FILE))
+}
+
+/// The name and version of every package in the lock file whose name starts with
+/// `tree-sitter`, sorted. The parsers decide what gleipnir sees in a source, so another
+/// version of one is another examiner.
+fn grammar_versions(lock: &toml::Table) -> Result<Vec<(String, String)>, String> {
+    let packages = lock
+        .get("package")
+        .and_then(|listed| listed.as_array())
+        .ok_or_else(|| format!("{LOCK_FILE}: holds no package list"))?;
+    let mut grammars = Vec::new();
+    for package in packages {
+        let name = package_text(package, "name")?;
+        if name.starts_with(GRAMMAR_PREFIX) {
+            grammars.push((name.to_string(), package_text(package, "version")?.to_string()));
+        }
+    }
+    if grammars.is_empty() {
+        return Err(format!("{LOCK_FILE}: names no {GRAMMAR_PREFIX} package"));
+    }
+    grammars.sort();
+    Ok(grammars)
+}
+
+/// One text field of a lock file package.
+fn package_text<'package>(package: &'package toml::Value, field: &str) -> Result<&'package str, String> {
+    package
+        .get(field)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("{LOCK_FILE}: a package has no '{field}' text"))
 }
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -87,10 +144,11 @@ fn fnv1a(hash_so_far: u64, bytes: &[u8]) -> u64 {
     bytes.iter().fold(hash_so_far, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME))
 }
 
-/// Every file that decides what gleipnir reports, sorted: the three data files and
-/// the files under src/.
+/// Every file that decides what gleipnir reports, sorted: the three data files, the
+/// inventory that fills the readers slot, and the files under src/.
 fn logic_files() -> Result<Vec<PathBuf>, String> {
-    let mut files = vec![PathBuf::from(MATRIX), PathBuf::from(MESSAGES), PathBuf::from(STATISTICS)];
+    let mut files =
+        vec![PathBuf::from(MATRIX), PathBuf::from(MESSAGES), PathBuf::from(STATISTICS), PathBuf::from(INVENTORY)];
     collect_source_files(Path::new(SOURCES), &mut files)?;
     files.sort();
     Ok(files)
