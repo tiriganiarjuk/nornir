@@ -134,27 +134,22 @@ mod tests {
 
     // ── extract_file_path ─────────────────────────────────────────
 
+    fn written(tool_input: serde_json::Value) -> PostHookInput {
+        PostHookInput { tool_name: "Write".to_string(), tool_input }
+    }
+
     #[test]
     fn extract_file_path_no_field() {
-        let input = PostHookInput {
-            tool_name: Some("Write".to_string()),
-            tool_input: serde_json::json!({}),        };
-        assert!(extract_file_path(&input).is_none());
+        assert!(extract_file_path(&written(serde_json::json!({}))).is_none());
     }
 
     #[test]
     fn extract_file_path_null_value() {
-        let input = PostHookInput {
-            tool_name: Some("Write".to_string()),
-            tool_input: serde_json::json!({ "file_path": null }),        };
-        assert!(extract_file_path(&input).is_none());
+        assert!(extract_file_path(&written(serde_json::json!({ "file_path": null }))).is_none());
     }
 
     #[test]
     fn extract_file_path_numeric_value() {
-        let input = PostHookInput {
-            tool_name: Some("Write".to_string()),
-            tool_input: serde_json::json!({ "file_path": 42 }),        };
-        assert!(extract_file_path(&input).is_none());
+        assert!(extract_file_path(&written(serde_json::json!({ "file_path": 42 }))).is_none());
     }
 }

@@ -215,6 +215,11 @@ static HOOK_PRE_TOOL_USE_JSON: &str =
 pub static HOOK_PRE_TOOL_USE: EmbeddedValidator =
     EmbeddedValidator::new(HOOK_PRE_TOOL_USE_JSON, "hook-pre-tool-use");
 
+static HOOK_POST_TOOL_USE_JSON: &str =
+    include_str!("../../../schemas/tools/hook-post-tool-use.schema.json");
+pub static HOOK_POST_TOOL_USE: EmbeddedValidator =
+    EmbeddedValidator::new(HOOK_POST_TOOL_USE_JSON, "hook-post-tool-use");
+
 static SYN_POLICY_JSON: &str =
     include_str!("../../../schemas/tools/syn-policy.schema.json");
 pub static SYN_POLICY: EmbeddedValidator =

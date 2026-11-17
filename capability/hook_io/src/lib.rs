@@ -380,11 +380,11 @@ fn speak_alert(speech: &str, spoken: Spoken, category: &str) {
 
 // ── PostToolUse contract ─────────────────────────────────────────
 
-/// A PostToolUse call, as far as the hooks read it.
+/// A PostToolUse call, as far as the hooks read it. Its shape on the wire is
+/// `schemas/tools/hook-post-tool-use.schema.json`.
 #[derive(Debug, Deserialize)]
 pub struct PostHookInput {
-    pub tool_name: Option<String>,
-    #[serde(default)]
+    pub tool_name: String,
     pub tool_input: serde_json::Value,
 }
 
@@ -398,31 +398,75 @@ impl PostHookInput {
 /// Run a PostToolUse hook: read the call, assess, reply.
 ///
 /// `assess_fn` returns the context to give the session, or `None` for silence.
+/// A call the hook cannot read is not silence: the session is told the hook
+/// did not run, and an alert is raised.
 pub fn run_post_hook<F>(assess_fn: F) -> ExitCode
 where
     F: FnOnce(&PostHookInput) -> Option<String>,
 {
-    use response::{HookOutput, PostToolUseResponse};
-
-    let mut input = String::new();
-    if std::io::stdin().read_to_string(&mut input).is_err() {
-        return ExitCode::SUCCESS;
-    }
-
-    let hook_input: PostHookInput = match serde_json::from_str(&input) {
-        Ok(parsed) => parsed,
-        Err(_) => return ExitCode::SUCCESS,
-    };
-
-    if let Some(msg) = assess_fn(&hook_input) {
-        let resp = PostToolUseResponse::allow().with_context(msg);
-        let json = resp.to_json();
-        if !json.is_empty() {
-            print!("{}", json);
+    let said = match read_post_call() {
+        Ok(call) => assess_fn(&call),
+        Err(cause) => {
+            let message = post_hook_did_not_run(&hook_name(), &cause);
+            alert_post_hook_did_not_run(&message);
+            Some(message)
         }
+    };
+    if let Some(context) = said {
+        print_post_context(context);
     }
-
     ExitCode::SUCCESS
+}
+
+/// The PostToolUse reply on stdout: context for the session.
+fn print_post_context(context: String) {
+    use response::{HookOutput, PostToolUseResponse};
+    let json = PostToolUseResponse::allow().with_context(context).to_json();
+    if !json.is_empty() {
+        print!("{}", json);
+    }
+}
+
+fn read_post_call() -> Result<PostHookInput, String> {
+    let mut payload = String::new();
+    std::io::stdin()
+        .read_to_string(&mut payload)
+        .map_err(|io_err| format!("its input could not be read ({io_err})"))?;
+    parse_post_call(&payload)
+}
+
+/// A payload as a PostToolUse call: valid against its schema, then typed.
+pub fn parse_post_call(payload: &str) -> Result<PostHookInput, String> {
+    let checked = schemas_embedded::HOOK_POST_TOOL_USE
+        .validate(payload)
+        .map_err(|schema_err| format!("its input could not be checked ({schema_err})"))?;
+    if !checked.valid {
+        return Err(format!("its input is not a PostToolUse call ({})", checked.message));
+    }
+    serde_json::from_str(payload).map_err(|json_err| format!("its input could not be typed ({json_err})"))
+}
+
+/// What the session is told when a post hook could not read its call.
+fn post_hook_did_not_run(hook: &str, cause: &str) -> String {
+    format!(
+        "{hook} did not run: {cause}. Whatever this tool call wrote has not been examined \
+         and is not known to be clean."
+    )
+}
+
+fn alert_post_hook_did_not_run(message: &str) {
+    let datagram = datagram_io::Datagram {
+        timestamp: datagram_io::now(),
+        source: hook_name(),
+        kind: datagram_io::DatagramKind::Alert,
+        classifier: None,
+        priority: datagram_io::Priority::High,
+        workspace: datagram_io::workspace_name(),
+        detail: Some(message.to_string()),
+        speech: None,
+        payload: Some(serde_json::json!({ "category": UNDECIDED, "decision": "not_run" })),
+    };
+    datagram_io::emit(&datagram);
 }
 
 #[cfg(test)]
@@ -640,16 +684,30 @@ mod tests {
 
     #[test]
     fn a_post_call_names_its_file() {
-        let post = PostHookInput {
-            tool_name: Some("Write".into()),
-            tool_input: serde_json::json!({ "file_path": "/out/file.py" }),
-        };
+        let post = parse_post_call(r#"{"tool_name":"Write","tool_input":{"file_path":"/out/file.py"},"tool_response":{}}"#)
+            .unwrap();
+        assert_eq!(post.tool_name, "Write");
         assert_eq!(post.file_path(), Some("/out/file.py"));
     }
 
     #[test]
     fn a_post_call_without_a_file_names_none() {
-        let post = PostHookInput { tool_name: Some("Write".into()), tool_input: serde_json::json!({}) };
+        let post = parse_post_call(r#"{"tool_name":"Write","tool_input":{}}"#).unwrap();
         assert!(post.file_path().is_none());
+    }
+
+    #[test]
+    fn a_payload_that_is_not_a_post_call_is_refused() {
+        for payload in ["", "not json", r#"{"tool_input":{}}"#, r#"{"tool_name":"Write","input":{}}"#] {
+            assert!(parse_post_call(payload).is_err(), "{payload:?}");
+        }
+    }
+
+    #[test]
+    fn a_post_hook_that_did_not_run_says_so_and_why() {
+        let message = post_hook_did_not_run("hook_post_llm_tool", "its input is not a PostToolUse call");
+        assert!(message.contains("did not run"));
+        assert!(message.contains("its input is not a PostToolUse call"));
+        assert!(message.contains("not known to be clean"));
     }
 }

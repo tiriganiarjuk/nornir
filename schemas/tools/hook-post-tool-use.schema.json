@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hook-post-tool-use",
+  "description": "What a PostToolUse hook reads on stdin, as far as the quality hook depends on it: the tool that was called and its input. Claude Code sends further fields; they are allowed and unread. A payload without `tool_name` or `tool_input` cannot be assessed, and the hook that receives it says so.",
+  "type": "object",
+  "required": ["tool_name", "tool_input"],
+  "properties": {
+    "tool_name": {"type": "string", "minLength": 1},
+    "tool_input": {"type": "object"}
+  }
+}

@@ -110,15 +110,40 @@ const WORD_BREAKS: [char; 16] = [';', '|', '&', '<', '>', '(', ')', '"', '\'', '
 /// under `home`; any other relative word is under `working_directory`. The
 /// whole command is read, here-document bodies and quoted text included: a
 /// path named anywhere in it is a path the command can reach.
+///
+/// The command is read one simple command at a time, in order. A `cd` moves
+/// the working directory for the simple commands that follow it, so a relative
+/// path is resolved from where the command would be when it reaches it.
 pub fn named_paths(command: &str, working_directory: &str, home: &str) -> Vec<String> {
-    command
-        .split(|character: char| character.is_whitespace() || WORD_BREAKS.contains(&character))
-        .filter(|word| word.contains('/'))
-        .map(|word| match word.strip_prefix("~/") {
-            Some(under_home) => normalize(&format!("{home}/{under_home}")),
-            None => absolute_from(working_directory, word),
-        })
-        .collect()
+    let mut named = Vec::new();
+    let mut current_directory = normalize(working_directory);
+    for simple_command in command.split(|character: char| COMMAND_SEPARATORS.contains(&character)) {
+        let words: Vec<&str> = simple_command
+            .split(|character: char| character.is_whitespace() || WORD_BREAKS.contains(&character))
+            .filter(|word| !word.is_empty())
+            .collect();
+        named.extend(
+            words.iter().filter(|word| word.contains('/')).map(|word| resolved(word, &current_directory, home)),
+        );
+        if let ["cd", destination, ..] = words.as_slice() {
+            current_directory = resolved(destination, &current_directory, home);
+        }
+    }
+    named
+}
+
+/// Characters that end one simple command and begin the next.
+const COMMAND_SEPARATORS: [char; 4] = [';', '&', '|', '\n'];
+
+/// A word as an absolute, normalised path: under `home` when it starts with
+/// `~`, itself when absolute, else under `current_directory`.
+fn resolved(word: &str, current_directory: &str, home: &str) -> String {
+    match word.strip_prefix('~') {
+        Some(under_home) if under_home.is_empty() || under_home.starts_with('/') => {
+            normalize(&format!("{home}/{under_home}"))
+        }
+        _ => absolute_from(current_directory, word),
+    }
 }
 
 #[cfg(test)]
@@ -250,6 +275,36 @@ mod tests {
     #[test]
     fn a_path_through_a_variable_keeps_what_follows_it() {
         assert_eq!(paths("cat $HOME/.ssh/id"), vec!["/work/project/HOME/.ssh/id"]);
+    }
+
+    #[test]
+    fn a_relative_path_after_cd_is_under_the_new_directory() {
+        assert_eq!(paths("cd /n/nornir; git add core/x/src/lib.rs"), vec!["/n/nornir", "/n/nornir/core/x/src/lib.rs"]);
+        assert_eq!(paths("cd /n/nornir && cat hooks/h/main.rs"), vec!["/n/nornir", "/n/nornir/hooks/h/main.rs"]);
+    }
+
+    #[test]
+    fn cd_steps_are_followed_in_order() {
+        assert_eq!(
+            paths("cd sub\ncat a/b\ncd ..\ncat c/d"),
+            vec!["/work/project/sub/a/b", "/work/project/c/d"]
+        );
+    }
+
+    #[test]
+    fn cd_to_home_is_followed() {
+        assert_eq!(paths("cd ~; cat .config/x"), vec!["/home/user/.config/x"]);
+        assert_eq!(paths("cd ~/code; cat a/b"), vec!["/home/user/code", "/home/user/code/a/b"]);
+    }
+
+    #[test]
+    fn a_path_before_cd_is_under_the_starting_directory() {
+        assert_eq!(paths("cat a/b; cd /elsewhere"), vec!["/work/project/a/b", "/elsewhere"]);
+    }
+
+    #[test]
+    fn a_word_that_only_starts_with_cd_moves_nothing() {
+        assert_eq!(paths("cdrecord x; cat a/b"), vec!["/work/project/a/b"]);
     }
 
     #[test]
