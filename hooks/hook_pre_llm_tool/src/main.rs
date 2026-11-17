@@ -35,10 +35,15 @@ struct Config {
     probing: Option<Severity>,
     /// Directories exempt from probing, normalised.
     allow_paths: Vec<String>,
+    /// The home directory, normalised: a search from it or above it is refused.
+    home: String,
 }
 
-fn read_config(args: &[String], allow_paths_env: &str) -> Result<Config, String> {
+fn read_config(args: &[String], allow_paths_env: &str, home: &str) -> Result<Config, String> {
     let severities = parse_category_flags(args, &[PROBING])?;
+    if home.is_empty() {
+        return Err("HOME is not set, so a search from the home directory cannot be told".to_string());
+    }
     Ok(Config {
         probing: severities.get(PROBING).copied(),
         allow_paths: allow_paths_env
@@ -46,6 +51,7 @@ fn read_config(args: &[String], allow_paths_env: &str) -> Result<Config, String>
             .filter(|path| !path.is_empty())
             .map(normalize)
             .collect(),
+        home: normalize(home),
     })
 }
 
@@ -54,7 +60,8 @@ fn read_config(args: &[String], allow_paths_env: &str) -> Result<Config, String>
 fn decide(input: &HookInput) -> HookDecision {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let allow_paths_env = std::env::var("HOOK_LLM_ALLOW_PATHS").unwrap_or_default();
-    let config = match read_config(&args, &allow_paths_env) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let config = match read_config(&args, &allow_paths_env, &home) {
         Ok(config) => config,
         Err(cause) => return ask_because_undecided(HOOK, &cause),
     };
@@ -64,9 +71,14 @@ fn decide(input: &HookInput) -> HookDecision {
     }
 }
 
-/// The decision over every path the call reaches: the floor first, for all of
-/// them, then probing for those no grant exempts.
+/// The decision over every path the call reaches: the floor first — a search
+/// from the home directory or above it, then every path — then probing for
+/// the paths no grant exempts.
 fn decide_inner(input: &HookInput, config: &Config, protected: &RuleSet) -> HookDecision {
+    if let Some(denied) = input.search_root().and_then(|root| search_from_above_home(&root, &config.home)) {
+        return denied;
+    }
+
     let targets = input.targets();
 
     if let Some(denied) = targets.iter().find_map(|target| floor_decision(target, protected)) {
@@ -84,6 +96,22 @@ fn decide_inner(input: &HookInput, config: &Config, protected: &RuleSet) -> Hook
                 .map(|rule| path_decision(target, rule, PROBING, rule.severity.unwrap_or(probing_severity)))
         })
         .unwrap_or(HookDecision::Allow)
+}
+
+/// A search from the home directory or a directory above it reaches the
+/// protected stores under home without naming one of them, so it is the floor's.
+fn search_from_above_home(root: &str, home: &str) -> Option<HookDecision> {
+    is_under(home, root).then(|| {
+        make_decision(&DecisionInput {
+            severity: Severity::Block,
+            category: FLOOR,
+            description: "a search from the home directory or above it, which reaches the protected stores unnamed — search from the project's directory",
+            subject: root,
+            verb_past: "searched",
+            verb_present: "search",
+            max_subject_chars: None,
+        })
+    })
 }
 
 fn floor_decision(target: &str, protected: &RuleSet) -> Option<HookDecision> {
@@ -116,12 +144,20 @@ mod tests {
 
     static FIXTURES_TOML: &str = include_str!("../fixtures.toml");
 
+    /// The home directory the tests judge under, as the fixture set states it.
+    const HOME: &str = "/home/user";
+
     fn protected() -> RuleSet {
         hook_io::protected_paths().unwrap()
     }
 
+    #[test]
+    fn a_session_with_no_home_is_undecided() {
+        assert!(read_config(&[], "", "").is_err());
+    }
+
     fn config(probing: Option<Severity>, allow_paths: &[&str]) -> Config {
-        Config { probing, allow_paths: allow_paths.iter().map(|path| normalize(path)).collect() }
+        Config { probing, allow_paths: allow_paths.iter().map(|path| normalize(path)).collect(), home: HOME.to_string() }
     }
 
     fn blocking() -> Config {
@@ -148,7 +184,7 @@ mod tests {
     #[test]
     fn every_fixture_gets_its_verdict() {
         let set = parse_fixture_set(FIXTURES_TOML).unwrap();
-        let config = read_config(&set.arguments, &set.allow_paths).unwrap();
+        let config = read_config(&set.arguments, &set.allow_paths, &set.home).unwrap();
         let protected = protected();
         let mismatches: Vec<String> = set
             .fixtures
@@ -176,28 +212,28 @@ mod tests {
 
     #[test]
     fn the_probing_flag_is_read() {
-        let config = read_config(&args(&["--probing", "warn"]), "").unwrap();
+        let config = read_config(&args(&["--probing", "warn"]), "", HOME).unwrap();
         assert_eq!(config.probing, Some(Severity::Warn));
     }
 
     #[test]
     fn no_flag_means_probing_is_not_examined() {
-        assert_eq!(read_config(&[], "").unwrap().probing, None);
+        assert_eq!(read_config(&[], "", HOME).unwrap().probing, None);
     }
 
     #[test]
     fn a_misspelled_severity_is_refused() {
-        assert!(read_config(&args(&["--probing", "wran"]), "").is_err());
+        assert!(read_config(&args(&["--probing", "wran"]), "", HOME).is_err());
     }
 
     #[test]
     fn a_flag_this_hook_does_not_read_is_refused() {
-        assert!(read_config(&args(&["--gaming", "warn"]), "").is_err());
+        assert!(read_config(&args(&["--gaming", "warn"]), "", HOME).is_err());
     }
 
     #[test]
     fn allowed_paths_are_split_and_normalised() {
-        let config = read_config(&[], "/a/b/:/c/../d/").unwrap();
+        let config = read_config(&[], "/a/b/:/c/../d/", HOME).unwrap();
         assert_eq!(config.allow_paths, vec!["/a/b/", "/d/"]);
     }
 

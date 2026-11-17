@@ -57,6 +57,19 @@ impl HookInput {
         self.text("command").unwrap_or("")
     }
 
+    /// The directory a search tool searches from, absolute and normalised: its
+    /// `path`, or `cwd` when it names none. `None` for any other tool.
+    pub fn search_root(&self) -> Option<String> {
+        if !matches!(self.tool_name.as_str(), "Grep" | "Glob") {
+            return None;
+        }
+        let base = self.cwd.as_deref().unwrap_or("/");
+        Some(match self.text("path") {
+            Some(named) => absolute_from(base, named),
+            None => normalize(base),
+        })
+    }
+
     /// Every path this call reaches, absolute and normalised.
     ///
     /// The paths a tool names (`file_path`, `path`, `notebook_path`), and for

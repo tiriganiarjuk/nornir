@@ -642,9 +642,16 @@ tool_input = { pattern = "*", path = "/work/project" }
 verdict = "allow"
 
 [[fixture]]
-name = "a Glob pattern that starts like no protected name"
+name = "floor: a Glob from the home directory, whatever its pattern"
 tool = "Glob"
 tool_input = { pattern = ".b*/x", path = "/home/user" }
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "a Glob pattern that starts like no protected name"
+tool = "Glob"
+tool_input = { pattern = ".b*/x", path = "/home/user/project" }
 verdict = "allow"
 
 [[fixture]]
@@ -653,3 +660,76 @@ tool = "Glob"
 tool_input = { pattern = ".a*/x", path = "/home/user" }
 verdict = "deny"
 category = "floor"
+
+# ═══ A search rooted at or above the home directory ═════════════════
+#
+# A search from there reaches the protected stores without naming them.
+
+[[fixture]]
+name = "floor: a Grep of the home directory"
+tool = "Grep"
+tool_input = { pattern = "key", path = "/home/user" }
+verdict = "deny"
+category = "floor"
+found = "2026-11-17: a search from above a store reached it unnamed"
+
+[[fixture]]
+name = "floor: a recursive Glob from the home directory"
+tool = "Glob"
+tool_input = { pattern = "**/*.toml", path = "/home/user" }
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "floor: a Grep with no path, run from the home directory"
+tool = "Grep"
+tool_input = { pattern = "key" }
+working_directory = "/home/user"
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "floor: a Grep of a directory above home"
+tool = "Grep"
+tool_input = { pattern = "key", path = "/home" }
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "floor: a Glob of the root"
+tool = "Glob"
+tool_input = { pattern = "*.md", path = "/" }
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "floor: the home directory named with a trailing separator"
+tool = "Grep"
+tool_input = { pattern = "key", path = "/home/user/" }
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "a Grep below the home directory"
+tool = "Grep"
+tool_input = { pattern = "key", path = "/home/user/project" }
+verdict = "allow"
+
+[[fixture]]
+name = "a Grep with no path, run below the home directory"
+tool = "Grep"
+tool_input = { pattern = "key" }
+working_directory = "/home/user/project"
+verdict = "allow"
+
+[[fixture]]
+name = "a Read of a file in the home directory is no search"
+tool = "Read"
+tool_input = { file_path = "/home/user/notes.txt" }
+verdict = "allow"
+
+[[fixture]]
+name = "a directory whose name only starts like home"
+tool = "Grep"
+tool_input = { pattern = "key", path = "/home/username" }
+verdict = "allow"
