@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "directory-listing",
-  "description": "What read_directory_json returns: every entry under a root directory, by its path relative to the root, sorted by path. A symlink is listed as a link and never followed. size is a file's length in bytes; sha256 is present only when hashes were asked for.",
+  "description": "A directory listing: every entry under a root directory, by its path relative to the root, sorted by path. What a symlink is in it depends on the tool that made it. read_directory_json lists a symlink as an entry of kind symlink and never follows it. read_directory_links_followed_json lists a symlink as what it leads to — a file, or a directory with its entries beneath it under paths through the link — so its listing holds no entry of kind symlink. size is a file's length in bytes, and for a followed link to a file, the length of its target; sha256 is present only when hashes were asked for.",
   "type": "object",
   "required": ["root", "entries"],
   "additionalProperties": false,
