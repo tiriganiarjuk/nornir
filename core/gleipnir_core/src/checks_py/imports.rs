@@ -362,10 +362,13 @@ pub fn check_no_disallowed_stdlib(
 // no_direct_file_io — structured data enters only through compiled gates
 // -------------------------------------------------------------------------
 //
-// Proxy: "Python performs no direct file IO." Two surfaces, one check:
+// Proxy: "Python performs no direct file IO." Three surfaces, one check:
 //   A. imports of structured-file parsers (tomllib, yaml, ...) — incl. aliased
 //      and dynamic (__import__ / importlib.import_module) forms
 //   B. raw file handles: open(), .open(), .read_text/.read_bytes/.write_text/.write_bytes
+//   C. pathlib's filesystem classes: Path and its kin, by name, under an
+//      alias, or with the module imported whole. PurePath is a path's name and
+//      cannot touch a disk; everything Path adds to it does.
 // The violation message names the replacement for the surface that fired.
 // `json` is deliberately absent: no_disallowed_stdlib owns it (in-memory,
 // replacement is model_validate_json). json.load(fh) is still caught — by the
@@ -602,10 +605,72 @@ fn collect_call_surfaces(source: &ParsedSource, violations: &mut Vec<Violation>)
     }
 }
 
+const PATH_REPLACEMENT: &str = "PurePath for a path's name, and a compiled tool for anything on disk";
+
+/// The names a `from x import ...` statement brings in, an aliased one under
+/// the name it has in its module; `*` for a wildcard.
+fn imported_source_names<'text>(node: tree_sitter::Node, source: &'text [u8]) -> Vec<&'text str> {
+    let mut names = Vec::new();
+    let mut past_import = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "import" => past_import = true,
+            "dotted_name" if past_import => names.push(node_text(child, source)),
+            "aliased_import" if past_import => {
+                names.extend(child.child_by_field_name("name").map(|name| node_text(name, source)));
+            }
+            "wildcard_import" if past_import => names.push("*"),
+            _ => {}
+        }
+    }
+    names
+}
+
+/// Surface C1: `from pathlib import Path [as P]` — every name but the pure ones.
+fn collect_path_from_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
+    for node in find_nodes_by_type(source.tree.root_node(), "import_from_statement") {
+        let (module, level) = extract_module_info(node, source.source_bytes);
+        if level != 0 || module != "pathlib" {
+            continue;
+        }
+        for name in imported_source_names(node, source.source_bytes) {
+            if !PATHLIB_PURE.contains(&name) {
+                violations.push(violation(
+                    node_line(node),
+                    format!("'{name}' from pathlib reaches the filesystem — use {PATH_REPLACEMENT}"),
+                ));
+            }
+        }
+    }
+}
+
+/// Surface C2: `import pathlib [as p]` — the module whole brings Path with it.
+fn collect_whole_pathlib_imports(source: &ParsedSource, violations: &mut Vec<Violation>) {
+    for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let module_node = match child.kind() {
+                "dotted_name" => Some(child),
+                "aliased_import" => child.child_by_field_name("name"),
+                _ => None,
+            };
+            if module_node.is_some_and(|module| node_text(module, source.source_bytes) == "pathlib") {
+                violations.push(violation(
+                    node_line(node),
+                    format!("pathlib imported whole brings Path with it — import PurePath by name: {PATH_REPLACEMENT}"),
+                ));
+            }
+        }
+    }
+}
+
 pub fn check_no_direct_file_io(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
     let mut violations = Vec::new();
     collect_parser_imports(source, &mut violations);
     collect_parser_from_imports(source, &mut violations);
+    collect_path_from_imports(source, &mut violations);
+    collect_whole_pathlib_imports(source, &mut violations);
     collect_call_surfaces(source, &mut violations);
     violations
 }
@@ -1259,9 +1324,9 @@ mod tests {
     #[test]
     fn direct_io_path_open_caught() {
         let v = direct_io("from pathlib import Path\ndef load(path: Path):\n    with path.open(\"rb\") as fh:\n        return fh.read()\n");
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].line, 3);
-        assert!(v[0].message.contains("direct file read (path.open)"), "{}", v[0].message);
+        let lines: Vec<usize> = v.iter().map(|x| x.line).collect();
+        assert_eq!(lines, vec![1, 3], "the Path import, then the handle");
+        assert!(v[1].message.contains("direct file read (path.open)"), "{}", v[1].message);
     }
 
     #[test]
@@ -1313,16 +1378,18 @@ mod tests {
     #[test]
     fn direct_io_unbound_path_read_text_caught() {
         let v = direct_io("from pathlib import Path\ntext = Path.read_text(p)\n");
-        assert_eq!(v.len(), 1);
+        let lines: Vec<usize> = v.iter().map(|x| x.line).collect();
+        assert_eq!(lines, vec![1, 2], "the Path import, then the read");
     }
 
     #[test]
-    fn direct_io_registry_specimen_two_firings() {
-        // The specimen that motivated the check: import + handle fire, the parser call does not.
+    fn direct_io_registry_specimen_three_firings() {
+        // The specimen that motivated the check: the parser import, the Path import and the
+        // handle fire; the parser call does not.
         let code = "import tomllib\nfrom pathlib import Path\n\ndef load_registry(path: Path):\n    with path.open(\"rb\") as file_handle:\n        data = tomllib.load(file_handle)\n    return data\n";
         let v = direct_io(code);
         let lines: Vec<usize> = v.iter().map(|x| x.line).collect();
-        assert_eq!(lines, vec![1, 5], "{:?}", v.iter().map(|x| &x.message).collect::<Vec<_>>());
+        assert_eq!(lines, vec![1, 2, 5], "{:?}", v.iter().map(|x| &x.message).collect::<Vec<_>>());
     }
 
     #[test]
@@ -1366,9 +1433,46 @@ mod tests {
     }
 
     #[test]
-    fn direct_io_pydantic_and_pathlib_imports_not_flagged() {
-        let v = direct_io("from pydantic import BaseModel\nfrom pathlib import Path\np = Path.home() / \"x\"\nexists = p.exists()\n");
+    fn direct_io_pydantic_and_pure_path_imports_not_flagged() {
+        let v = direct_io("from pydantic import BaseModel\nfrom pathlib import PurePath, PurePosixPath, PureWindowsPath\nname = (PurePath(root) / \"x\").name\ninside = PurePosixPath(directory).is_relative_to(scope)\n");
         assert!(v.is_empty(), "{:?}", v.iter().map(|x| &x.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn direct_io_module_that_only_resembles_pathlib_not_flagged() {
+        let v = direct_io("from mypkg.pathlib import Path\nfrom pathlib_tools import Path\nfrom .pathlib import Path\nimport pathlib_tools\n");
+        assert!(v.is_empty(), "{:?}", v.iter().map(|x| &x.message).collect::<Vec<_>>());
+    }
+
+    // fire: pathlib's filesystem classes
+
+    #[test]
+    fn direct_io_path_import_caught() {
+        // The specimen: listing, presence tests and file sizes done through Path in the impure zone.
+        for name in ["Path", "PosixPath", "WindowsPath"] {
+            let v = direct_io(&format!("from pathlib import {name}\n"));
+            assert_eq!(v.len(), 1, "{name}");
+            assert_eq!(
+                v[0].message,
+                format!("'{name}' from pathlib reaches the filesystem — use PurePath for a path's name, and a compiled tool for anything on disk")
+            );
+        }
+    }
+
+    #[test]
+    fn direct_io_path_beside_a_pure_name_caught_once() {
+        let v = direct_io("from pathlib import PurePath, Path\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.starts_with("'Path' from pathlib"), "{}", v[0].message);
+    }
+
+    #[test]
+    fn direct_io_pathlib_imported_whole_caught() {
+        for code in ["import pathlib\n", "import os, pathlib\n"] {
+            let v = direct_io(code);
+            assert_eq!(v.len(), 1, "{code}");
+            assert!(v[0].message.starts_with("pathlib imported whole brings Path with it"), "{code}");
+        }
     }
 
     #[test]
@@ -1435,6 +1539,27 @@ mod tests {
         let v = direct_io("import io\nfh = io.open(p, \"w\")\n");
         assert_eq!(v.len(), 1);
         assert!(v[0].message.contains("direct file write"));
+    }
+
+    #[test]
+    fn direct_io_path_under_another_name_caught() {
+        let v = direct_io("from pathlib import Path as Location\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.starts_with("'Path' from pathlib"), "{}", v[0].message);
+    }
+
+    #[test]
+    fn direct_io_pathlib_whole_under_another_name_caught() {
+        let v = direct_io("import pathlib as places\nroot = places.Path(given)\n");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].line, 1);
+    }
+
+    #[test]
+    fn direct_io_pathlib_wildcard_caught() {
+        let v = direct_io("from pathlib import *\n");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.starts_with("'*' from pathlib"), "{}", v[0].message);
     }
 
     // -- no_before_validators --

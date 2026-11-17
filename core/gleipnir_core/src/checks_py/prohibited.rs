@@ -218,10 +218,11 @@ pub fn check_no_print(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viola
 // no_model_dump
 // -------------------------------------------------------------------------
 
-// Reversed to avoid triggering text scanner
+// Reversed to avoid triggering text scanner. Each ends at the opening
+// parenthesis, so a call with arguments is matched as one without is.
 const REVERSED_MODEL_DUMP: &[&str] = &[
-    ")(pmud_ledom.",
-    ")(tcid.",
+    "(pmud_ledom.",
+    "(tcid.",
 ];
 
 fn model_dump_patterns() -> Vec<String> {
@@ -248,6 +249,84 @@ pub fn check_no_model_dump(source: &ParsedSource, _config: &CheckConfig) -> Vec<
                 ));
                 break;
             }
+        }
+    }
+    violations
+}
+
+// -------------------------------------------------------------------------
+// no_model_bypass — a model read or changed as a bag of keys
+// -------------------------------------------------------------------------
+
+/// Builtins that go around a model's fields, each with what it does.
+const BUILTIN_BYPASSES: &[(&str, &str)] = &[
+    ("getattr", "getattr() reaches a field by a name held in a string"),
+    ("setattr", "setattr() reaches a field by a name held in a string"),
+    ("delattr", "delattr() reaches a field by a name held in a string"),
+    ("vars", "vars() hands the model over as a mapping"),
+];
+
+/// Attributes that hand a model over as a mapping.
+const MAPPING_ATTRIBUTES: &[&str] = &["__dict__", "model_extra", "__pydantic_extra__"];
+
+/// Whether a call passes the keyword argument of that name.
+fn has_keyword_argument(call: tree_sitter::Node, keyword: &str, source: &[u8]) -> bool {
+    let Some(arguments) = node_field(call, "arguments") else {
+        return false;
+    };
+    let mut cursor = arguments.walk();
+    let found = arguments.named_children(&mut cursor).any(|argument| {
+        argument.kind() == "keyword_argument"
+            && node_field(argument, "name").is_some_and(|name| node_text(name, source) == keyword)
+    });
+    found
+}
+
+/// What a builtin call does to a model without validating it, if anything.
+fn builtin_bypass(name: &str) -> Option<&'static str> {
+    BUILTIN_BYPASSES.iter().find(|(builtin, _)| *builtin == name).map(|(_, finding)| *finding)
+}
+
+/// What a method call does to a model without validating it, if anything.
+fn method_bypass(call: tree_sitter::Node, method: &str, source: &[u8]) -> Option<&'static str> {
+    match method {
+        "model_construct" => Some("model_construct() builds a model without validating it"),
+        "model_copy" if has_keyword_argument(call, "update", source) => {
+            Some("model_copy(update=...) sets fields without validating them")
+        }
+        _ => None,
+    }
+}
+
+/// What a call does to a model without validating it, if anything.
+fn call_bypass(call: tree_sitter::Node, source: &[u8]) -> Option<&'static str> {
+    let function = node_field(call, "function")?;
+    match function.kind() {
+        "identifier" => builtin_bypass(node_text(function, source)),
+        "attribute" => method_bypass(call, node_text(node_field(function, "attribute")?, source), source),
+        _ => None,
+    }
+}
+
+/// Detect a model read or changed as a bag of keys: `model_copy(update=...)`,
+/// `model_construct`, `getattr`/`setattr`/`delattr`, `vars()`, `.__dict__` and
+/// the extras mapping. None of them validates, so the model's types hold no
+/// longer than the call.
+pub fn check_no_model_bypass(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let bytes = source.source_bytes;
+    let root = source.tree.root_node();
+    let mut violations: Vec<Violation> = find_nodes_by_type(root, "call")
+        .into_iter()
+        .filter_map(|call| call_bypass(call, bytes).map(|finding| violation(node_line(call), finding.to_string())))
+        .collect();
+
+    for attribute in find_nodes_by_type(root, "attribute") {
+        let Some(name_node) = node_field(attribute, "attribute") else {
+            continue;
+        };
+        let name = node_text(name_node, bytes);
+        if MAPPING_ATTRIBUTES.contains(&name) {
+            violations.push(violation(node_line(attribute), format!(".{name} hands the model over as a mapping")));
         }
     }
     violations
@@ -845,6 +924,91 @@ mod tests {
         let parsed = parse(code);
         let violations = check_no_model_dump(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn model_dump_with_arguments_caught() {
+        for code in [
+            "result = obj.model_dump(mode=\"json\")\n",
+            "result = obj.model_dump(exclude_none=True, by_alias=True)\n",
+            "result = obj.dict(exclude_none=True)\n",
+        ] {
+            let violations = check_no_model_dump(&parse(code), &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn model_dump_json_ok() {
+        for code in [
+            "text = obj.model_dump_json()\n",
+            "text = obj.model_dump_json(by_alias=True, exclude_none=True)\n",
+        ] {
+            let violations = check_no_model_dump(&parse(code), &default_config());
+            assert!(violations.is_empty(), "{code}");
+        }
+    }
+
+    // -- no_model_bypass --
+
+    fn bypasses(code: &str) -> Vec<Violation> {
+        check_no_model_bypass(&parse(code), &default_config())
+    }
+
+    #[test]
+    fn model_copy_with_update_caught() {
+        // The specimen: kind lines set on a model with no fields, from a plain dict.
+        let found = bypasses("frontmatter = document.frontmatter.model_copy(update=lines_to_set(reclassification))\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].message, "model_copy(update=...) sets fields without validating them");
+    }
+
+    #[test]
+    fn model_copy_without_update_ok() {
+        for code in ["copied = page.model_copy()\n", "copied = page.model_copy(deep=True)\n"] {
+            assert!(bypasses(code).is_empty(), "{code}");
+        }
+    }
+
+    #[test]
+    fn model_construct_caught() {
+        let found = bypasses("page = Page.model_construct(title=title)\n");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].message.contains("model_construct()"));
+    }
+
+    #[test]
+    fn a_field_reached_by_a_name_in_a_string_caught() {
+        for (builtin, code) in [
+            ("getattr", "value = getattr(page, \"title\")\n"),
+            ("getattr", "value = getattr(page, field_name, None)\n"),
+            ("setattr", "setattr(page, \"title\", title)\n"),
+            ("delattr", "delattr(page, field_name)\n"),
+        ] {
+            let found = bypasses(code);
+            assert_eq!(found.len(), 1, "{code}");
+            assert_eq!(found[0].message, format!("{builtin}() reaches a field by a name held in a string"));
+        }
+    }
+
+    #[test]
+    fn a_model_handed_over_as_a_mapping_caught() {
+        for (shown, code) in [
+            ("vars()", "fields = vars(page)\n"),
+            (".__dict__", "fields = page.__dict__\n"),
+            (".model_extra", "extras = page.model_extra\n"),
+            (".__pydantic_extra__", "extras = page.__pydantic_extra__\n"),
+        ] {
+            let found = bypasses(code);
+            assert_eq!(found.len(), 1, "{code}");
+            assert_eq!(found[0].message, format!("{shown} hands the model over as a mapping"));
+        }
+    }
+
+    #[test]
+    fn a_model_built_and_read_by_its_fields_ok() {
+        let code = "page = Page(title=other.title, tags=other.tags)\ntitle = page.title\ncopied = page.copy_of\nmonkeypatch.setattr(target, \"name\", value)\nhint = \"use getattr(page, name)\"\n";
+        assert!(bypasses(code).is_empty());
     }
 
     // -- no_nested_functions --

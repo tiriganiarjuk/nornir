@@ -36,6 +36,10 @@ const CHECK_REGISTRY: &[(&CheckMessages, CheckFn)] = &[
     (&messages::NO_STRING_ANNOTATIONS, type_safety::check_no_string_annotations),
     (&messages::NO_CALLABLE_PARAMS, type_safety::check_no_callable_params),
     (&messages::NO_CALLABLE_TYPE_ALIASES, type_safety::check_no_callable_type_aliases),
+    (&messages::NO_OPEN_MODELS, type_safety::check_no_open_models),
+    (&messages::NO_BASE_TYPE_ANNOTATIONS, type_safety::check_no_base_type_annotations),
+    (&messages::NO_BUILTIN_RECORDS, type_safety::check_no_builtin_records),
+    (&messages::NO_STRING_VALUE_SETS, type_safety::check_no_string_value_sets),
     // IMPORTS
     (&messages::NO_UNSAFE_IMPORTS, imports::check_no_unsafe_imports),
     (&messages::NO_RELATIVE_IMPORTS, imports::check_no_relative_imports),
@@ -55,6 +59,7 @@ const CHECK_REGISTRY: &[(&CheckMessages, CheckFn)] = &[
     (&messages::NO_BROAD_EXCEPTIONS, prohibited::check_no_broad_exceptions),
     (&messages::NO_PRINT, prohibited::check_no_print),
     (&messages::NO_MODEL_DUMP, prohibited::check_no_model_dump),
+    (&messages::NO_MODEL_BYPASS, prohibited::check_no_model_bypass),
     (&messages::NO_FUTURE_ANNOTATIONS, prohibited::check_no_future_annotations),
     (&messages::INIT_FILES_EMPTY, prohibited::check_init_files_empty),
     (&messages::NO_DUNDER_ALL, prohibited::check_no_dunder_all),

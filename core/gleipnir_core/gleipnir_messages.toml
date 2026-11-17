@@ -93,6 +93,30 @@ signal = "Implicit aliases hide type-level definitions. Type aliases containing 
 direction = "Use PEP 695 syntax (type X = ...) for legitimate aliases. Never alias away Any — if the type is unknown, use Any directly at each site. Any will trigger no_any_types — that is correct."
 canary = "LLM creates implicit type aliases to avoid triggering no_any_types at each usage site."
 
+[no_open_models]
+detail = "Model accepts keys it does not declare, or declares no field at all. A model that takes whatever arrives is dict[str, Any] with a base class."
+signal = "A model is a promise about what the data holds. With undeclared keys allowed, or with no field declared, it promises nothing: every key rides through unseen, no reader can tell what is inside, and the Any it stands for never shows up where type holes are counted."
+direction = "Declare every key the data carries as a typed field, and remove the switch that allows the rest. A key no schema holds yet is typed before the run: the pre-flight collection reads the corpus, finds each new key and writes its type data, and the model comes from that. If your project has no pre-flight collection yet, elevate — the violation stands until the key is typed. Do not try to make it stop."
+canary = "LLM carries unknown keys through a model with no fields and extra=\"allow\", moves the switch into model_config or a nested Config class, or passes the mode through a variable. The class-line, model_config and Config forms are detected; the variable is the signature to look for in review."
+
+[no_base_type_annotations]
+detail = "A base type stands where a shape belongs. BaseModel, RootModel or an Enum base in a type annotation accepts every model, or every enumeration, there is — it is camouflaged Any."
+signal = "A signature is a contract: it says what flows through. A base type says only that something does. The reader cannot tell which shape arrives, the type checker cannot either, and the unknown no longer shows up where type holes are counted."
+direction = "Write the name of the model or the enumeration the value is. Where a function takes several shapes, name each one. If the shape is genuinely unknown, use Any directly — it will trigger no_any_types, and that is correct. Do not try to make it stop."
+canary = "LLM widens a parameter to BaseModel so that a warning about a large union goes away, imports the base type under another name, or gives the shapes an empty base class of the project's own to share. The base class is caught where structure classes are checked for their bases; the renamed import is the signature to look for in review."
+
+[no_builtin_records]
+detail = "Data is carried in builtin containers where a model belongs: a dict whose values are builtin types, a collection of tuples, or a tuple return. Each is several facts about one thing, held side by side with nothing naming them."
+signal = "dict[str, str] says nothing about what the keys are or what the values mean. Two such dicts keyed by the same name are one record split into columns: every reader joins them back by hand, and nothing checks that they still line up. A tuple return is the same record with its field names thrown away."
+direction = "Name the record: a frozen model in the structure zone with one typed field per fact, and carry a list of those models. A function that hands back two things hands back one model holding both. A table keyed by name holds models as its values."
+canary = "LLM passes data as dict[str, str] or dict[str, list[str]], keeps parallel dicts keyed by the same name, returns (result, defects) tuples, or wraps each builtin in a one-field RootModel so that the value is no longer a builtin by name. The wrapper is the signature to look for in review."
+
+[no_string_value_sets]
+detail = "A string literal is used as one of a fixed set of values: a value is compared with it, a case matches on it, or a function hands back one of several."
+signal = "A value that can only be one of a few things is a type. Written as strings, the set has no home: nothing lists its members, a misspelling is a new member, and every place that tests for one has to know the spelling. The type checker sees str and can say nothing."
+direction = "Make the set an Enum in the structure zone and use its members. The function hands back the Enum, the comparison is with a member, and a value that carries data beside its kind is a model with a field for each."
+canary = "LLM hands back words such as 'pending' or 'entity' from a classifying function and compares them by equality in other modules, or folds data into the word ('alias-of:<name>') so that one string carries both a kind and a value."
+
 # =========================================================================
 # IMPORTS
 # =========================================================================
@@ -128,10 +152,10 @@ direction = "The violation message tells you exactly what to use instead. For CL
 canary = "LLM imports familiar stdlib modules from training data instead of using the project's standardized alternatives."
 
 [no_direct_file_io]
-detail = "Python touched the filesystem directly — a structured-file parser import or a raw file handle. Structured data enters this codebase through compiled readers ({readers}) and leaves through compiled writer tools. The violation message names the reader that replaces what you wrote."
+detail = "Python touched the filesystem directly — a structured-file parser import, a raw file handle, or pathlib's Path. Structured data enters this codebase through compiled readers ({readers}) and leaves through compiled writer tools; listing a directory, testing that something is there and changing what is on disk are compiled tools as well. The violation message names what replaces what you wrote."
 signal = "A gate fuses IO and validation into one step: the bytes on disk are checked against their schema before Python sees them, and what Python receives is JSON already known to be valid for its Pydantic model. tomllib.load, yaml.safe_load, path.read_text and open() hand Python raw, unvalidated content — each one is the workaround the gate layer exists to prevent. The same holds on the way out: a write_text is an artifact no schema has seen. The violation is the signal that this boundary was crossed; it is correct that it fires."
-direction = "For a read: call the reader named in the message — read(file_path, schema_name, schema_dir) — and pass the JSON string it returns to your model's model_validate_json. The schema is a file at {schema_dir}/{schema_name}.schema.json; if it does not exist yet, write it first — the gate validates before Pydantic ever sees the data. For a write: call the nornir writer tool registered for that output. If no reader or writer exists for your case yet, the violation stands until one does — that is the correct state. Do not try to make it stop."
-canary = "LLM keeps the IO and hides its surface: aliases the parser (import tomllib as cfg), imports it dynamically (importlib.import_module, __import__), calls builtins.open or io.open, shells out to cat through subprocess, moves the read into a PEP 723 script and calls that, or adds a shebang so the file leaves the row. The alias, dynamic-import and builtins.open forms are detected; the subprocess, script-hop and shebang moves are the signature to look for in review."
+direction = "For a read: call the reader named in the message — read(file_path, schema_name, schema_dir) — and pass the JSON string it returns to your model's model_validate_json. The schema is a file at {schema_dir}/{schema_name}.schema.json; if it does not exist yet, write it first — the gate validates before Pydantic ever sees the data. For a write: call the nornir writer tool registered for that output. For a path: PurePath holds a path's name — joining, its parent, its stem — and cannot touch a disk; whatever looks at the disk or changes it is a call to a compiled tool. If no tool exists for your case yet, the violation stands until one does — that is the correct state. Do not try to make it stop."
+canary = "LLM keeps the IO and hides its surface: aliases the parser (import tomllib as cfg), imports it dynamically (importlib.import_module, __import__), calls builtins.open or io.open, shells out to cat through subprocess, moves the read into a PEP 723 script and calls that, or adds a shebang so the file leaves the row. The alias, dynamic-import and builtins.open forms are detected; the subprocess, script-hop and shebang moves are the signature to look for in review. With Path refused, the same reach goes through os or shutil in the impure zone, or through a Path a library hands back: both are the signature to look for in review."
 
 [no_sys_path_mutation]
 detail = "sys.path manipulation makes imports work from locations the project structure forbids. If you need sys.path, the project layout is wrong."
@@ -190,6 +214,12 @@ detail = ".model_dump() and .dict() shed type safety."
 signal = "The moment you dump a Pydantic model to a dict, you lose every type guarantee. The dict has no schema, no validation, no field checking — it's just string keys and unknown values."
 direction = "Pass the Pydantic model object directly. Functions should accept the typed model, not a dict. If you need to serialize for IO (writing to disk, sending over network), do it at the IO boundary in impure/ — not inside logic."
 canary = "LLM calls .model_dump() to convert between types instead of using proper typed interfaces."
+
+[no_model_bypass]
+detail = "A model was read or changed as a bag of keys: model_copy(update=...), model_construct, getattr / setattr / delattr, vars(), __dict__ or the extras mapping. None of these validates."
+signal = "A model's types hold because every value entered through validation. These calls go around it: a field is set from a dict nobody checked, or read by a name held in a string, and from that point the model says one thing and holds another. It is the dict the model replaced, reached through the model."
+direction = "Build the changed value by constructing the model again, naming each field: Model(title=old.title, kind=new_kind). Read a field by its name: model.title. Every field is then validated, and every field the code touches is visible in the code."
+canary = "LLM sets keys on a model through model_copy(update=<dict>), or reaches into __dict__ and vars() to treat the model as a dict. dict(model) does the same and cannot be told from a dict built of pairs — it is the signature to look for in review."
 
 [no_future_annotations]
 detail = "from __future__ import annotations is deprecated."
@@ -570,9 +600,9 @@ direction = "If this is a data shape: add BaseModel as the base class and declar
 canary = "LLM creates plain classes or dataclass-style containers instead of using Pydantic models."
 
 [v2_dispatch_only_tables]
-detail = "Dispatch files may only contain typed dispatch tables: dict[type[BaseModel], Callable] with a type annotation."
+detail = "Dispatch files may only contain typed dispatch tables: a dict from the model types it routes to their handlers, with a type annotation that names those models."
 signal = "The dispatch level exists for one purpose: mapping types to handler functions. Any other code here — functions, classes, constants, untyped dicts — is logic that belongs at a different level. The location restriction and the type annotation together prevent abuse of the hardcoded_config exemption."
-direction = "If this is a dispatch table, add the type annotation: DISPATCH: dict[type[BaseModel], Callable[[...], BaseModel]] = { ... }. If this is logic, move it to the appropriate level (simple, composed, etc.). If this is a constant, move it to structure/ as an enum or model."
+direction = "If this is a dispatch table, add the type annotation, naming the models it routes and the model its handlers return: DISPATCH: dict[type[Circle] | type[Square], Callable[[Circle | Square], Area]] = { ... }. If this is logic, move it to the appropriate level (simple, composed, etc.). If this is a constant, move it to structure/ as an enum or model."
 canary = "LLM stuffs non-dispatch code into dispatch files to exploit the module-level dict exemption."
 
 [v2_logic_no_constants]

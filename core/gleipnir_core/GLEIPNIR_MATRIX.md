@@ -35,6 +35,10 @@ entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
 | no_cast                  |   🟠   |  ⚫  |   🟠    |  ⚫  |  ⚫  |  🟠   |  🟠   |   🟠    |
 | no_callable_params       |   🔴   |  ⚫  |   🔴    |  ⚫  |  ⚫  |  🔴   |  🔴   |   🔴    |
 | no_callable_type_aliases |   🔴   |  ⚫  |   🔴    |  ⚫  |  ⚫  |  🔴   |  🔴   |   🔴    |
+| no_open_models           |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
+| no_base_type_annotations |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
+| no_builtin_records       |   🟡   |  🟡  |   🟡    |   🟡   |   🟡   |  🟡   |  🟡   |   🟡    |
+| no_string_value_sets     |   🟡   |  🟡  |   🟡    |   🟡   |   🟡   |  🟡   |  🟡   |   🟡    |
 | **IMPORTS**              |        |      |         |        |        |       |       |         |
 | no_unsafe_imports        |   🔴   |  ⚫  |   🔴    |  ⚫  |  ⚫  |  🔴   |  🔴   |   🔴    |
 | no_relative_imports      |   🔴   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |
@@ -50,6 +54,7 @@ entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
 | no_broad_exceptions      |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_print                 |   🟠   |  ⚫  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_model_dump            |   🟠   |  ⚫  |   🟠    |  ⚫  |  ⚫  |  🟠   |  🟠   |   🟠    |
+| no_model_bypass          |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_overload              |   🟠   |  ⚫  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | no_future_annotations    |   🟠   |  🟠  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
 | init_files_empty         |   🟠   |  ⚫  |   🟠    |   🟠   |   🟠   |  🟠   |  🟠   |   🟠    |
@@ -105,6 +110,10 @@ entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
 | no_cast                  |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_callable_params       |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
 | no_callable_type_aliases |  🔴   |  🔴   |  🔴   |   🔴   |  🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴   |  🔴   |   🔴    |  🔴   |  🔴   |
+| no_open_models           |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_base_type_annotations |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_builtin_records       |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
+| no_string_value_sets     |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
 | **IMPORTS**              |       |       |       |        |       |       |        |       |        |       |        |       |         |       |       |
 | no_type_checking_imports |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_disallowed_stdlib     |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
@@ -119,6 +128,7 @@ entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
 | no_broad_exceptions      |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_print                 |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_model_dump            |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
+| no_model_bypass          |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_overload              |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | no_future_annotations    |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
 | init_files_empty         |  🟠   |  🟠   |  🟠   |   🟠   |  🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  🟠   |
