@@ -30,6 +30,12 @@ configuration compiled into saga (`capability/saga_runner/ruff.toml`,
 `pyrightconfig.json`), which saga writes to its directory under the system
 temporary directory before the run.
 
+basedpyright checks a file in the environment of the project it belongs to: the
+interpreter `.venv/bin/python` in the nearest directory above the file that holds
+both it and a `pyproject.toml`, found by the path the file is known by. A file
+with no such directory above it is checked against no environment, and every
+import it makes outside the standard library is unresolved.
+
 On a file of no kind, no instrument runs, and the report carries the fault
 `source_not_examinable`.
 

@@ -5,7 +5,7 @@ Use `nornir_deploy` instead.
 
 ## Why
 
-1. **Dependency coherence.** When a shared crate changes (e.g., `datagram_io`, `schemas_embedded`), ALL consumers must rebuild together. Running `cargo build --release -p one_crate` leaves other binaries in the same category running stale code. Strange runtime bugs with no obvious cause.
+1. **Dependency coherence.** When a shared crate changes (e.g., `datagram_io`, `schemas_embedded`), ALL consumers must rebuild together. Running `cargo build --release -p one_crate` leaves other binaries in the same category running stale code. Strange runtime bugs with no obvious cause. The binaries that compile in saga's examiner fingerprint — saga and syn in `tools`, the write hook in `hooks` — sit in two categories: `nornir_deploy` deploys every category that links `saga_runner` or `gleipnir_core` whenever one of them is named, and says so, because two builds of that fingerprint call each other's sidecars stale.
 
 2. **Deployment.** `cargo build` puts binaries in cargo's target dir — on the Derived volume, per `.cargo/config.toml`, not under this repo. They are not deployed until **copied** to `~/ai/tools/bin/` (copied, never symlinked: a deployed tool must keep working with that drive unplugged). The deploy tool handles build, copy, and verification of the deployed copy as one atomic operation.
 
