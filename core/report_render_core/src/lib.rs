@@ -379,24 +379,28 @@ fn format_colored(groups: &[CheckGroup], faults: &[LocatedFault]) -> String {
         );
     }
 
-    let total = total_issues(groups);
-    let mut sections: Vec<String> = Vec::new();
-
-    let bar = "━".repeat(MAX_WIDTH);
-    sections.push(format!("\n{BOLD}{RED}{bar}{RESET}"));
-    sections.push(format!(
-        "{BOLD}{WHITE}{BG_RED}  SYN  {RESET}  {BOLD}{WHITE}{total} violations{RESET} across {BOLD}{WHITE}{count} check types{RESET}, {BOLD}{WHITE}{fault_count} faults{RESET}",
-        count = groups.len(),
-        fault_count = faults.len(),
-    ));
-    sections.push(format!("{BOLD}{RED}{bar}{RESET}"));
+    let banner = colored_banner(groups, faults);
+    let mut sections: Vec<String> = vec![format!("\n{banner}")];
 
     format_colored_faults(faults, &mut sections);
     for group in groups {
         format_colored_group(group, &mut sections);
     }
 
+    // The banner again at the foot, so the totals are in view where the report ends.
+    sections.push(format!("\n{banner}"));
     sections.join("\n")
+}
+
+/// The totals between two bars: violations, check types and faults.
+fn colored_banner(groups: &[CheckGroup], faults: &[LocatedFault]) -> String {
+    let bar = "━".repeat(MAX_WIDTH);
+    format!(
+        "{BOLD}{RED}{bar}{RESET}\n{BOLD}{WHITE}{BG_RED}  SYN  {RESET}  {BOLD}{WHITE}{total} violations{RESET} across {BOLD}{WHITE}{count} check types{RESET}, {BOLD}{WHITE}{fault_count} faults{RESET}\n{BOLD}{RED}{bar}{RESET}",
+        total = total_issues(groups),
+        count = groups.len(),
+        fault_count = faults.len(),
+    )
 }
 
 /// The faults block: each file that was not fully examined, the instrument, and why.
@@ -1022,6 +1026,16 @@ mod tests {
         let output = format_output(&groups, &[], OutputMode::Colored);
         assert!(!output.is_empty());
         assert!(output.contains("violations"));
+    }
+
+    #[test]
+    fn the_colored_report_states_its_totals_at_the_head_and_at_the_foot() {
+        let output = format_output(&gleipnir_groups(), &[ruff_fault()], OutputMode::Colored);
+        let banner = colored_banner(&gleipnir_groups(), &[ruff_fault()]);
+        assert_eq!(output.matches(&banner).count(), 2);
+        assert!(output.trim_end().ends_with(&banner), "the report ends on the banner");
+        let first_group = output.find("┌─").expect("a group or fault block");
+        assert!(output.find(&banner).is_some_and(|head| head < first_group), "the banner heads the report");
     }
 
     #[test]
