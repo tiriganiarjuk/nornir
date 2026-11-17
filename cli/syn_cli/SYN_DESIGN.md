@@ -117,9 +117,16 @@ on stdin are taken as they are.
 
 | Decision | When |
 |---|---|
-| `deny` | gate mode, and at least one visible issue matches the deny filter |
+| `deny` | gate mode, and at least one visible issue matches the deny filter, or there is a fault |
 | `warn` | otherwise, when there is a visible issue or a fault |
 | `allow` | nothing visible and no fault |
+
+The rule is one function, `syn_core::decision_of`. A fault is a part of the
+examination that did not happen — an instrument that did not run, a sidecar that
+is stale, unreadable, without its source, or absent for the file asked about.
+A gate answers whether a file was examined and is acceptable, so a gate denies
+on any fault. Faults found while loading sidecars are joined to the result with
+`syn_core::with_faults`, which takes the decision with them counted.
 
 ---
 
@@ -136,7 +143,8 @@ A reproducible accept/reject decision, locked to the policy files:
 `--tool`, `--level`, `--filter` and `--narrow` are wrong arguments here. Gate
 mode reads the same inputs as report mode — sidecars from the path, or reports
 with `--stdin` — prints the same report, adds a one-line summary on stderr, and
-exits 1 on a `deny`.
+exits 1 on a `deny`. A pass means the file was examined and is acceptable: a
+file syn could not judge is denied.
 
 ### Exit codes
 

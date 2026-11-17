@@ -28,7 +28,7 @@ use failure_mode_core::Failure;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use report_render_core::{LocatedFault, OutputMode, format_output, total_issues};
+use report_render_core::{OutputMode, format_output, total_issues};
 use syn_core::{FilterOverrides, PolicyMode};
 use syn_runner::SourceKind;
 
@@ -248,10 +248,11 @@ fn run(args: &Args) -> Result<i32, Failure> {
         syn_runner::discover_and_load(path, args.target.into(), wanted_kind(args.kind))
     };
 
-    let result = syn_core::apply_filters(reports, &config, args.mode.into(), &overrides);
-    let faults: Vec<LocatedFault> = unloaded.into_iter().chain(result.faults).collect();
+    let filtered = syn_core::apply_filters(reports, &config, args.mode.into(), &overrides);
+    let result = syn_core::with_faults(filtered, args.mode.into(), unloaded);
+    let faults = &result.faults;
 
-    let output = format_output(&result.warn_groups, &faults, args.output);
+    let output = format_output(&result.warn_groups, faults, args.output);
     if !output.is_empty() {
         println!("{}", output);
     }
@@ -268,7 +269,7 @@ fn run(args: &Args) -> Result<i32, Failure> {
         let scan_path = args.path.as_deref().unwrap_or(&policy_directory);
         let outcome = syn_runner::Outcome {
             groups: &result.warn_groups,
-            faults: &faults,
+            faults,
             decision: result.decision,
             deny_count: result.deny_issues,
         };

@@ -164,13 +164,7 @@ pub fn apply_filters(
     }
 
     let warn_groups = group_issues(&visible_reports);
-    let decision = if deny_count > 0 && mode == PolicyMode::Gate {
-        "deny"
-    } else if !warn_groups.is_empty() || !faults.is_empty() {
-        "warn"
-    } else {
-        "allow"
-    };
+    let decision = decision_of(mode, deny_count, !warn_groups.is_empty(), !faults.is_empty());
 
     FilteredOutput {
         warn_groups,
@@ -178,6 +172,32 @@ pub fn apply_filters(
         deny_issues: deny_count,
         decision,
     }
+}
+
+/// The one decision rule.
+///
+/// A gate answers whether a file was examined and is acceptable: it denies
+/// for an issue the deny filter matches, and for any fault, because a fault
+/// is a part of the examination that did not happen. Outside a gate, what
+/// there is to show is a warning. Nothing to show is allow.
+pub fn decision_of(mode: PolicyMode, deny_issues: usize, has_visible_issues: bool, has_faults: bool) -> &'static str {
+    let gate_refuses = mode == PolicyMode::Gate && (deny_issues > 0 || has_faults);
+    if gate_refuses {
+        "deny"
+    } else if has_visible_issues || has_faults {
+        "warn"
+    } else {
+        "allow"
+    }
+}
+
+/// The output with the faults found outside the reports joined to it — a
+/// sidecar that is stale, unreadable or absent — and the decision taken again
+/// with them counted.
+pub fn with_faults(output: FilteredOutput, mode: PolicyMode, found_outside: Vec<LocatedFault>) -> FilteredOutput {
+    let faults: Vec<LocatedFault> = found_outside.into_iter().chain(output.faults).collect();
+    let decision = decision_of(mode, output.deny_issues, !output.warn_groups.is_empty(), !faults.is_empty());
+    FilteredOutput { warn_groups: output.warn_groups, faults, deny_issues: output.deny_issues, decision }
 }
 
 // =============================================================================
@@ -534,6 +554,62 @@ mod tests {
         let config = make_config(r#".tool == "gleipnir""#, r#".severity == "blocked""#);
         let result = apply_filters(vec![], &config, PolicyMode::Gate, &no_overrides());
         assert_eq!(result.decision, "allow");
+    }
+
+    // ── The decision rule ────────────────────────────────────────
+
+    #[test]
+    fn a_gate_denies_what_it_could_not_judge() {
+        assert_eq!(decision_of(PolicyMode::Gate, 0, false, true), "deny");
+        assert_eq!(decision_of(PolicyMode::Gate, 0, true, true), "deny");
+    }
+
+    #[test]
+    fn a_gate_passes_only_what_was_examined_and_is_acceptable() {
+        assert_eq!(decision_of(PolicyMode::Gate, 0, false, false), "allow");
+        assert_eq!(decision_of(PolicyMode::Gate, 0, true, false), "warn");
+        assert_eq!(decision_of(PolicyMode::Gate, 1, true, false), "deny");
+    }
+
+    #[test]
+    fn a_report_never_denies() {
+        assert_eq!(decision_of(PolicyMode::Report, 3, true, true), "warn");
+        assert_eq!(decision_of(PolicyMode::Report, 0, false, true), "warn");
+        assert_eq!(decision_of(PolicyMode::Report, 0, false, false), "allow");
+    }
+
+    fn stale_sidecar_fault() -> LocatedFault {
+        LocatedFault {
+            file: "/project/.simple.py.qa".to_string(),
+            tool: "syn".to_string(),
+            mode: "sidecar_stale".to_string(),
+            class: "validation_error".to_string(),
+            message: "The sidecar is stale.".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_fault_found_outside_the_reports_makes_a_clean_gate_deny() {
+        let config = make_config(r#".tool == "gleipnir""#, r#".severity == "blocked""#);
+        let clean = apply_filters(vec![], &config, PolicyMode::Gate, &no_overrides());
+        assert_eq!(clean.decision, "allow");
+        let judged = with_faults(clean, PolicyMode::Gate, vec![stale_sidecar_fault()]);
+        assert_eq!(judged.decision, "deny");
+        assert_eq!(judged.faults.len(), 1);
+    }
+
+    #[test]
+    fn a_fault_found_outside_the_reports_makes_a_clean_report_warn() {
+        let config = make_config(r#".tool == "gleipnir""#, r#".severity == "blocked""#);
+        let clean = apply_filters(vec![], &config, PolicyMode::Report, &no_overrides());
+        assert_eq!(with_faults(clean, PolicyMode::Report, vec![stale_sidecar_fault()]).decision, "warn");
+    }
+
+    #[test]
+    fn no_fault_found_outside_leaves_the_decision_as_it_was() {
+        let config = make_config(r#".tool == "gleipnir""#, r#".severity == "blocked""#);
+        let clean = apply_filters(vec![], &config, PolicyMode::Gate, &no_overrides());
+        assert_eq!(with_faults(clean, PolicyMode::Gate, Vec::new()).decision, "allow");
     }
 
     #[test]
