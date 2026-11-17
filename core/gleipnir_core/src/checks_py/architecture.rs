@@ -2175,4 +2175,24 @@ mod tests {
         assert!(!fired_in("/project/src/pkg/logic/impure/survey/simple.py"));
         assert!(!fired_in("/project/src/pkg/cli.py"));
     }
+
+    // -- max_functions_outside_zones, on the v2 entry point --
+
+    #[test]
+    fn an_entry_point_holding_more_than_its_one_function_is_caught() {
+        // The specimen: a cli.py of nine functions, silent while no v2 row ran the check.
+        let one_function: &[u8] = b"def main() -> int:\n    return run()\n";
+        let two_functions: &[u8] =
+            b"def opened(site_root: str) -> Site:\n    return run_site_open(site_root)\n\n\ndef main() -> int:\n    return run()\n";
+        let fired = |file_path: &str, code: &[u8]| {
+            crate::run_checks_v2(file_path, code)
+                .expect("the source parses")
+                .iter()
+                .any(|viol| viol.check_name == "max_functions_outside_zones")
+        };
+        assert!(fired("/project/src/pkg/cli.py", two_functions));
+        assert!(fired("/project/src/pkg/__main__.py", two_functions));
+        assert!(!fired("/project/src/pkg/cli.py", one_function));
+        assert!(!fired("/project/src/pkg/logic/pure/plan/simple.py", two_functions));
+    }
 }

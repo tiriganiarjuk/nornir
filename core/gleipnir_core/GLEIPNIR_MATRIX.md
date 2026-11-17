@@ -158,6 +158,7 @@ entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
 | no_reexport_shims        |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠   |  🟠   |   🟠    |  🟠   |  ⚫  |
 | v2_dispatch_only_tables  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |   🟠   |  ⚫  |   🟠   |  ⚫  |   🟠   |  ⚫  |   🟠    |  ⚫  |  ⚫  |
 | v2_orchestrate_no_strings |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |  ⚫  |  ⚫  |  ⚫  |
+| max_functions_outside_zones |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟡   |  ⚫  |
 | v2_classes_only_in_structure   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
 | **STYLE**                |       |       |       |        |       |       |        |       |        |       |        |       |         |       |       |
 | function_length          |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |

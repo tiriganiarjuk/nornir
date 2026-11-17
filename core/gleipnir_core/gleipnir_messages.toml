@@ -348,7 +348,7 @@ canary = "LLM tries to reduce structures/ imports to fix this violation, breakin
 [max_functions_outside_zones]
 detail = "Too many functions outside architectural zones."
 signal = "Functions outside designated zones indicate logic leaking into runner or config files."
-direction = "Move functions into functions/pure/ or functions/impure/. A file that is a standalone script — run on its own, imported by nothing — declares itself with PEP 723 inline script metadata."
+direction = "Move each function into the zone its work belongs to: computation without effects to the pure zone, anything that reads or writes to the impure zone, the sequencing of calls to orchestrate. An entry point keeps the one function that starts the program, and that function calls orchestrate. A file that is a standalone script — run on its own, imported by nothing — declares itself with PEP 723 inline script metadata."
 canary = "LLM dumps utility functions wherever it is working instead of placing them in the correct zone."
 
 # =========================================================================
