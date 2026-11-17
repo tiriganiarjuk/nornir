@@ -159,6 +159,8 @@ entry in `gleipnir_messages.toml`; the crate does not compile otherwise.
 | v2_dispatch_only_tables  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |   🟠   |  ⚫  |   🟠   |  ⚫  |   🟠   |  ⚫  |   🟠    |  ⚫  |  ⚫  |
 | v2_orchestrate_no_strings |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟠   |  ⚫  |  ⚫  |  ⚫  |
 | max_functions_outside_zones |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟡   |  ⚫  |
+| no_same_file_calls       |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟡   |  ⚫  |  🟡   |  ⚫  |  🟡   |  ⚫  |  🟡   |  ⚫  |  🟡   |  ⚫  |
+| no_isinstance_ladder     |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟡   |  ⚫  |  🟡   |  ⚫  |  🟡   |  ⚫  |  🟡   |  ⚫  |  🟡   |  🟡   |
 | v2_classes_only_in_structure   |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  ⚫  |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |
 | **STYLE**                |       |       |       |        |       |       |        |       |        |       |        |       |         |       |       |
 | function_length          |  🟡   |  🟡   |  🟡   |   🟡   |  🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡   |  🟡   |   🟡    |  🟡   |  🟡   |

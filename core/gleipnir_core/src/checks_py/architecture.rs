@@ -1219,6 +1219,97 @@ pub fn check_v2_orchestrate_no_strings(source: &ParsedSource, _config: &CheckCon
 }
 
 // -------------------------------------------------------------------------
+// no_same_file_calls
+// -------------------------------------------------------------------------
+
+/// The names of the functions a file defines at module level.
+fn module_function_names<'text>(root: tree_sitter::Node, source: &'text [u8]) -> Vec<&'text str> {
+    let mut cursor = root.walk();
+    let names = root
+        .named_children(&mut cursor)
+        .filter_map(unwrap_function)
+        .filter_map(|function| node_field(function, "name"))
+        .map(|name| node_text(name, source))
+        .collect();
+    names
+}
+
+/// Detect a function that calls another function defined in the same file.
+///
+/// Every function of a file sits at one level, so such a call is a sideways
+/// edge: the one the import rule forbids between files. A function calling
+/// itself is `no_recursion`'s.
+pub fn check_no_same_file_calls(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let bytes = source.source_bytes;
+    let root = source.tree.root_node();
+    let defined = module_function_names(root, bytes);
+    let mut violations = Vec::new();
+
+    let mut cursor = root.walk();
+    for function in root.named_children(&mut cursor).filter_map(unwrap_function) {
+        let caller = node_field(function, "name").map(|name| node_text(name, bytes)).unwrap_or("<unknown>");
+        let Some(body) = node_field(function, "body") else {
+            continue;
+        };
+        for call in find_nodes_by_type(body, "call") {
+            let Some(callee) = node_field(call, "function").filter(|callee| callee.kind() == "identifier") else {
+                continue;
+            };
+            let callee_name = node_text(callee, bytes);
+            if callee_name != caller && defined.contains(&callee_name) {
+                violations.push(violation(
+                    node_line(call),
+                    format!("{caller}() calls {callee_name}(), a function of the same file"),
+                ));
+            }
+        }
+    }
+    violations
+}
+
+// -------------------------------------------------------------------------
+// no_isinstance_ladder
+// -------------------------------------------------------------------------
+
+/// The value an `isinstance(value, ...)` call tests, when the call is one.
+fn isinstance_subject<'text>(call: tree_sitter::Node, source: &'text [u8]) -> Option<&'text str> {
+    let function = node_field(call, "function")?;
+    if node_text(function, source) != "isinstance" {
+        return None;
+    }
+    let subject = node_field(call, "arguments")?.named_child(0)?;
+    Some(node_text(subject, source))
+}
+
+/// Detect a function that tests one value with `isinstance` more than once.
+///
+/// One test unwraps a result from its failure. More than one on the same value
+/// chooses by type, branch by branch: a dispatch table written as control flow.
+pub fn check_no_isinstance_ladder(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let bytes = source.source_bytes;
+    let mut violations = Vec::new();
+
+    for function in find_nodes_by_type(source.tree.root_node(), "function_definition") {
+        let Some(body) = node_field(function, "body") else {
+            continue;
+        };
+        let mut subjects: Vec<&str> = find_nodes_by_type(body, "call")
+            .into_iter()
+            .filter_map(|call| isinstance_subject(call, bytes))
+            .collect();
+        subjects.sort_unstable();
+        if subjects.windows(2).any(|pair| pair[0] == pair[1]) {
+            let function_name = node_field(function, "name").map(|name| node_text(name, bytes)).unwrap_or("<unknown>");
+            violations.push(violation(
+                node_line(function),
+                format!("{function_name}() tests one value with isinstance more than once — a dispatch by type"),
+            ));
+        }
+    }
+    violations
+}
+
+// -------------------------------------------------------------------------
 // no_inline_dispatch
 // -------------------------------------------------------------------------
 
@@ -2194,5 +2285,82 @@ mod tests {
         assert!(fired("/project/src/pkg/__main__.py", two_functions));
         assert!(!fired("/project/src/pkg/cli.py", one_function));
         assert!(!fired("/project/src/pkg/logic/pure/plan/simple.py", two_functions));
+    }
+
+    // -- no_same_file_calls --
+
+    fn same_file_calls(code: &str) -> Vec<String> {
+        check_no_same_file_calls(&parse(code), &default_config()).into_iter().map(|viol| viol.message).collect()
+    }
+
+    #[test]
+    fn a_call_to_a_function_of_the_same_file_is_caught() {
+        // The specimen: one-line filters in one file, composed by calling each other.
+        let code = "def complete(surveys: Surveys) -> Surveys:\n    return keep(surveys)\n\n\ndef already_released(surveys: Surveys) -> Surveys:\n    return keep(surveys)\n\n\ndef generated_directories(surveys: Surveys) -> Names:\n    return directories_of(complete(already_released(surveys)))\n";
+        assert_eq!(
+            same_file_calls(code),
+            vec![
+                "generated_directories() calls complete(), a function of the same file",
+                "generated_directories() calls already_released(), a function of the same file",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_chain_cut_from_one_function_is_caught_at_each_link() {
+        // The specimen: a pipeline split at its early returns, each part calling the next.
+        let code = "def run(site: Site) -> Outcome:\n    return compile_from_meanings(site)\n\n\n@traced\ndef compile_from_meanings(site: Site) -> Outcome:\n    return compile_from_survey(site)\n\n\ndef compile_from_survey(site: Site) -> Outcome:\n    return build(site)\n";
+        assert_eq!(same_file_calls(code).len(), 2);
+    }
+
+    #[test]
+    fn calls_that_leave_the_file_are_ok() {
+        let code = "from pkg.logic.pure.plan.primitive import keep\n\n\ndef complete(surveys: Surveys) -> Surveys:\n    return keep(surveys)\n\n\ndef held(surveys: Surveys) -> Surveys:\n    return surveys.complete()\n\n\ndef walk(node: Node) -> Node:\n    return walk(node.parent)\n";
+        assert!(same_file_calls(code).is_empty(), "an import, a method of the same name, and a self-call");
+    }
+
+    // -- no_isinstance_ladder --
+
+    fn isinstance_ladders(code: &str) -> Vec<String> {
+        check_no_isinstance_ladder(&parse(code), &default_config()).into_iter().map(|viol| viol.message).collect()
+    }
+
+    #[test]
+    fn one_value_tested_by_type_more_than_once_is_caught() {
+        // The specimen: an outcome routed to its renderer rung by rung.
+        let code = "def render(outcome: Outcome) -> str:\n    if isinstance(outcome, ReadFailures):\n        return render_read_failures(outcome)\n    if isinstance(outcome, CoherenceDefects):\n        return render_defects(outcome)\n    return render_report(outcome)\n";
+        assert_eq!(
+            isinstance_ladders(code),
+            vec!["render() tests one value with isinstance more than once — a dispatch by type"]
+        );
+    }
+
+    #[test]
+    fn one_test_and_tests_of_different_values_are_ok() {
+        for code in [
+            "def opened(outcome: Site | ReadFailures) -> Site:\n    if isinstance(outcome, ReadFailures):\n        stop(outcome)\n    return outcome\n",
+            "def both(first: Read, second: Read) -> bool:\n    return isinstance(first, Failure) or isinstance(second, Failure)\n",
+            "def stopped(outcome: Outcome) -> bool:\n    return isinstance(outcome, (ReadFailures, WriteFailures))\n",
+        ] {
+            assert!(isinstance_ladders(code).is_empty(), "{code}");
+        }
+    }
+
+    #[test]
+    fn the_matrix_runs_both_shape_checks_in_a_logic_file_and_not_in_structure() {
+        let code = b"def first(value: Page) -> Page:\n    return second(value)\n\n\ndef second(value: Page) -> Page:\n    if isinstance(value, Draft):\n        return value\n    if isinstance(value, Page):\n        return value\n    return value\n";
+        let names_in = |file_path: &str| -> Vec<String> {
+            crate::run_checks_v2(file_path, code)
+                .expect("the source parses")
+                .into_iter()
+                .map(|viol| viol.check_name)
+                .collect()
+        };
+        let logic = names_in("/project/src/pkg/logic/pure/plan/simple.py");
+        assert!(logic.contains(&"no_same_file_calls".to_string()), "{logic:?}");
+        assert!(logic.contains(&"no_isinstance_ladder".to_string()), "{logic:?}");
+        let structure = names_in("/project/src/pkg/structure/model/page.py");
+        assert!(!structure.contains(&"no_same_file_calls".to_string()), "{structure:?}");
+        assert!(!structure.contains(&"no_isinstance_ladder".to_string()), "{structure:?}");
     }
 }

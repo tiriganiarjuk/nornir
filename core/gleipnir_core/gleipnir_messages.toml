@@ -611,6 +611,18 @@ signal = "A module-level constant is data masquerading as code. In OOP, constant
 direction = "Move the constant to the structure zone. A set of known string values becomes an Enum. A dict lookup table becomes a frozen Pydantic model with typed fields. A numeric constant becomes a field default on a config model. All data is typed and lives in the structure zone, all computation is in logic zones."
 canary = "LLM creates module-level constants to satisfy no-magic-string rules without properly typing the data."
 
+[no_same_file_calls]
+detail = "A function calls another function defined in the same file. Every function of a file sits at the same level, so the call is a sideways edge — the one the import rule forbids between files."
+signal = "Functions of one level that call each other form a cluster: the file reads as a list of small functions and behaves as one large one. Each link fits its limits; the chain they make together is bounded by nothing."
+direction = "Move the function that is called down to the level its own work puts it at, and import it from there. Where two functions of this level are needed together, the function that uses both belongs one level up."
+canary = "LLM cuts one long function into a chain of small ones in the same file, each calling the next, so that every link passes the length and complexity limits; or adds a helper beside its caller to carry a single branch."
+
+[no_isinstance_ladder]
+detail = "A function tests one value with isinstance more than once: it chooses what to do by the value's type, branch by branch."
+signal = "A ladder of type tests is a dispatch table written as control flow. The types it handles are spread over its branches, a new type means another rung in every such function, and nothing says the ladder is complete."
+direction = "Put the routing in a dispatch file: a typed table from each model type to the function that handles it, indexed by the value's type. Each handler takes the one type it is for."
+canary = "LLM routes a union of outcome types through if isinstance(...) chains, repeats the same chain in several functions, or folds two rungs into one tuple test and a helper so that the count drops."
+
 [v2_orchestrate_no_strings]
 detail = "String literal in an orchestrate file. Orchestrate sequences calls: the name of a file, a folder or a schema written here, a word compared against, a message put together, is data sitting in the wiring."
 signal = "The same name written at each call site has no home: nothing lists the names there are, two sites can spell one differently, and a reader of the wiring cannot tell a name the design fixes from one somebody typed. Wiring that holds no data can be read as a sequence and nothing else."

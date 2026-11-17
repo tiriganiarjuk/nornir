@@ -91,6 +91,8 @@ const CHECK_REGISTRY: &[(&CheckMessages, CheckFn)] = &[
     (&messages::V2_LOGIC_NO_CONSTANTS, architecture::check_v2_logic_no_constants),
     (&messages::V2_DISPATCH_ONLY_TABLES, architecture::check_v2_dispatch_only_tables),
     (&messages::V2_ORCHESTRATE_NO_STRINGS, architecture::check_v2_orchestrate_no_strings),
+    (&messages::NO_SAME_FILE_CALLS, architecture::check_no_same_file_calls),
+    (&messages::NO_ISINSTANCE_LADDER, architecture::check_no_isinstance_ladder),
     (&messages::V2_CLASSES_ONLY_IN_STRUCTURE, architecture::check_v2_classes_only_in_structure),
     (&messages::UNKNOWN_FILE_IN_ZONE, architecture::check_unknown_file_in_zone),
     (&messages::FILE_IN_NO_ZONE, architecture::check_file_in_no_zone),
