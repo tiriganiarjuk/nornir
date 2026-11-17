@@ -64,7 +64,7 @@ the registry.
 | `cache_error` | `validator_cache_poisoned` |
 | `compression_error` | `compression_failed` |
 | `conversion_error` | `file_value_not_json`, `conversion_produced_invalid_json`, `data_not_expressible` |
-| `instrument_error` | `instrument_not_runnable`, `instrument_output_unusable`, `source_not_examinable`, `quality_check_not_run` |
+| `instrument_error` | `instrument_not_runnable`, `instrument_output_unusable`, `instrument_environment_missing`, `source_not_examinable`, `quality_check_not_run` |
 | `parse_error` | `text_not_json`, `file_not_in_format`, `directory_request_not_json`, `record_not_json`, `png_signature_missing`, `png_chunk_truncated`, `png_chunk_corrupt`, `png_chunks_out_of_order`, `png_header_invalid`, `png_pixel_data_invalid`, `png_undecodable`, `mesh_truncated`, `mesh_header_invalid`, `mesh_vertex_data_invalid`, `mesh_indices_invalid`, `mesh_edges_invalid`, `session_event_not_json` |
 | `path_error` | `paths_missing` |
 | `read_error` | `file_unreadable`, `directory_unlistable`, `directory_partly_unreadable`, `record_absent`, `store_open_file_missing`, `session_event_unreadable` |

@@ -354,22 +354,65 @@ pub fn run_ruff(file_path: &Path) -> Result<Vec<Issue>, Fault> {
         .collect())
 }
 
-/// The interpreter of the project a file belongs to: `.venv/bin/python` in the
-/// nearest directory above the file that holds both it and a `pyproject.toml`.
+/// The interpreter of the project a file belongs to, found from the nearest
+/// directory above the file that holds a `pyproject.toml` and an environment.
 /// basedpyright resolves the project's own package and its dependencies through
 /// it; given none, it checks the file against no environment and every import
 /// it makes is unresolved.
 fn project_interpreter(known_as: &Path) -> Option<PathBuf> {
+    let derived_root = std::env::var("DERIVED_ROOT").ok().filter(|root| !root.is_empty());
+    let home = std::env::var("HOME").unwrap_or_default();
+    project_interpreter_under(known_as, derived_root.as_deref(), &home)
+}
+
+fn project_interpreter_under(known_as: &Path, derived_root: Option<&str>, home: &str) -> Option<PathBuf> {
     let absolute = std::path::absolute(known_as).ok()?;
-    absolute.ancestors().skip(1).find_map(|directory| {
-        let interpreter = directory.join(".venv").join("bin").join("python");
-        (directory.join("pyproject.toml").is_file() && interpreter.is_file()).then_some(interpreter)
-    })
+    absolute
+        .ancestors()
+        .skip(1)
+        .filter(|directory| directory.join("pyproject.toml").is_file())
+        .flat_map(|directory| environment_interpreters(directory, derived_root, home))
+        .find(|interpreter| interpreter.is_file())
+}
+
+/// Where a project's interpreter can be, in order: its environment on the
+/// Derived volume, then a `.venv` inside it.
+///
+/// The Derived place is the rule of `_derived_project_venv` in
+/// `~/.config/zsh/derived_volume.zsh`, which is its authority: the project's
+/// path under `~/ai`, or its absolute path outside it, under
+/// `$DERIVED_ROOT/uv-venvs`. A change to that rule is a change here too.
+fn environment_interpreters(directory: &Path, derived_root: Option<&str>, home: &str) -> Vec<PathBuf> {
+    let mut interpreters = Vec::new();
+    if let Some(root) = derived_root {
+        let ai_home = Path::new(home).join("ai");
+        let mirrored = directory.strip_prefix(&ai_home).unwrap_or_else(|_| directory.strip_prefix("/").unwrap_or(directory));
+        interpreters.push(Path::new(root).join("uv-venvs").join(mirrored).join("bin").join("python"));
+    }
+    interpreters.push(directory.join(".venv").join("bin").join("python"));
+    interpreters
+}
+
+/// The project a file belongs to that has no interpreter for basedpyright: the
+/// nearest directory above it holding a `pyproject.toml`, when no directory
+/// above the file holds both that and `.venv/bin/python`. A file in no project
+/// is not one of them: it has no environment to be missing.
+fn project_without_environment(known_as: &Path) -> Option<PathBuf> {
+    if project_interpreter(known_as).is_some() {
+        return None;
+    }
+    let absolute = std::path::absolute(known_as).ok()?;
+    absolute.ancestors().skip(1).find(|directory| directory.join("pyproject.toml").is_file()).map(Path::to_path_buf)
 }
 
 /// Run basedpyright type checker on a file using Saga's embedded config, in the
-/// environment of the project the file is known to belong to.
+/// environment of the project the file is known to belong to. A file whose
+/// project has no environment is a fault: checked without one, every import of
+/// a dependency is unresolved and every type after it unknown.
 pub fn run_basedpyright(source: Source) -> Result<Vec<Issue>, Fault> {
+    if let Some(missing) = environment_fault(source.known_as) {
+        return Err(missing);
+    }
     let file_path = source.content_at;
     let path_str = file_path.to_string_lossy();
     let config = pyright_config();
@@ -394,33 +437,37 @@ pub fn run_basedpyright(source: Source) -> Result<Vec<Issue>, Fault> {
         .as_array()
         .ok_or_else(|| unusable("the output holds no generalDiagnostics list".to_string()))?;
 
-    Ok(diags
-        .iter()
-        .map(|diag| {
-            let severity = match diag["severity"].as_str().unwrap_or("error") {
-                "error" => "error",
-                "warning" => "warning",
-                "information" => "info",
-                _ => "error",
-            };
-            Issue {
-                tool: "basedpyright".into(),
-                code: diag["rule"].as_str().unwrap_or("type-error").into(),
-                severity: severity.into(),
-                line: diag["range"]["start"]["line"].as_u64().unwrap_or(0) as usize + 1,
-                column: Some(
-                    diag["range"]["start"]["character"].as_u64().unwrap_or(0) as usize + 1,
-                ),
-                message: diag["message"].as_str().unwrap_or("").into(),
-                category: "type".into(),
-                fixable: false,
-                detail: String::new(),
-                signal: String::new(),
-                direction: String::new(),
-                canary: String::new(),
-            }
-        })
-        .collect())
+    Ok(diags.iter().map(diagnostic_issue).collect())
+}
+
+/// The fault of a file whose project has no environment for basedpyright.
+fn environment_fault(known_as: &Path) -> Option<Fault> {
+    let project = project_without_environment(known_as)?;
+    let reason = format!("the project at '{}' has no .venv/bin/python", project.display());
+    Some(fault("basedpyright", failure_mode_core::instrument_environment_missing("basedpyright", known_as.display(), reason)))
+}
+
+/// One basedpyright diagnostic as an issue.
+fn diagnostic_issue(diag: &serde_json::Value) -> Issue {
+    let severity = match diag["severity"].as_str().unwrap_or("error") {
+        "warning" => "warning",
+        "information" => "info",
+        _ => "error",
+    };
+    Issue {
+        tool: "basedpyright".into(),
+        code: diag["rule"].as_str().unwrap_or("type-error").into(),
+        severity: severity.into(),
+        line: diag["range"]["start"]["line"].as_u64().unwrap_or(0) as usize + 1,
+        column: Some(diag["range"]["start"]["character"].as_u64().unwrap_or(0) as usize + 1),
+        message: diag["message"].as_str().unwrap_or("").into(),
+        category: "type".into(),
+        fixable: false,
+        detail: String::new(),
+        signal: String::new(),
+        direction: String::new(),
+        canary: String::new(),
+    }
 }
 
 /// The kind of a file, by the name it is known by.
@@ -901,6 +948,81 @@ mod tests {
         project(&dir.join("members/tool"), false);
         let file = dir.join("members/tool/src/tool/cli.py");
         assert_eq!(project_interpreter(&file), Some(dir.join(".venv/bin/python")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_s_environment_on_the_derived_volume_is_found_first() {
+        // The specimen: draupnir, its environment under Derived/uv-venvs, no .venv of its own.
+        let dir = temp_dir("interpreter_derived");
+        let home = dir.join("home");
+        let project_root = home.join("ai/smidja/draupnir");
+        project(&project_root, true);
+        let derived = dir.join("Derived");
+        let mirrored = derived.join("uv-venvs/smidja/draupnir/bin");
+        std::fs::create_dir_all(&mirrored).unwrap();
+        std::fs::write(mirrored.join("python"), "").unwrap();
+        let file = project_root.join("src/draupnir/structure/config/manifest.py");
+        let found = project_interpreter_under(&file, derived.to_str(), home.to_str().unwrap());
+        assert_eq!(found, Some(mirrored.join("python")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_outside_the_ai_root_mirrors_its_absolute_path() {
+        let dir = temp_dir("interpreter_outside");
+        project(&dir.join("elsewhere/tool"), false);
+        let derived = dir.join("Derived");
+        let mirrored = derived.join("uv-venvs").join(dir.join("elsewhere/tool").strip_prefix("/").unwrap()).join("bin");
+        std::fs::create_dir_all(&mirrored).unwrap();
+        std::fs::write(mirrored.join("python"), "").unwrap();
+        let file = dir.join("elsewhere/tool/src/tool/cli.py");
+        assert_eq!(project_interpreter_under(&file, derived.to_str(), "/nonexistent/home"), Some(mirrored.join("python")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn with_no_derived_volume_named_an_in_project_environment_is_still_found() {
+        let dir = temp_dir("interpreter_no_derived");
+        project(&dir, true);
+        assert_eq!(project_interpreter_under(&dir.join("src/a.py"), None, "/nonexistent/home"), Some(dir.join(".venv/bin/python")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_with_no_environment_is_named() {
+        // The specimen: draupnir, a pyproject.toml and no .venv.
+        let dir = temp_dir("environment_missing");
+        project(&dir, false);
+        let file = dir.join("src/pkg/structure/config/manifest.py");
+        assert_eq!(project_without_environment(&file), Some(dir.clone()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_in_a_project_with_an_environment_is_not_named() {
+        let dir = temp_dir("environment_present");
+        project(&dir, true);
+        project(&dir.join("members/tool"), false);
+        assert_eq!(project_without_environment(&dir.join("members/tool/src/tool/cli.py")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_in_no_project_has_no_environment_to_miss() {
+        let dir = temp_dir("environment_no_project");
+        assert_eq!(project_without_environment(&dir.join("loose/script.py")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_with_no_environment_is_a_basedpyright_fault() {
+        let dir = temp_dir("environment_fault");
+        project(&dir, false);
+        let file = dir.join("src/pkg/manifest.py");
+        let found = run_basedpyright(Source::in_place(&file)).unwrap_err();
+        assert_eq!((found.tool.as_str(), found.mode.as_str()), ("basedpyright", "instrument_environment_missing"));
+        assert!(found.message.contains("has no .venv/bin/python"), "{}", found.message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

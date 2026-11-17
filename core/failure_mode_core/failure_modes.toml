@@ -464,6 +464,12 @@ standard    = "{instrument} ran on '{path}' but its output could not be used: {r
 route       = "The file was not examined by {instrument}, so it is not known to be clean. Report this message to the user."
 adversarial = "stop"
 
+[instrument_environment_missing]
+class       = "instrument_error"
+standard    = "{instrument} has no environment to check '{path}' in: {reason}."
+route       = "The file was not type-checked against its project's dependencies, so it is not known to be clean. Report this message to the user; the project's environment is made with `uv sync` in its directory."
+adversarial = "stop"
+
 [source_not_examinable]
 class       = "instrument_error"
 standard    = "{instrument} could not examine '{path}': {reason}."
