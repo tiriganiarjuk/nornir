@@ -52,6 +52,10 @@ pattern = "/.claude/hooks/"
 description = "Hook scripts that constrain LLM behavior"
 
 [[probing]]
+pattern = "/ai/logs/"
+description = "The hooks' decision logs"
+
+[[probing]]
 pattern = "/gleipnir_core/"
 description = "Gleipnir check source code"
 

@@ -16,8 +16,8 @@
 use std::process::ExitCode;
 
 use hook_decision_core::flags::parse_category_flags;
-use hook_decision_core::paths::{is_under, normalize};
-use hook_decision_core::rules::{decide_category, first_match, path_subject, rules_of, RuleSet};
+use hook_decision_core::paths::{for_matching, is_under, normalize};
+use hook_decision_core::rules::{first_match, rules_of, Rule, RuleSet};
 use hook_decision_core::{ask_because_undecided, make_decision, DecisionInput, HookDecision, Severity};
 use hook_io::{HookInput, WhenUndecided, FLOOR, PROBING};
 
@@ -80,22 +80,29 @@ fn decide_inner(input: &HookInput, config: &Config, protected: &RuleSet) -> Hook
         .iter()
         .filter(|target| !is_exempt(target, &config.allow_paths))
         .find_map(|target| {
-            decide_category(rules_of(protected, PROBING), &path_subject(target), PROBING, probing_severity)
+            first_match(rules_of(protected, PROBING), &for_matching(target))
+                .map(|rule| path_decision(target, rule, PROBING, rule.severity.unwrap_or(probing_severity)))
         })
         .unwrap_or(HookDecision::Allow)
 }
 
 fn floor_decision(target: &str, protected: &RuleSet) -> Option<HookDecision> {
-    first_match(rules_of(protected, FLOOR), target).map(|rule| {
-        make_decision(&DecisionInput {
-            severity: Severity::Block,
-            category: FLOOR,
-            description: &rule.description,
-            subject: target,
-            verb_past: "accessed",
-            verb_present: "access",
-            max_subject_chars: None,
-        })
+    first_match(rules_of(protected, FLOOR), &for_matching(target))
+        .map(|rule| path_decision(target, rule, FLOOR, Severity::Block))
+}
+
+/// The decision of a protected-path rule about the path that matched it. The
+/// rule is matched against the path as `for_matching` gives it; the decision
+/// shows the path as the call reached it.
+fn path_decision(target: &str, rule: &Rule, category: &str, severity: Severity) -> HookDecision {
+    make_decision(&DecisionInput {
+        severity,
+        category,
+        description: &rule.description,
+        subject: target,
+        verb_past: "accessed",
+        verb_present: "access",
+        max_subject_chars: None,
     })
 }
 
@@ -106,6 +113,9 @@ fn is_exempt(target: &str, allow_paths: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hook_decision_core::fixtures::{mismatch, mismatch_report, parse_fixture_set, FixtureCall};
+
+    static FIXTURES_TOML: &str = include_str!("../fixtures.toml");
 
     fn protected() -> RuleSet {
         hook_io::protected_paths().unwrap()
@@ -134,6 +144,29 @@ mod tests {
             | HookDecision::Warn { category, .. } => category,
             _ => "",
         }
+    }
+
+    #[test]
+    fn every_fixture_gets_its_verdict() {
+        let set = parse_fixture_set(FIXTURES_TOML).unwrap();
+        let config = read_config(&set.arguments, &set.allow_paths).unwrap();
+        let protected = protected();
+        let mismatches: Vec<String> = set
+            .fixtures
+            .iter()
+            .filter_map(|fixture| {
+                let FixtureCall::Tool { tool, tool_input } = &fixture.call else {
+                    return Some(format!("{}\n    is not a tool call", fixture.name));
+                };
+                let input = HookInput {
+                    tool_name: tool.clone(),
+                    tool_input: serde_json::to_value(tool_input).unwrap(),
+                    cwd: Some(fixture.working_directory.clone()),
+                };
+                mismatch(fixture, &decide_inner(&input, &config, &protected))
+            })
+            .collect();
+        assert!(mismatches.is_empty(), "{}", mismatch_report(&mismatches, set.fixtures.len()));
     }
 
     // ── read_config ──────────────────────────────────────────────
@@ -169,23 +202,13 @@ mod tests {
         assert_eq!(config.allow_paths, vec!["/a/b/", "/d/"]);
     }
 
-    // ── Floor: always denied ─────────────────────────────────────
+    // ── Floor: under another configuration than the fixtures' ────
 
     #[test]
-    fn every_credential_store_is_denied_with_no_flag_given() {
-        let stores = [
-            "/home/user/.ssh/id_rsa",
-            "/home/user/.aws/credentials",
-            "/home/user/.gnupg/secring.gpg",
-            "/home/user/.kube/config",
-            "/home/user/.docker/config.json",
-            "/home/user/.netrc",
-        ];
-        for store in stores {
-            let decision = decided(&read(store), &config(None, &[]));
-            assert!(matches!(decision, HookDecision::Deny { .. }), "{store}");
-            assert_eq!(category_of(&decision), FLOOR, "{store}");
-        }
+    fn the_floor_is_denied_with_no_flag_given() {
+        let decision = decided(&read("/home/user/.ssh/id_rsa"), &config(None, &[]));
+        assert!(matches!(decision, HookDecision::Deny { .. }));
+        assert_eq!(category_of(&decision), FLOOR);
     }
 
     #[test]
@@ -194,63 +217,7 @@ mod tests {
         assert_eq!(category_of(&decided(&read("/home/user/.ssh/id_rsa"), &granted)), FLOOR);
     }
 
-    #[test]
-    fn a_path_spelled_around_the_floor_is_denied() {
-        let decision = decided(&read("/home/user/project/../.ssh/id_rsa"), &config(None, &[]));
-        assert_eq!(category_of(&decision), FLOOR);
-    }
-
-    #[test]
-    fn a_glob_with_an_absolute_pattern_and_no_path_is_denied() {
-        let glob = HookInput::for_tool("Glob", serde_json::json!({ "pattern": "/home/user/.ssh/*" }));
-        assert_eq!(category_of(&decided(&glob, &config(None, &[]))), FLOOR);
-    }
-
-    #[test]
-    fn a_glob_pattern_into_the_floor_under_a_plain_path_is_denied() {
-        let glob = HookInput::for_tool("Glob", serde_json::json!({ "path": "/home/user", "pattern": ".aws/*" }));
-        assert_eq!(category_of(&decided(&glob, &config(None, &[]))), FLOOR);
-    }
-
-    #[test]
-    fn a_grep_glob_into_the_floor_is_denied() {
-        let grep = HookInput::for_tool(
-            "Grep",
-            serde_json::json!({ "pattern": "key", "path": "/home/user", "glob": ".ssh/*" }),
-        );
-        assert_eq!(category_of(&decided(&grep, &config(None, &[]))), FLOOR);
-    }
-
-    #[test]
-    fn a_notebook_on_the_floor_is_denied() {
-        let edit = HookInput::for_tool("NotebookEdit", serde_json::json!({ "notebook_path": "/u/.aws/n.ipynb" }));
-        assert_eq!(category_of(&decided(&edit, &config(None, &[]))), FLOOR);
-    }
-
-    #[test]
-    fn a_search_run_from_inside_the_floor_is_denied() {
-        let grep = HookInput {
-            tool_name: "Grep".to_string(),
-            tool_input: serde_json::json!({ "pattern": "BEGIN" }),
-            cwd: Some("/home/user/.ssh/keys".to_string()),
-        };
-        assert_eq!(category_of(&decided(&grep, &config(None, &[]))), FLOOR);
-    }
-
-    #[test]
-    fn a_grep_for_text_that_names_the_floor_is_allowed() {
-        let grep = HookInput::for_tool("Grep", serde_json::json!({ "pattern": "/.ssh/", "path": "/home/user/docs" }));
-        assert!(matches!(decided(&grep, &blocking()), HookDecision::Allow));
-    }
-
-    #[test]
-    fn a_name_that_only_resembles_a_store_is_allowed() {
-        for near in ["/home/user/ssh/notes.md", "/home/user/.sshx/id", "/home/user/aws/readme.md"] {
-            assert!(matches!(decided(&read(near), &blocking()), HookDecision::Allow), "{near}");
-        }
-    }
-
-    // ── Probing ──────────────────────────────────────────────────
+    // ── Probing: under another configuration than the fixtures' ──
 
     #[test]
     fn probing_at_block_denies() {
@@ -260,26 +227,14 @@ mod tests {
     }
 
     #[test]
-    fn probing_at_warn_warns() {
-        let decision = decided(&read("/n/hooks/hook_pre_subagent_bash/src/main.rs"), &config(Some(Severity::Warn), &[]));
-        assert!(matches!(decision, HookDecision::Warn { .. }));
-    }
-
-    #[test]
     fn probing_without_its_flag_is_allowed() {
         assert!(matches!(decided(&read("/home/user/.claude/hooks/x"), &config(None, &[])), HookDecision::Allow));
     }
 
     #[test]
-    fn the_settings_rule_asks_at_any_category_severity() {
+    fn the_settings_rule_asks_when_probing_blocks() {
         let decision = decided(&read("/home/user/.claude/settings.json"), &blocking());
         assert!(matches!(decision, HookDecision::Ask { .. }));
-    }
-
-    #[test]
-    fn the_grant_file_is_watched() {
-        let decision = decided(&read("/n/cli/cc_launch/src/permissions.rs"), &blocking());
-        assert_eq!(category_of(&decision), PROBING);
     }
 
     #[test]
@@ -310,18 +265,5 @@ mod tests {
             serde_json::json!({ "pattern": "x", "path": "/n/core", "glob": "../../other/hook_io/*" }),
         );
         assert_eq!(category_of(&decided(&grep, &granted)), PROBING);
-    }
-
-    // ── Allow ────────────────────────────────────────────────────
-
-    #[test]
-    fn an_ordinary_file_is_allowed() {
-        assert!(matches!(decided(&read("/home/user/project/src/main.rs"), &blocking()), HookDecision::Allow));
-    }
-
-    #[test]
-    fn a_call_that_reaches_no_path_is_allowed() {
-        let empty = HookInput::for_tool("Read", serde_json::json!({}));
-        assert!(matches!(decided(&empty, &blocking()), HookDecision::Allow));
     }
 }

@@ -13,8 +13,8 @@
 # asked about every command until it is fixed.
 #
 # Categories (severity from the hook's command line; no flag, not examined):
+#   --chaining    — a call that is more than one command
 #   --destruction — commands that discard work
-#   --chaining    — && command chaining
 #   --subversion  — lock and constraint manipulation
 #   --truncation  — partial reading of constraint files
 #   --evasion     — replacing constraints
@@ -27,9 +27,17 @@
 #   destruction, subversion, truncation, evasion, revert — the whole command,
 #     quoted text and here-document bodies included: text a shell could run is
 #     examined wherever it sits.
-#   chaining, workflow — the command's structure: here-document bodies removed,
-#     and inside quotes the operators & | ; < > replaced by _ . Text a command
+#   workflow — the command's structure: here-document bodies removed, and
+#     inside quotes the operators & | ; < > replaced by _ . Text a command
 #     merely carries (a commit message, a file body) is not structure.
+#   chaining — the command's shape (see the chaining section).
+#
+# Every pattern category reads the command after its `cd DIR &&` prefix, when
+# it has one; the paths a command names are judged from that directory.
+#
+# This hook's behaviour is pinned by fixtures.toml beside this file: every
+# refused form and every look-alike that must pass. A change here is followed
+# by `cargo test -p hook_pre_llm_bash`, which judges every fixture.
 #
 # A pattern names its command as a word (\b) and stays within one simple
 # command ([^;&|]*), so a rule fires on the act and not on a word that happens
@@ -227,14 +235,40 @@ pattern = "\\b(sed|perl)\\s+[^;&|]*-[a-zA-Z]*i\\b[^;&|]*\\.(py|rs|svelte)\\b"
 description = "In-place edit of a source file — it gets no quality feedback; change source with the Write or Edit tool"
 severity = "warn"
 
-# ─── Chaining: && command chaining hangs on long-running commands ────
+# ─── Chaining: a call is one command ─────────────────────────────────
 #
-# When the LLM chains commands with && and any command is long-running
-# (cargo test, nornir_deploy, etc.), the background task system loses
-# track of process state. The user sees a frozen prompt with no way to
-# tell if a process is still running or has hung — they must guess
-# whether to terminate the LLM session. Run each command separately.
+# A call the user can take in at a glance is one command — a single pipeline
+# with its redirections — optionally after one `cd` to a stated directory:
+#
+#     command                       cd DIR && command
+#     command | command             ssh host "any; thing && at all"
+#
+# A call that joins commands is unclear while it runs, hangs without saying
+# which part hung, can bury one command in a crowd, and turns a permission
+# prompt into something the user has to parse.
+#
+# A chaining rule names a command SHAPE, not a regex. The shapes are read by
+# hook_decision_core::shape, and every one of them has its rule here; the
+# description is what the session is told, and it names the way through.
+# A compound command is never put to the user as a permission prompt: at
+# severity ask it is refused.
 
 [[chaining]]
-pattern = "\\s&&\\s"
-description = "Chained commands hang on long-running ops, leaving user unable to tell if process is alive or stuck — run each command separately"
+pattern = "chained"
+description = "Several commands joined by ; && || or a line break — one call is one command: run each as its own call, or `cd DIR && command` for a command that needs a directory"
+
+[[chaining]]
+pattern = "backgrounded"
+description = "A command sent to the background with & — run it as its own call with the Bash tool's background option"
+
+[[chaining]]
+pattern = "grouped"
+description = "Commands grouped in ( ) or { } or a function — one call is one command: run each as its own call"
+
+[[chaining]]
+pattern = "control_flow"
+description = "A loop or conditional written inline — put it in a script file and run the file, or run each command as its own call"
+
+[[chaining]]
+pattern = "nested_shell"
+description = "A shell started inside the command (bash -c, eval, text piped or fed to a shell) — run the command itself as its own call; over ssh, give the remote command as the quoted argument"

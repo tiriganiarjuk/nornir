@@ -1,0 +1,452 @@
+# Fixtures of hook_pre_subagent_tool — file-tool calls, and the verdict each must get.
+#
+# This file pins the hook. `cargo test -p hook_pre_subagent_tool` judges every
+# fixture and reports every mismatch at once. Run it after any change to the
+# hook, to hook_io, or to hook_decision_core.
+#
+# A bypass that is found becomes a fixture here FIRST, so it is seen to fail,
+# and is fixed after. An expected verdict is changed only because the rule
+# changed, never to make a run pass.
+#
+# Locked with the constraint layer: ~/ai/tools/scripts/lock_constraint_files.sh
+#
+# [judged_under] is a command line of the kind an agent's frontmatter gives the
+# hook: Read in /schemas/ and /docs/, Write in /output/, Grep and Glob in
+# /schemas. Every refusal of this hook is in the category `path`.
+
+[judged_under]
+arguments = "Read=/schemas/,/docs/ Write=/output/ Grep=/schemas/ Glob=/schemas"
+working_directory = "/work"
+
+# ═══ Allowed: a granted tool inside its directories ═════════════════
+
+[[fixture]]
+name = "granted: Read in its first directory"
+tool = "Read"
+tool_input = { file_path = "/schemas/a.json" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Read deep in its second directory"
+tool = "Read"
+tool_input = { file_path = "/docs/guide/b.md" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Write in its directory"
+tool = "Write"
+tool_input = { file_path = "/output/x.json" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Write of a new file in a subdirectory"
+tool = "Write"
+tool_input = { file_path = "/output/sub/new.json", content = "{}" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: a path that climbs and stays inside"
+tool = "Read"
+tool_input = { file_path = "/schemas/sub/../a.json" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: a path that climbs from one granted directory into another"
+tool = "Read"
+tool_input = { file_path = "/schemas/../docs/x.md" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: a path with doubled separators"
+tool = "Read"
+tool_input = { file_path = "/schemas//a.json" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: a relative path from inside a granted directory"
+tool = "Read"
+tool_input = { file_path = "a.json" }
+working_directory = "/schemas"
+verdict = "allow"
+
+[[fixture]]
+name = "granted: a relative path that climbs within a granted directory"
+tool = "Read"
+tool_input = { file_path = "../a.json" }
+working_directory = "/schemas/sub"
+verdict = "allow"
+
+[[fixture]]
+name = "granted: a relative path that climbs from outside into a granted directory"
+tool = "Read"
+tool_input = { file_path = "../schemas/a.json" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Grep of its directory"
+tool = "Grep"
+tool_input = { pattern = "x", path = "/schemas/" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Grep with a glob inside its directory"
+tool = "Grep"
+tool_input = { pattern = "x", path = "/schemas", glob = "*.json" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Grep with a glob that climbs and stays inside"
+tool = "Grep"
+tool_input = { pattern = "x", path = "/schemas/sub/", glob = "../*.json" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Grep with no path, run from inside its directory"
+tool = "Grep"
+tool_input = { pattern = "x" }
+working_directory = "/schemas/sub"
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Glob in its directory"
+tool = "Glob"
+tool_input = { pattern = "**/*.json", path = "/schemas" }
+verdict = "allow"
+
+[[fixture]]
+name = "granted: Glob with an absolute pattern, run from inside its directory"
+tool = "Glob"
+tool_input = { pattern = "/schemas/**/*.json" }
+working_directory = "/schemas"
+verdict = "allow"
+
+# ═══ Denied: a tool without a grant ═════════════════════════════════
+
+[[fixture]]
+name = "no grant: Edit, in a directory Read is granted"
+tool = "Edit"
+tool_input = { file_path = "/schemas/a.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "no grant: Edit, in the directory Write is granted"
+tool = "Edit"
+tool_input = { file_path = "/output/x.json", old_string = "a", new_string = "b" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "no grant: NotebookEdit"
+tool = "NotebookEdit"
+tool_input = { notebook_path = "/output/n.ipynb", new_source = "1" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "no grant: Bash"
+tool = "Bash"
+tool_input = { command = "ls /schemas" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "no grant: a granted tool's name in small letters"
+tool = "read"
+tool_input = { file_path = "/schemas/a.json" }
+verdict = "deny"
+category = "path"
+
+# ═══ Denied: a tool outside its own directories ═════════════════════
+
+[[fixture]]
+name = "own directories: Write where only Read is granted"
+tool = "Write"
+tool_input = { file_path = "/schemas/a.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "own directories: Write in Read's second directory"
+tool = "Write"
+tool_input = { file_path = "/docs/guide/b.md", content = "x" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "own directories: Read where only Write is granted"
+tool = "Read"
+tool_input = { file_path = "/output/x.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "own directories: Grep where only Read is granted"
+tool = "Grep"
+tool_input = { pattern = "x", path = "/docs/" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "own directories: Glob where only Read is granted"
+tool = "Glob"
+tool_input = { pattern = "**/*.md", path = "/docs" }
+verdict = "deny"
+category = "path"
+
+# ═══ Denied: a path outside ═════════════════════════════════════════
+
+[[fixture]]
+name = "outside: /etc/passwd"
+tool = "Read"
+tool_input = { file_path = "/etc/passwd" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: a sibling whose name starts as a granted directory's does"
+tool = "Read"
+tool_input = { file_path = "/schemas_private/a.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: a sibling named as a backup of a granted directory"
+tool = "Read"
+tool_input = { file_path = "/docs.bak/x.md" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: a granted directory's name in capitals"
+tool = "Read"
+tool_input = { file_path = "/SCHEMAS/a.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: a granted directory's name deeper in another tree"
+tool = "Read"
+tool_input = { file_path = "/home/user/schemas/a.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: Write beside its directory"
+tool = "Write"
+tool_input = { file_path = "/outputs/x.json", content = "{}" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: climbs out of a granted directory"
+tool = "Read"
+tool_input = { file_path = "/schemas/../etc/passwd" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: climbs out from a subdirectory"
+tool = "Read"
+tool_input = { file_path = "/schemas/a/../../etc/passwd" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: climbs past the root"
+tool = "Read"
+tool_input = { file_path = "/docs/../../etc/shadow" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: climbs from Read's directory into Write's"
+tool = "Read"
+tool_input = { file_path = "/schemas/../output/x.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: Write climbs from its directory into Read's"
+tool = "Write"
+tool_input = { file_path = "/output/../schemas/a.json", content = "{}" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: climbs to a sibling through a current-directory segment"
+tool = "Read"
+tool_input = { file_path = "/schemas/./../schemas_private/a.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: doubled separators before /etc"
+tool = "Read"
+tool_input = { file_path = "//etc/passwd" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: a relative path from an ordinary directory"
+tool = "Read"
+tool_input = { file_path = "schemas/a.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: a relative path that climbs out of a granted directory"
+tool = "Read"
+tool_input = { file_path = "../etc/passwd" }
+working_directory = "/schemas"
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: a tilde path from an ordinary directory"
+tool = "Read"
+tool_input = { file_path = "~/.ssh/id_rsa" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "outside: a second path beside one inside"
+tool = "Read"
+tool_input = { file_path = "/schemas/a.json", path = "/etc" }
+verdict = "deny"
+category = "path"
+
+# ═══ Denied: a call that names no path ══════════════════════════════
+
+[[fixture]]
+name = "no path: an empty input"
+tool = "Read"
+tool_input = {}
+working_directory = "/schemas"
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "no path: a path that is a number"
+tool = "Read"
+tool_input = { file_path = 5 }
+working_directory = "/schemas"
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "no path: a path that is a list"
+tool = "Read"
+tool_input = { file_path = ["/schemas/a.json"] }
+working_directory = "/schemas"
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "no path: the path under a key no tool reads"
+tool = "Read"
+tool_input = { filePath = "/schemas/a.json" }
+working_directory = "/schemas"
+verdict = "deny"
+category = "path"
+
+# ═══ Denied: a search that reaches outside ══════════════════════════
+
+[[fixture]]
+name = "search: Grep with no path, run from an ordinary directory"
+tool = "Grep"
+tool_input = { pattern = "x" }
+working_directory = "/home/user"
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Glob with no path, run from an ordinary directory"
+tool = "Glob"
+tool_input = { pattern = "**/*.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Glob with an absolute pattern outside"
+tool = "Glob"
+tool_input = { pattern = "/etc/*" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Glob with an absolute pattern inside, run from an ordinary directory"
+tool = "Glob"
+tool_input = { pattern = "/schemas/**/*.json" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Glob pattern that climbs out of its path"
+tool = "Glob"
+tool_input = { path = "/schemas", pattern = "../etc/*" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Glob pattern that climbs out after a wildcard"
+tool = "Glob"
+tool_input = { path = "/schemas", pattern = "**/../../etc/*" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Grep glob that climbs out of its path"
+tool = "Grep"
+tool_input = { pattern = "x", path = "/schemas/", glob = "../../etc/*" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Grep glob that is an absolute path outside"
+tool = "Grep"
+tool_input = { pattern = "x", path = "/schemas", glob = "/etc/*" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Grep path that climbs out"
+tool = "Grep"
+tool_input = { pattern = "x", path = "/schemas/../etc" }
+verdict = "deny"
+category = "path"
+
+[[fixture]]
+name = "search: Grep of the root"
+tool = "Grep"
+tool_input = { pattern = "password", path = "/" }
+verdict = "deny"
+category = "path"
+
+# ═══ Found 2026-11-17, while these fixtures were written ════════════
+
+[[fixture]]
+name = "home: a path under ~ from inside a granted directory"
+tool = "Read"
+tool_input = { file_path = "~/.ssh/id_rsa" }
+working_directory = "/schemas"
+verdict = "deny"
+category = "path"
+found = "2026-11-17: joined to the working directory, it read as a path under the grant"
+
+[[fixture]]
+name = "home: a search path under ~ from inside a granted directory"
+tool = "Grep"
+tool_input = { pattern = "x", path = "~" }
+working_directory = "/schemas"
+verdict = "deny"
+category = "path"
+found = "2026-11-17"
+
+[[fixture]]
+name = "home: a glob pattern under ~ from inside a granted directory"
+tool = "Glob"
+tool_input = { pattern = "~/*", path = "/schemas" }
+verdict = "deny"
+category = "path"
+found = "2026-11-17"

@@ -567,6 +567,15 @@ mod tests {
     }
 
     #[test]
+    fn every_protected_pattern_is_written_in_lower_case() {
+        // Paths are matched in lower case; a pattern with a capital would match nothing.
+        let protected = protected_paths().unwrap();
+        for rule in rules_of(&protected, FLOOR).iter().chain(rules_of(&protected, PROBING)) {
+            assert_eq!(rule.pattern, rule.pattern.to_lowercase(), "{}", rule.pattern);
+        }
+    }
+
+    #[test]
     fn a_floor_rule_that_states_a_severity_is_refused() {
         let weakened = "[[floor]]\npattern = \"/.ssh/\"\ndescription = \"x\"\nseverity = \"warn\"\n";
         assert!(protected_paths_from(weakened).unwrap_err().contains("always blocks"));

@@ -67,6 +67,17 @@ fn decide_with_grants(input: &HookInput, grants: &ToolGrants) -> HookDecision {
         };
     };
 
+    if let Some(under_home) = named_under_home(input) {
+        return HookDecision::Deny {
+            category: "path".into(),
+            event: format!("blocked {tool} access to '{under_home}'"),
+            reason: format!(
+                "'{under_home}' starts with ~, a home directory. Name an absolute path under:\n{}",
+                listed(allowed)
+            ),
+        };
+    }
+
     let targets = input.targets();
     if targets.is_empty() {
         return HookDecision::Deny {
@@ -90,6 +101,20 @@ fn decide_with_grants(input: &HookInput, grants: &ToolGrants) -> HookDecision {
     }
 }
 
+/// A path the call names that starts with `~`: a tool may expand it to a home
+/// directory, which no grant here covers. Grep's `pattern` is the text it
+/// searches for, so it is read as a path only for Glob.
+fn named_under_home(input: &HookInput) -> Option<&str> {
+    let search_filter = match input.tool_name.as_str() {
+        "Glob" => "pattern",
+        _ => "glob",
+    };
+    ["file_path", "path", "notebook_path", search_filter]
+        .iter()
+        .filter_map(|key| input.tool_input.get(key).and_then(|value| value.as_str()))
+        .find(|named| named.starts_with('~'))
+}
+
 fn listed(directories: &[String]) -> String {
     directories.iter().map(|directory| format!("  {directory}")).collect::<Vec<_>>().join("\n")
 }
@@ -97,6 +122,9 @@ fn listed(directories: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hook_decision_core::fixtures::{mismatch, mismatch_report, parse_fixture_set, FixtureCall};
+
+    static FIXTURES_TOML: &str = include_str!("../fixtures.toml");
 
     fn grants() -> ToolGrants {
         let args: Vec<String> = ["Read=/schemas/,/docs/", "Write=/output/", "Grep=/schemas/", "Glob=/schemas"]
@@ -110,12 +138,30 @@ mod tests {
         HookInput { tool_name: tool.to_string(), tool_input, cwd: cwd.map(str::to_string) }
     }
 
-    fn file_call(tool: &str, path: &str) -> HookInput {
-        call(tool, Some("/work"), serde_json::json!({ "file_path": path }))
-    }
-
     fn allowed(input: &HookInput) -> bool {
         matches!(decide_with_grants(input, &grants()), HookDecision::Allow)
+    }
+
+    #[test]
+    fn every_fixture_gets_its_verdict() {
+        let set = parse_fixture_set(FIXTURES_TOML).unwrap();
+        let grants = read_grants(&set.arguments).unwrap();
+        let mismatches: Vec<String> = set
+            .fixtures
+            .iter()
+            .filter_map(|fixture| {
+                let FixtureCall::Tool { tool, tool_input } = &fixture.call else {
+                    return Some(format!("{}\n    is not a tool call", fixture.name));
+                };
+                let input = HookInput {
+                    tool_name: tool.clone(),
+                    tool_input: serde_json::to_value(tool_input).unwrap(),
+                    cwd: Some(fixture.working_directory.clone()),
+                };
+                mismatch(fixture, &decide_with_grants(&input, &grants))
+            })
+            .collect();
+        assert!(mismatches.is_empty(), "{}", mismatch_report(&mismatches, set.fixtures.len()));
     }
 
     // ── read_grants ──────────────────────────────────────────────
@@ -138,73 +184,15 @@ mod tests {
         }
     }
 
-    // ── Allowed ──────────────────────────────────────────────────
+    // ── Calls a fixture file cannot state ────────────────────────
 
     #[test]
-    fn a_path_under_a_granted_directory_is_allowed() {
-        assert!(allowed(&file_call("Read", "/schemas/a.json")));
-        assert!(allowed(&file_call("Read", "/docs/guide/b.md")));
-        assert!(allowed(&file_call("Write", "/output/x.json")));
-        assert!(allowed(&file_call("Read", "/schemas/sub/../a.json")));
-    }
-
-    #[test]
-    fn a_search_inside_a_granted_directory_is_allowed() {
-        assert!(allowed(&call("Grep", Some("/work"), serde_json::json!({ "pattern": "x", "path": "/schemas/" }))));
-        assert!(allowed(&call("Glob", Some("/work"), serde_json::json!({ "pattern": "**/*.json", "path": "/schemas" }))));
-        assert!(allowed(&call("Grep", Some("/schemas/sub"), serde_json::json!({ "pattern": "x" }))));
-    }
-
-    // ── Denied ───────────────────────────────────────────────────
-
-    #[test]
-    fn a_tool_without_a_grant_is_denied() {
-        assert!(!allowed(&file_call("Edit", "/schemas/a.json")));
-    }
-
-    #[test]
-    fn a_tool_is_held_to_its_own_directories() {
-        assert!(!allowed(&file_call("Write", "/schemas/a.json")));
-        assert!(!allowed(&file_call("Read", "/output/x.json")));
-    }
-
-    #[test]
-    fn a_path_outside_is_denied() {
-        assert!(!allowed(&file_call("Read", "/etc/passwd")));
-        assert!(!allowed(&file_call("Read", "/schemas_private/a.json")));
-    }
-
-    #[test]
-    fn a_path_that_climbs_out_is_denied() {
-        assert!(!allowed(&file_call("Read", "/schemas/../etc/passwd")));
-        assert!(!allowed(&file_call("Read", "/schemas/a/../../etc/passwd")));
-    }
-
-    #[test]
-    fn a_relative_path_is_judged_from_the_working_directory() {
-        assert!(!allowed(&file_call("Read", "schemas/a.json")));
-        assert!(allowed(&call("Read", Some("/schemas"), serde_json::json!({ "file_path": "a.json" }))));
-    }
-
-    #[test]
-    fn a_call_that_names_no_path_is_denied() {
-        assert!(!allowed(&call("Read", Some("/schemas"), serde_json::json!({}))));
+    fn a_path_that_is_null_names_no_path() {
         assert!(!allowed(&call("Read", Some("/schemas"), serde_json::json!({ "file_path": null }))));
     }
 
     #[test]
-    fn a_search_without_a_path_is_judged_by_where_it_runs() {
-        assert!(!allowed(&call("Grep", Some("/home/user"), serde_json::json!({ "pattern": "x" }))));
+    fn a_search_with_no_path_and_no_working_directory_is_denied() {
         assert!(!allowed(&call("Grep", None, serde_json::json!({ "pattern": "x" }))));
-    }
-
-    #[test]
-    fn a_search_filter_that_reaches_outside_is_denied() {
-        let glob = call("Glob", Some("/work"), serde_json::json!({ "pattern": "/etc/*" }));
-        assert!(!allowed(&glob));
-        let climbing = call("Glob", Some("/work"), serde_json::json!({ "path": "/schemas", "pattern": "../etc/*" }));
-        assert!(!allowed(&climbing));
-        let grep = call("Grep", Some("/work"), serde_json::json!({ "pattern": "x", "path": "/schemas/", "glob": "../../etc/*" }));
-        assert!(!allowed(&grep));
     }
 }

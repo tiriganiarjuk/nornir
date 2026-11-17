@@ -45,6 +45,18 @@ pub fn absolute_from(base: &str, path: &str) -> String {
     }
 }
 
+/// A normalised path as a protected-path rule is matched against it: in lower
+/// case, because the volumes here do not tell capitals apart, and ending in a
+/// separator, so a directory named without one is still that directory.
+pub fn for_matching(path: &str) -> String {
+    let lowered = path.to_lowercase();
+    if lowered.ends_with('/') {
+        lowered
+    } else {
+        format!("{lowered}/")
+    }
+}
+
 /// Whether a normalised path lies at or under a normalised directory.
 pub fn is_under(path: &str, directory: &str) -> bool {
     let directory = directory.trim_end_matches('/');
@@ -102,6 +114,13 @@ mod tests {
     #[test]
     fn an_absolute_path_ignores_the_base() {
         assert_eq!(absolute_from("/work", "/etc/../x"), "/x");
+    }
+
+    #[test]
+    fn a_path_is_matched_in_lower_case_and_as_a_directory() {
+        assert_eq!(for_matching("/home/U/.SSH"), "/home/u/.ssh/");
+        assert_eq!(for_matching("/home/u/.ssh/"), "/home/u/.ssh/");
+        assert_eq!(for_matching("/home/u/.netrc"), "/home/u/.netrc/");
     }
 
     #[test]

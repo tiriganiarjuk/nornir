@@ -15,13 +15,15 @@ pub struct Permission {
     pub paths: &'static [&'static str],
 }
 
-/// Security-system access: enforcement source, deployed tools, hook config.
+/// Security-system access: enforcement source, deployed tools, the hooks'
+/// decision logs, hook config.
 /// Tyr operates the security system, so every Tyr launch carries this.
 static SECURITY_INFRASTRUCTURE: Permission = Permission {
     name: "Security Infrastructure",
     paths: &[
         "/Users/johnny/ai/smidja/nornir/",
         "/Users/johnny/ai/tools/",
+        "/Users/johnny/ai/logs/",
         "/Users/johnny/.claude/",
     ],
 };

@@ -112,7 +112,8 @@ const WORD_BREAKS: [char; 16] = [';', '|', '&', '<', '>', '(', ')', '"', '\'', '
 /// path named anywhere in it is a path the command can reach.
 ///
 /// The command is read one simple command at a time, in order. A `cd` moves
-/// the working directory for the simple commands that follow it, so a relative
+/// the working directory for the simple commands that follow it, and a
+/// command's own `-C DIRECTORY` is where its relative paths are, so a relative
 /// path is resolved from where the command would be when it reaches it.
 pub fn named_paths(command: &str, working_directory: &str, home: &str) -> Vec<String> {
     let mut named = Vec::new();
@@ -122,14 +123,26 @@ pub fn named_paths(command: &str, working_directory: &str, home: &str) -> Vec<St
             .split(|character: char| character.is_whitespace() || WORD_BREAKS.contains(&character))
             .filter(|word| !word.is_empty())
             .collect();
+        let stated = stated_directory(&words).map(|directory| resolved(directory, &current_directory, home));
+        let base = stated.as_deref().unwrap_or(&current_directory);
+        named.extend(stated.iter().cloned());
         named.extend(
-            words.iter().filter(|word| word.contains('/')).map(|word| resolved(word, &current_directory, home)),
+            words
+                .iter()
+                .filter(|word| word.contains('/') && Some(**word) != stated_directory(&words))
+                .map(|word| resolved(word, base, home)),
         );
         if let ["cd", destination, ..] = words.as_slice() {
             current_directory = resolved(destination, &current_directory, home);
         }
     }
     named
+}
+
+/// The directory a command states for itself with `-C DIRECTORY`, as `git`,
+/// `make` and `tar` take it: the command's relative paths are under it.
+fn stated_directory<'a>(words: &[&'a str]) -> Option<&'a str> {
+    words.iter().position(|word| *word == "-C").and_then(|position| words.get(position + 1)).copied()
 }
 
 /// Characters that end one simple command and begin the next.
@@ -300,6 +313,23 @@ mod tests {
     #[test]
     fn a_path_before_cd_is_under_the_starting_directory() {
         assert_eq!(paths("cat a/b; cd /elsewhere"), vec!["/work/project/a/b", "/elsewhere"]);
+    }
+
+    #[test]
+    fn a_relative_path_after_a_stated_directory_is_under_it() {
+        assert_eq!(
+            paths("git -C /n/nornir add core/x/src/lib.rs hooks/h/main.rs"),
+            vec!["/n/nornir", "/n/nornir/core/x/src/lib.rs", "/n/nornir/hooks/h/main.rs"]
+        );
+        assert_eq!(paths("make -C sub/dir all"), vec!["/work/project/sub/dir"]);
+    }
+
+    #[test]
+    fn a_stated_directory_holds_for_its_own_command_only() {
+        assert_eq!(
+            paths("git -C /n add a/b; cat c/d"),
+            vec!["/n", "/n/a/b", "/work/project/c/d"]
+        );
     }
 
     #[test]

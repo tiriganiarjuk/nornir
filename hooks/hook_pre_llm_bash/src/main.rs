@@ -1,7 +1,8 @@
 //! PreToolUse hook: what the Bash commands of an interactive session may do.
 //!
 //! Two sources of rules:
-//!   rules.toml (this crate) — command patterns, by category
+//!   rules.toml (this crate) — command patterns by category, and the texts for
+//!   each compound command shape
 //!   protected_paths.toml (hook_io) — the paths a command may not name (floor),
 //!   and those whose naming is noticed (probing)
 //!
@@ -13,19 +14,24 @@
 //!
 //! Env var (set by cc_launch at launch, persona-bound):
 //!     HOOK_LLM_ALLOW_PATHS=/path1:/path2  — directories exempt from probing
+//!
+//! What this hook does with a command is pinned by fixtures.toml beside
+//! rules.toml; the test at the end of this file judges every fixture.
 
 use std::process::ExitCode;
 
 use hook_decision_core::flags::{parse_category_flags, CategorySeverities};
-use hook_decision_core::paths::{is_under, normalize};
+use hook_decision_core::paths::{for_matching, is_under, normalize};
 use hook_decision_core::rules::{
     command_subject, decide_category, first_match, parse_rule_set, rules_of, PatternKind, RuleSet,
 };
+use hook_decision_core::shape::{command_shape, CommandShape, CompoundKind};
 use hook_decision_core::shell::{named_paths, structure};
 use hook_decision_core::{ask_because_undecided, make_decision, DecisionInput, HookDecision, Severity};
 use hook_io::{HookInput, WhenUndecided, FLOOR, PROBING};
 
 const HOOK: &str = "hook_pre_llm_bash";
+const CHAINING: &str = "chaining";
 
 static RULES_TOML: &str = include_str!("../rules.toml");
 
@@ -35,16 +41,15 @@ enum Reads {
     /// The whole command: text a shell could run is examined wherever it sits,
     /// inside quotes and here-document bodies too.
     Whole,
-    /// The command's structure: how its commands are joined and where their
-    /// output goes. Text a command merely carries is not examined.
+    /// The command's structure: where its output goes and what it starts.
+    /// Text a command merely carries is not examined.
     Structure,
 }
 
-/// The categories of rules.toml, in the order they are examined: data loss
-/// first, then how commands are joined, then the rest.
-const CATEGORIES: [(&str, Reads); 7] = [
+/// The pattern categories of rules.toml, in the order they are examined:
+/// data loss first.
+const PATTERN_CATEGORIES: [(&str, Reads); 6] = [
     ("destruction", Reads::Whole),
-    ("chaining", Reads::Structure),
     ("subversion", Reads::Whole),
     ("truncation", Reads::Whole),
     ("evasion", Reads::Whole),
@@ -58,10 +63,23 @@ fn main() -> ExitCode {
 
 // ── Rules ──────────────────────────────────────────────────────────
 
+/// The rules file: its pattern categories as regexes, and the chaining
+/// category, whose rules name a command shape. Every shape must have its rule.
 fn parse_rules(toml_str: &str) -> Result<RuleSet, String> {
-    let categories: Vec<(&str, PatternKind)> =
-        CATEGORIES.iter().map(|(category, _)| (*category, PatternKind::Regex)).collect();
-    parse_rule_set(toml_str, &categories)
+    let categories: Vec<(&str, PatternKind)> = PATTERN_CATEGORIES
+        .iter()
+        .map(|(category, _)| (*category, PatternKind::Regex))
+        .chain([(CHAINING, PatternKind::Literal)])
+        .collect();
+    let rules = parse_rule_set(toml_str, &categories)?;
+    let chaining = rules_of(&rules, CHAINING);
+    if let Some(unknown) = chaining.iter().find(|rule| CompoundKind::ALL.iter().all(|kind| kind.key() != rule.pattern)) {
+        return Err(format!("[[chaining]] names a shape this hook does not read: {}", unknown.pattern));
+    }
+    match CompoundKind::ALL.iter().find(|kind| chaining.iter().all(|rule| rule.pattern != kind.key())) {
+        Some(missing) => Err(format!("[[chaining]] has no rule for the shape {}", missing.key())),
+        None => Ok(rules),
+    }
 }
 
 // ── Config ─────────────────────────────────────────────────────────
@@ -77,7 +95,7 @@ struct Config {
 }
 
 fn flag_categories() -> Vec<&'static str> {
-    CATEGORIES.iter().map(|(category, _)| *category).chain([PROBING]).collect()
+    PATTERN_CATEGORIES.iter().map(|(category, _)| *category).chain([CHAINING, PROBING]).collect()
 }
 
 fn read_config(args: &[String], allow_paths_env: &str, home: &str) -> Result<Config, String> {
@@ -102,24 +120,32 @@ fn decide(input: &HookInput) -> HookDecision {
     }
 }
 
-/// The decision about one command: the floor, then each category of
-/// rules.toml in order, then probing.
+/// The decision about one command, in order: the floor; a compound command
+/// refused; the pattern categories; a compound command warned of; probing.
 fn decide_inner(input: &HookInput, config: &Config) -> HookDecision {
     let command = input.command();
     if command.trim().is_empty() {
         return HookDecision::Allow;
     }
     let named = named_paths(command, input.cwd.as_deref().unwrap_or("/"), &config.home);
+    let shape = command_shape(command);
+    let chaining = chaining_decision(command, &shape, config);
+    let (refusal, warning) = match chaining {
+        Some(warned @ HookDecision::Warn { .. }) => (None, Some(warned)),
+        other => (other, None),
+    };
 
     floor_decision(command, &named, &config.protected)
-        .or_else(|| pattern_decision(command, config))
+        .or(refusal)
+        .or_else(|| pattern_decision(command, &shape, config))
+        .or(warning)
         .or_else(|| probing_decision(command, &named, config))
         .unwrap_or(HookDecision::Allow)
 }
 
 fn floor_decision(command: &str, named: &[String], protected: &RuleSet) -> Option<HookDecision> {
     let floor = rules_of(protected, FLOOR);
-    named.iter().find_map(|path| first_match(floor, path)).map(|rule| {
+    named.iter().find_map(|path| first_match(floor, &for_matching(path))).map(|rule| {
         make_decision(&DecisionInput {
             severity: Severity::Block,
             category: FLOOR,
@@ -132,16 +158,82 @@ fn floor_decision(command: &str, named: &[String], protected: &RuleSet) -> Optio
     })
 }
 
-fn pattern_decision(command: &str, config: &Config) -> Option<HookDecision> {
-    let command_structure = structure(command);
-    CATEGORIES.iter().find_map(|(category, reads)| {
+/// The decision about a compound command, at the severity of the chaining
+/// flag or of the shape's own rule. A compound command is never put to the
+/// user to approve: where the severity is ask, it is refused.
+fn chaining_decision(command: &str, shape: &CommandShape, config: &Config) -> Option<HookDecision> {
+    let CommandShape::Compound(kind) = shape else {
+        return None;
+    };
+    let category_severity = *config.severities.get(CHAINING)?;
+    let rule = rules_of(&config.rules, CHAINING).iter().find(|rule| rule.pattern == kind.key())?;
+    let severity = match rule.severity.unwrap_or(category_severity) {
+        Severity::Ask | Severity::Block => Severity::Block,
+        Severity::Warn => Severity::Warn,
+    };
+    Some(make_decision(&DecisionInput {
+        severity,
+        category: CHAINING,
+        description: &rule.description,
+        subject: command,
+        verb_past: "ran",
+        verb_present: "run",
+        max_subject_chars: Some(60),
+    }))
+}
+
+/// The decision of the pattern categories. They read the command itself: for
+/// a command in a directory, the command after its `cd`.
+fn pattern_decision(command: &str, shape: &CommandShape, config: &Config) -> Option<HookDecision> {
+    let examined = match shape {
+        CommandShape::InDirectory { command: inner, .. } => inner.as_str(),
+        CommandShape::Single | CommandShape::Compound(_) => command,
+    };
+    let examined_structure = structure(examined);
+    let decision = PATTERN_CATEGORIES.iter().find_map(|(category, reads)| {
         let severity = *config.severities.get(*category)?;
-        let examined = match reads {
-            Reads::Whole => command,
-            Reads::Structure => command_structure.as_str(),
+        let read = match reads {
+            Reads::Whole => examined,
+            Reads::Structure => examined_structure.as_str(),
         };
-        decide_category(rules_of(&config.rules, category), &command_subject(examined), category, severity)
+        decide_category(rules_of(&config.rules, category), &command_subject(read), category, severity)
+    })?;
+    Some(match shape {
+        CommandShape::InDirectory { directory, .. } => in_directory(decision, directory),
+        CommandShape::Compound(_) => refused_where_asked(decision),
+        CommandShape::Single => decision,
     })
+}
+
+/// The decision with the directory the command runs in stated beside it, so
+/// what the user reads is the command and where, never a line to take apart.
+fn in_directory(decision: HookDecision, directory: &str) -> HookDecision {
+    let stated = |text: String| format!("{text}\nIn directory: {directory}");
+    match decision {
+        HookDecision::Warn { category, event, user_reason, llm_context } => {
+            HookDecision::Warn { category, event, user_reason: stated(user_reason), llm_context }
+        }
+        HookDecision::Ask { category, event, reason, llm_context } => {
+            HookDecision::Ask { category, event, reason: stated(reason), llm_context }
+        }
+        HookDecision::Deny { category, event, reason } => HookDecision::Deny { category, event, reason: stated(reason) },
+        allowed => allowed,
+    }
+}
+
+/// A compound command that a rule would put to the user is refused instead.
+fn refused_where_asked(decision: HookDecision) -> HookDecision {
+    match decision {
+        HookDecision::Ask { category, event, reason, .. } => HookDecision::Deny {
+            category,
+            event,
+            reason: format!(
+                "{reason}\nThis call joins several commands, so it is refused and not put up for approval. \
+                 Run the command as its own call."
+            ),
+        },
+        other => other,
+    }
 }
 
 fn probing_decision(command: &str, named: &[String], config: &Config) -> Option<HookDecision> {
@@ -150,7 +242,7 @@ fn probing_decision(command: &str, named: &[String], config: &Config) -> Option<
     named
         .iter()
         .filter(|path| !config.allow_paths.iter().any(|allowed| is_under(path, allowed)))
-        .find_map(|path| first_match(probing, path))
+        .find_map(|path| first_match(probing, &for_matching(path)))
         .map(|rule| {
             make_decision(&DecisionInput {
                 severity: rule.severity.unwrap_or(severity),
@@ -167,21 +259,13 @@ fn probing_decision(command: &str, named: &[String], config: &Config) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hook_decision_core::fixtures::{mismatch, mismatch_report, parse_fixture_set, FixtureCall};
 
-    // Every category at block, so a decision's kind shows a rule's own severity.
+    static FIXTURES_TOML: &str = include_str!("../fixtures.toml");
+
     fn config_with(flags: &[&str], allow_paths: &str) -> Config {
         let args: Vec<String> = flags.iter().map(|flag| flag.to_string()).collect();
         read_config(&args, allow_paths, "/home/user").unwrap()
-    }
-
-    fn all_block() -> Config {
-        config_with(
-            &[
-                "--subversion", "block", "--truncation", "block", "--evasion", "block", "--destruction", "block",
-                "--revert", "block", "--workflow", "block", "--chaining", "block", "--probing", "block",
-            ],
-            "",
-        )
     }
 
     fn bash(command: &str) -> HookInput {
@@ -192,27 +276,28 @@ mod tests {
         }
     }
 
-    fn category_of(decision: &HookDecision) -> &str {
-        match decision {
-            HookDecision::Deny { category, .. }
-            | HookDecision::Ask { category, .. }
-            | HookDecision::Warn { category, .. } => category,
-            _ => "",
-        }
-    }
+    // ── Every fixture gets its verdict ───────────────────────────
 
-    fn decided(command: &str) -> HookDecision {
-        decide_inner(&bash(command), &all_block())
-    }
-
-    /// Every command in `fires` is decided in `category`; none in `passes` is.
-    fn assert_category(category: &str, fires: &[&str], passes: &[&str]) {
-        for command in fires {
-            assert_eq!(category_of(&decided(command)), category, "must be {category}: {command}");
-        }
-        for command in passes {
-            assert_ne!(category_of(&decided(command)), category, "must not be {category}: {command}");
-        }
+    #[test]
+    fn every_fixture_gets_its_verdict() {
+        let set = parse_fixture_set(FIXTURES_TOML).unwrap();
+        let config = read_config(&set.arguments, &set.allow_paths, &set.home).unwrap();
+        let mismatches: Vec<String> = set
+            .fixtures
+            .iter()
+            .filter_map(|fixture| {
+                let FixtureCall::Command(command) = &fixture.call else {
+                    return Some(format!("{}\n    is not a Bash command", fixture.name));
+                };
+                let input = HookInput {
+                    tool_name: "Bash".to_string(),
+                    tool_input: serde_json::json!({ "command": command }),
+                    cwd: Some(fixture.working_directory.clone()),
+                };
+                mismatch(fixture, &decide_inner(&input, &config))
+            })
+            .collect();
+        assert!(mismatches.is_empty(), "{}", mismatch_report(&mismatches, set.fixtures.len()));
     }
 
     // ── The rules file and the command line ──────────────────────
@@ -220,31 +305,24 @@ mod tests {
     #[test]
     fn the_embedded_rules_read_and_every_category_has_rules() {
         let rules = parse_rules(RULES_TOML).unwrap();
-        for (category, _) in CATEGORIES {
+        for (category, _) in PATTERN_CATEGORIES {
             assert!(!rules_of(&rules, category).is_empty(), "{category} has no rules");
         }
+        assert_eq!(rules_of(&rules, CHAINING).len(), CompoundKind::ALL.len());
     }
 
     #[test]
-    fn a_rules_file_with_a_bad_pattern_is_refused() {
+    fn a_rules_file_with_a_bad_pattern_or_an_unknown_category_is_refused() {
         assert!(parse_rules("[[subversion]]\npattern = \"(\"\ndescription = \"x\"\n").is_err());
-    }
-
-    #[test]
-    fn a_rules_file_with_an_unknown_category_is_refused() {
         assert!(parse_rules("[[gaming]]\npattern = \"x\"\ndescription = \"x\"\n").is_err());
     }
 
     #[test]
-    fn the_settings_command_line_is_read() {
-        let args: Vec<String> = [
-            "--subversion", "block", "--truncation", "warn", "--evasion", "warn", "--destruction", "block",
-            "--revert", "ask", "--workflow", "ask", "--chaining", "block", "--probing", "warn",
-        ]
-        .iter()
-        .map(|arg| arg.to_string())
-        .collect();
-        assert!(read_config(&args, "", "/home/user").is_ok());
+    fn a_rules_file_must_give_every_shape_its_rule_and_no_other() {
+        let only_one = "[[chaining]]\npattern = \"chained\"\ndescription = \"x\"\n";
+        assert!(parse_rules(only_one).unwrap_err().contains("no rule for the shape"));
+        let unknown_shape = RULES_TOML.to_string() + "\n[[chaining]]\npattern = \"sideways\"\ndescription = \"x\"\n";
+        assert!(parse_rules(&unknown_shape).unwrap_err().contains("sideways"));
     }
 
     #[test]
@@ -257,334 +335,99 @@ mod tests {
 
     #[test]
     fn a_category_without_its_flag_is_not_examined() {
-        let only_chaining = config_with(&["--chaining", "block"], "");
-        assert!(matches!(decide_inner(&bash("chflags noschg x"), &only_chaining), HookDecision::Allow));
-    }
-
-    #[test]
-    fn an_empty_command_is_allowed() {
-        assert!(matches!(decided("   "), HookDecision::Allow));
+        let only_probing = config_with(&["--probing", "block"], "");
+        assert!(matches!(decide_inner(&bash("chflags noschg x"), &only_probing), HookDecision::Allow));
+        assert!(matches!(decide_inner(&bash("echo a; echo b"), &only_probing), HookDecision::Allow));
     }
 
     // ── A command that matches a rule is decided whatever it is made of ──
 
     #[test]
     fn a_rule_match_padded_with_multibyte_characters_is_denied() {
-        // The shape that used to fail the hook: a multi-byte character across
-        // the point where the shown command is cut.
+        let blocking = config_with(&["--subversion", "block"], "");
         for width in 40..70 {
             let command = format!("chflags noschg {}{}", "a".repeat(width), "\u{1F512}".repeat(20));
-            assert!(matches!(decided(&command), HookDecision::Deny { .. }), "padding width {width}");
+            assert!(matches!(decide_inner(&bash(&command), &blocking), HookDecision::Deny { .. }), "width {width}");
         }
     }
 
-    // ── Floor ────────────────────────────────────────────────────
+    // ── Compound commands ────────────────────────────────────────
 
     #[test]
-    fn a_command_that_names_a_credential_store_is_denied_with_no_flag() {
-        let no_flags = config_with(&[], "");
-        let commands = [
-            "cat ~/.ssh/id_rsa",
-            "cp /home/user/.aws/credentials /tmp/x",
-            "ls /home/user/project/../.gnupg/",
-            "bash -c 'cat ~/.netrc'",
-            "cat <<EOF | sh\ncat ~/.kube/config\nEOF",
-            "grep auth \"/home/user/.docker/config.json\"",
-        ];
-        for command in commands {
-            let decision = decide_inner(&bash(command), &no_flags);
-            assert!(matches!(decision, HookDecision::Deny { .. }), "{command}");
-            assert_eq!(category_of(&decision), FLOOR, "{command}");
+    fn a_compound_command_is_refused_and_told_the_way_through() {
+        let blocking = config_with(&["--chaining", "block"], "");
+        match decide_inner(&bash("echo a; echo b"), &blocking) {
+            HookDecision::Deny { category, reason, .. } => {
+                assert_eq!(category, CHAINING);
+                assert!(reason.contains("its own call"), "{reason}");
+                assert!(reason.contains("cd DIR && command"), "{reason}");
+            }
+            other => panic!("must deny, got {other:?}"),
         }
     }
 
     #[test]
-    fn a_grant_never_exempts_the_floor() {
-        let granted = config_with(&["--probing", "block"], "/home/user/");
-        assert_eq!(category_of(&decide_inner(&bash("cat ~/.ssh/id_rsa"), &granted)), FLOOR);
-    }
+    fn a_compound_command_is_never_put_to_the_user() {
+        let asking = config_with(&["--chaining", "ask"], "");
+        assert!(matches!(decide_inner(&bash("echo a; echo b"), &asking), HookDecision::Deny { .. }));
 
-    #[test]
-    fn a_command_that_only_mentions_a_tool_by_name_is_not_on_the_floor() {
-        for command in ["ssh example.org uptime", "aws s3 ls", "docker ps", "git push origin master"] {
-            assert_ne!(category_of(&decided(command)), FLOOR, "{command}");
+        // Chaining only warns, and the chain holds a command a rule asks about.
+        let warning = config_with(&["--chaining", "warn", "--destruction", "block"], "");
+        match decide_inner(&bash("ls; rm -rf build"), &warning) {
+            HookDecision::Deny { category, reason, .. } => {
+                assert_eq!(category, "destruction");
+                assert!(reason.contains("not put up for approval"), "{reason}");
+            }
+            other => panic!("must deny, got {other:?}"),
         }
     }
 
-    // ── Probing ──────────────────────────────────────────────────
-
     #[test]
-    fn a_command_that_names_the_security_infrastructure_is_probing() {
-        assert_category(
-            PROBING,
-            &[
-                "cat /n/hooks/hook_pre_llm_bash/src/main.rs",
-                "less hooks/hook_pre_subagent_bash/src/main.rs",
-                "git diff -- /n/cli/cc_launch/src/permissions.rs",
-                "wc -l /n/capability/hook_io/protected_paths.toml",
-            ],
-            &["cargo test -p gleipnir_core", "ls /work/project/src", "cat README.md"],
-        );
-    }
-
-    #[test]
-    fn the_settings_rule_asks() {
-        assert!(matches!(decided("cat ~/.claude/settings.json"), HookDecision::Ask { .. }));
-    }
-
-    #[test]
-    fn a_granted_directory_is_exempt_from_probing() {
-        let granted = config_with(&["--probing", "block"], "/n/");
-        let decision = decide_inner(&bash("cat /n/hooks/hook_pre_llm_bash/src/main.rs"), &granted);
-        assert!(matches!(decision, HookDecision::Allow));
-    }
-
-    #[test]
-    fn a_path_that_climbs_out_of_a_granted_directory_is_not_exempt() {
-        let granted = config_with(&["--probing", "block"], "/a/tools/");
-        let decision = decide_inner(&bash("cat /a/tools/../n/core/gleipnir_core/src/lib.rs"), &granted);
-        assert_eq!(category_of(&decision), PROBING);
-    }
-
-    // ── Subversion ───────────────────────────────────────────────
-
-    #[test]
-    fn subversion_fires_on_the_act_and_not_on_its_neighbours() {
-        assert_category(
-            "subversion",
-            &[
-                "rm /tmp/build.lock",
-                "sudo rm -f x.lock",
-                "ls; rm a.lock",
-                "flock --unlock /tmp/x",
-                "sudo chflags noschg rules.toml",
-                "chflags -R noschg /a/b",
-                "chmod 644 hooks/x/rules.toml",
-                "chmod u+w /n/capability/hook_io/protected_paths.toml",
-                "xattr -d com.apple.quarantine rules.toml",
-                "export HOOK_LLM_ALLOW_PATHS=/",
-                "env HOOK_LLM_ALLOW_PATHS=/ bash",
-                "HOOK_LLM_ALLOW_PATHS=/ cat x",
-            ],
-            &[
-                "git log -- Cargo.lock",
-                "git diff Cargo.lock",
-                "cargo update --locked",
-                "perform check x.lock",
-                "ls *.lock",
-                "flock /tmp/x cmd",
-                "chflags schg rules.toml",
-                "chmod +x tools/run.sh",
-                "xattr -l rules.toml",
-                "echo $HOOK_LLM_ALLOW_PATHS",
-                "printenv",
-            ],
-        );
-    }
-
-    // ── Truncation ───────────────────────────────────────────────
-
-    #[test]
-    fn truncation_fires_on_partial_reads_of_constraint_files() {
-        assert_category(
-            "truncation",
-            &[
-                "head -20 CLAUDE.md",
-                "tail -n 5 /p/CLAUDE.md",
-                "sed -n 1,10p CLAUDE.md",
-                "awk 'NR<5' CLAUDE.md",
-                "grep rule CLAUDE.md",
-                "cat guardrails.md | tail -3",
-                "head guardrails.toml",
-            ],
-            &[
-                "cat CLAUDE.md",
-                "wc -l CLAUDE.md",
-                "head -20 README.md",
-                "tail -f build.log",
-                "grep rule README.md",
-                "overhead --report CLAUDE.md",
-                "ls CLAUDE.md",
-            ],
-        );
-    }
-
-    // ── Evasion ──────────────────────────────────────────────────
-
-    #[test]
-    fn evasion_fires_on_replacing_constraints() {
-        assert_category(
-            "evasion",
-            &[
-                "git checkout HEAD~1 -- CLAUDE.md",
-                "git restore CLAUDE.md",
-                "mv CLAUDE.md CLAUDE.md.bak",
-                "cp /tmp/new.md CLAUDE.md",
-                "git config core.hooksPath /tmp/hooks",
-                "git -c core.hooksPath=/dev/null commit -m x",
-            ],
-            &[
-                "scp host:notes.md .",
-                "git add docs/config-hooks.md",
-                "git log -- hooks/config.rs",
-                "git config user.name x",
-                "git status",
-                "cat CLAUDE.md",
-            ],
-        );
-    }
-
-    // ── Destruction ──────────────────────────────────────────────
-
-    #[test]
-    fn destruction_fires_on_discarding_work() {
-        assert_category(
-            "destruction",
-            &[
-                "git reset --hard",
-                "git reset --hard HEAD~3",
-                "git checkout .",
-                "git checkout -- .",
-                "git restore .",
-                "git clean -fd",
-                "git clean -f",
-                "rm -rf build",
-                "rm build -r",
-                "rm --recursive build",
-                "find . -name '*.pyc' -delete",
-            ],
-            &[
-                "git reset --soft HEAD~1",
-                "git checkout feature-branch",
-                "git clean -n",
-                "rm notes.txt",
-                "rm my-file.txt",
-                "find . -name '*.pyc'",
-            ],
-        );
-    }
-
-    #[test]
-    fn a_recursive_rm_asks_at_any_category_severity() {
-        assert!(matches!(decided("rm -rf build"), HookDecision::Ask { .. }));
-        assert!(matches!(decided("git reset --hard"), HookDecision::Deny { .. }));
-    }
-
-    // ── Revert ───────────────────────────────────────────────────
-
-    #[test]
-    fn revert_fires_on_file_reverts_and_stashes() {
-        assert_category(
-            "revert",
-            &[
-                "git checkout -- src/main.rs",
-                "git checkout HEAD -- src/main.rs",
-                "git restore src/main.rs",
-                "git stash",
-                "git stash push -m wip",
-            ],
-            &[
-                "git restore --staged src/main.rs",
-                "git stash list",
-                "git stash pop",
-                "git stash show",
-                "git checkout main",
-            ],
-        );
-    }
-
-    // ── Workflow ─────────────────────────────────────────────────
-
-    #[test]
-    fn workflow_fires_on_builds_that_are_run() {
-        assert_category(
-            "workflow",
-            &[
-                "cargo build --release",
-                "cargo build -p x --release",
-                "cargo install --path . --release",
-                "cargo build",
-                "cd x; cargo build",
-                "RUSTFLAGS=-g cargo build",
-                "maturin build",
-            ],
-            &[
-                "cargo test",
-                "cargo check",
-                "cargo clippy",
-                "grep -rn \"cargo build\" docs",
-                "git commit -m \"ran cargo build --release\"",
-                "git commit -F - <<'EOF'\ncargo build --release\nEOF",
-                "echo maturin build",
-            ],
-        );
-    }
-
-    #[test]
-    fn a_debug_build_warns_and_a_release_build_asks() {
-        assert!(matches!(decided("cargo build"), HookDecision::Warn { .. }));
-        assert!(matches!(decided("cargo build --release"), HookDecision::Ask { .. }));
-    }
-
-    #[test]
-    fn a_shell_write_to_a_source_file_is_flagged() {
-        assert_category(
-            "workflow",
-            &[
-                "echo 'x = 1' > src/config.py",
-                "printf 'fn main() {}' >> src/main.rs",
-                "cat > \"src/my page.svelte\" <<'EOF'\n<p>hi</p>\nEOF",
-                "cat notes | tee src/lib.rs",
-                "tee -a src/app.py < in",
-                "sed -i '' 's/a/b/' src/main.rs",
-                "perl -pi -e 's/a/b/' src/x.py",
-            ],
-            &[
-                "cargo test > test.log",
-                "echo done >> notes.md",
-                "cat src/main.rs",
-                "sed -n 1,5p src/main.rs",
-                "grep -c '>' src/main.rs",
-                "git commit -m \"wrote > main.rs\"",
-                "python3 tools/run.py > out.json",
-                "ls > files.pyc",
-            ],
-        );
-    }
-
-    #[test]
-    fn a_shell_write_warns_and_names_the_write_tool() {
-        match decided("echo x > src/a.py") {
-            HookDecision::Warn { llm_context, .. } => assert!(llm_context.contains("Write"), "{llm_context}"),
+    fn a_warned_compound_command_still_gets_the_other_categories() {
+        let warning = config_with(&["--chaining", "warn", "--subversion", "block"], "");
+        assert!(matches!(decide_inner(&bash("ls; chflags noschg x"), &warning), HookDecision::Deny { .. }));
+        match decide_inner(&bash("ls; pwd"), &warning) {
+            HookDecision::Warn { category, .. } => assert_eq!(category, CHAINING),
             other => panic!("must warn, got {other:?}"),
         }
     }
 
-    // ── Chaining ─────────────────────────────────────────────────
+    // ── A command in a directory ─────────────────────────────────
 
     #[test]
-    fn chaining_fires_on_commands_joined_with_and() {
-        assert_category(
-            "chaining",
-            &["cd /tmp && ls", "cargo test -p x && cargo test -p y", "a && b && c", "cat <<EOF && ls\nbody\nEOF"],
-            &[
-                "ls -la",
-                "cat x | grep y",
-                "cmd 2>&1",
-                "test $((a&&b))",
-                "git commit -m \"build && deploy\"",
-                "echo 'a && b'",
-                "git commit -F - <<'EOF'\nfirst && second\nEOF",
-            ],
-        );
+    fn a_command_in_a_directory_is_asked_about_as_itself_with_its_directory() {
+        let asking = config_with(&["--revert", "ask", "--chaining", "block"], "");
+        match decide_inner(&bash("cd /repo && git stash"), &asking) {
+            HookDecision::Ask { reason, .. } => {
+                assert!(reason.contains("'git stash'"), "{reason}");
+                assert!(reason.contains("In directory: /repo"), "{reason}");
+                assert!(!reason.contains("cd /repo"), "{reason}");
+            }
+            other => panic!("must ask, got {other:?}"),
+        }
     }
 
-    // ── Benign commands ──────────────────────────────────────────
+    #[test]
+    fn a_plain_command_in_a_directory_is_allowed() {
+        let blocking = config_with(&["--chaining", "block", "--subversion", "block"], "");
+        assert!(matches!(decide_inner(&bash("cd /repo && cargo test -p x"), &blocking), HookDecision::Allow));
+    }
 
     #[test]
-    fn ordinary_commands_are_allowed() {
-        for command in ["ls -la", "cat file.txt", "git status", "git diff", "cargo test -p hook_io", "pwd"] {
-            assert!(matches!(decided(command), HookDecision::Allow), "{command}");
+    fn a_path_named_after_cd_is_judged_from_that_directory() {
+        let granted = config_with(&["--probing", "block"], "/n/");
+        let inside = decide_inner(&bash("cd /n && cat hooks/hook_pre_llm_bash/src/main.rs"), &granted);
+        assert!(matches!(inside, HookDecision::Allow));
+        let outside = decide_inner(&bash("cd /elsewhere && cat hooks/hook_pre_llm_bash/src/main.rs"), &granted);
+        assert!(matches!(outside, HookDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn a_shell_write_warns_and_names_the_write_tool() {
+        let warning = config_with(&["--workflow", "ask"], "");
+        match decide_inner(&bash("echo x > src/a.py"), &warning) {
+            HookDecision::Warn { llm_context, .. } => assert!(llm_context.contains("Write"), "{llm_context}"),
+            other => panic!("must warn, got {other:?}"),
         }
     }
 }
