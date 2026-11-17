@@ -939,3 +939,36 @@ verdict = "allow"
 name = "a python script's output redirected to json"
 command = "python3 tools/run.py > out.json"
 verdict = "allow"
+
+# ═══ A pattern in place of a protected name ═════════════════════════
+
+[[fixture]]
+name = "floor: a shell pattern that can match the ssh directory"
+command = "cat ~/.s*/id_rsa"
+verdict = "deny"
+category = "floor"
+found = "2026-11-17: a pattern stood in for the protected name"
+
+[[fixture]]
+name = "floor: a shell pattern with one unknown character in the aws directory's name"
+command = "ls /home/user/.aw?/"
+verdict = "deny"
+category = "floor"
+found = "2026-11-17"
+
+[[fixture]]
+name = "probing: a shell pattern that can match a hook's directory"
+command = "wc -l /n/hooks/hook_pre_l*/src/main.rs"
+verdict = "warn"
+category = "probing"
+found = "2026-11-17"
+
+[[fixture]]
+name = "a shell pattern for a project's sources"
+command = "wc -l src/*.rs"
+verdict = "allow"
+
+[[fixture]]
+name = "a recursive shell pattern in a project"
+command = "ls /work/project/**/*.toml"
+verdict = "allow"

@@ -596,3 +596,60 @@ name = "a file whose name only starts like a credential directory"
 tool = "Read"
 tool_input = { file_path = "/home/user/.sshrc" }
 verdict = "allow"
+
+[[fixture]]
+name = "floor: a Grep glob whose pattern can match the ssh directory"
+tool = "Grep"
+tool_input = { pattern = "BEGIN", path = "/home/user", glob = ".s*/id_*" }
+verdict = "deny"
+category = "floor"
+found = "2026-11-17: a pattern stood in for the protected name"
+
+[[fixture]]
+name = "floor: a Glob pattern with one unknown character in the aws directory's name"
+tool = "Glob"
+tool_input = { pattern = "/home/user/.aw?/*" }
+verdict = "deny"
+category = "floor"
+found = "2026-11-17"
+
+[[fixture]]
+name = "floor: a Read of a path with a pattern for the kube directory"
+tool = "Read"
+tool_input = { file_path = "/home/user/.k*/config" }
+verdict = "deny"
+category = "floor"
+found = "2026-11-17"
+
+[[fixture]]
+name = "probing: a Glob pattern that can match a hook's directory"
+tool = "Glob"
+tool_input = { pattern = "hook_pre_l*/src/*.rs", path = "/n/hooks" }
+verdict = "warn"
+category = "probing"
+found = "2026-11-17"
+
+[[fixture]]
+name = "a recursive Glob of a project's sources"
+tool = "Glob"
+tool_input = { pattern = "/work/project/**/*.rs" }
+verdict = "allow"
+
+[[fixture]]
+name = "a Glob of everything in a project directory"
+tool = "Glob"
+tool_input = { pattern = "*", path = "/work/project" }
+verdict = "allow"
+
+[[fixture]]
+name = "a Glob pattern that starts like no protected name"
+tool = "Glob"
+tool_input = { pattern = ".b*/x", path = "/home/user" }
+verdict = "allow"
+
+[[fixture]]
+name = "floor: a Glob pattern that starts like the aws directory"
+tool = "Glob"
+tool_input = { pattern = ".a*/x", path = "/home/user" }
+verdict = "deny"
+category = "floor"

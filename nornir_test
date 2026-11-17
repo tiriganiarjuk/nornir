@@ -73,6 +73,7 @@ def run_and_tally(arguments: list[str]) -> tuple[int, int, int, list[str], int]:
     """Run cargo, echo what matters, and return passed, failed, ignored, failed names, exit code."""
     passed = failed = ignored = 0
     failed_tests: list[str] = []
+    in_failure_output = False
     process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert process.stdout is not None
     for line in process.stdout:
@@ -84,7 +85,13 @@ def run_and_tally(arguments: list[str]) -> tuple[int, int, int, list[str], int]:
             ignored += int(result.group(3))
         if failure:
             failed_tests.append(failure.group(1))
-        if failure or line.startswith(("error", "warning", "---- ")) or "panicked at" in line or "fixtures do not get" in line:
+        # What a failed test printed runs from its `---- name stdout ----` line
+        # to the list of failures; all of it is shown.
+        if line.startswith("---- "):
+            in_failure_output = True
+        elif line.startswith(("failures:", "test result:")):
+            in_failure_output = False
+        if in_failure_output or failure or line.startswith(("error", "warning")):
             sys.stdout.write(line)
     return passed, failed, ignored, failed_tests, process.wait()
 
