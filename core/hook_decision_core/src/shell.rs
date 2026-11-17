@@ -119,10 +119,7 @@ pub fn named_paths(command: &str, working_directory: &str, home: &str) -> Vec<St
     let mut named = Vec::new();
     let mut current_directory = normalize(working_directory);
     for simple_command in command.split(|character: char| COMMAND_SEPARATORS.contains(&character)) {
-        let words: Vec<&str> = simple_command
-            .split(|character: char| character.is_whitespace() || WORD_BREAKS.contains(&character))
-            .filter(|word| !word.is_empty())
-            .collect();
+        let words = words_of(simple_command);
         let stated = stated_directory(&words).map(|directory| resolved(directory, &current_directory, home));
         let base = stated.as_deref().unwrap_or(&current_directory);
         named.extend(stated.iter().cloned());
@@ -137,6 +134,30 @@ pub fn named_paths(command: &str, working_directory: &str, home: &str) -> Vec<St
         }
     }
     named
+}
+
+/// The words of one simple command. A `:` inside a bracket class does not end a
+/// word, so `~/[[:punct:]]ssh` stays the one pattern the shell expands it as.
+fn words_of(simple_command: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut word_start = 0;
+    let mut bracket_depth = 0usize;
+    for (offset, character) in simple_command.char_indices() {
+        match character {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            ':' if bracket_depth > 0 => continue,
+            _ => {}
+        }
+        if character.is_whitespace() || WORD_BREAKS.contains(&character) {
+            words.push(&simple_command[word_start..offset]);
+            word_start = offset + character.len_utf8();
+            bracket_depth = 0;
+        }
+    }
+    words.push(&simple_command[word_start..]);
+    words.retain(|word| !word.is_empty());
+    words
 }
 
 /// The directory a command states for itself with `-C DIRECTORY`, as `git`,

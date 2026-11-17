@@ -972,3 +972,39 @@ verdict = "allow"
 name = "a recursive shell pattern in a project"
 command = "ls /work/project/**/*.toml"
 verdict = "allow"
+
+[[fixture]]
+name = "a regex class after a slash names no protected file"
+command = 'grep -roE "(field|section)/[a-z_0-9]+" /work/source'
+verdict = "allow"
+found = "2026-11-17: a bracket class was taken to match every protected name"
+
+[[fixture]]
+name = "a json pointer pattern names no protected file"
+command = 'grep -oh "#/\$defs/[a-z]*__[a-z_0-9]*" /work/schema.json'
+verdict = "allow"
+found = "2026-11-17: a bracket class was taken to match every protected name"
+
+[[fixture]]
+name = "floor: a bracket class that makes the ssh directory's name"
+command = "cat ~/.[s]sh/id_rsa"
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "floor: a bracket class that holds the ssh directory's dot"
+command = "cat ~/[.]ssh/id_rsa"
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "floor: a negated class that admits the ssh directory's letter"
+command = "cat ~/.[!x]sh/id_rsa"
+verdict = "deny"
+category = "floor"
+
+[[fixture]]
+name = "floor: a class the check cannot read is taken to match"
+command = "cat ~/[[:punct:]]ssh/id_rsa"
+verdict = "deny"
+category = "floor"

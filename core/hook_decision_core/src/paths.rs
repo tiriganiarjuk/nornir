@@ -112,23 +112,103 @@ fn segment_fits(segment: &str, name: &str, name_is_a_prefix: bool) -> bool {
     pattern_matches(segment, name) || (name_is_a_prefix && stated_start.starts_with(name))
 }
 
-/// Whether a pattern of `*` and `?` matches a name whole. A pattern with a
-/// bracket class is taken to match: what a class holds is not read here.
-fn pattern_matches(pattern: &str, name: &str) -> bool {
-    if pattern.contains('[') {
-        return true;
-    }
-    let pattern: Vec<char> = pattern.chars().collect();
-    let name: Vec<char> = name.chars().collect();
-    matches_from(&pattern, &name)
+/// One element of a shell pattern.
+enum Glob {
+    /// `*`: any run of characters.
+    Run,
+    /// `?`: any one character.
+    One,
+    /// `[...]`: one character the class admits.
+    Class(CharacterClass),
+    /// A character standing for itself.
+    Stated(char),
 }
 
-fn matches_from(pattern: &[char], name: &[char]) -> bool {
-    match pattern.split_first() {
+/// What a bracket class admits: its characters and ranges, or all but them.
+struct CharacterClass {
+    negated: bool,
+    ranges: Vec<(char, char)>,
+}
+
+impl CharacterClass {
+    fn admits(&self, character: char) -> bool {
+        let listed = self.ranges.iter().any(|(low, high)| (*low..=*high).contains(&character));
+        listed != self.negated
+    }
+}
+
+/// Whether a shell pattern matches a name whole. A pattern whose bracket class
+/// cannot be read — a POSIX class such as `[[:punct:]]`, an equivalence or
+/// collating class, a bracket that never closes — is taken to match.
+fn pattern_matches(pattern: &str, name: &str) -> bool {
+    let Some(globs) = parsed_pattern(pattern) else {
+        return true;
+    };
+    let name: Vec<char> = name.chars().collect();
+    matches_from(&globs, &name)
+}
+
+/// A pattern as globs; `None` when a class in it cannot be read.
+fn parsed_pattern(pattern: &str) -> Option<Vec<Glob>> {
+    let characters: Vec<char> = pattern.chars().collect();
+    let mut globs = Vec::new();
+    let mut position = 0;
+    while position < characters.len() {
+        let glob = match characters[position] {
+            '*' => Glob::Run,
+            '?' => Glob::One,
+            '[' => {
+                let (class, end) = parsed_class(&characters, position + 1)?;
+                position = end;
+                Glob::Class(class)
+            }
+            stated => Glob::Stated(stated),
+        };
+        globs.push(glob);
+        position += 1;
+    }
+    Some(globs)
+}
+
+/// The class that opens just before `start`, and the position of its `]`;
+/// `None` when it cannot be read.
+fn parsed_class(characters: &[char], start: usize) -> Option<(CharacterClass, usize)> {
+    let mut position = start;
+    let negated = matches!(characters.get(position), Some('!' | '^'));
+    if negated {
+        position += 1;
+    }
+    let first = position;
+    let mut ranges = Vec::new();
+    loop {
+        let character = *characters.get(position)?;
+        if character == ']' && position > first {
+            return Some((CharacterClass { negated, ranges }, position));
+        }
+        if character == '[' && matches!(characters.get(position + 1), Some(':' | '=' | '.')) {
+            return None;
+        }
+        let high = match (characters.get(position + 1), characters.get(position + 2)) {
+            (Some('-'), Some(&high)) if high != ']' => {
+                position += 2;
+                high
+            }
+            _ => character,
+        };
+        ranges.push((character, high));
+        position += 1;
+    }
+}
+
+fn matches_from(globs: &[Glob], name: &[char]) -> bool {
+    match globs.split_first() {
         None => name.is_empty(),
-        Some((&'*', rest)) => (0..=name.len()).any(|taken| matches_from(rest, &name[taken..])),
-        Some((&'?', rest)) => !name.is_empty() && matches_from(rest, &name[1..]),
-        Some((stated, rest)) => name.first() == Some(stated) && matches_from(rest, &name[1..]),
+        Some((Glob::Run, rest)) => (0..=name.len()).any(|taken| matches_from(rest, &name[taken..])),
+        Some((Glob::One, rest)) => !name.is_empty() && matches_from(rest, &name[1..]),
+        Some((Glob::Class(class), rest)) => {
+            name.first().is_some_and(|character| class.admits(*character)) && matches_from(rest, &name[1..])
+        }
+        Some((Glob::Stated(stated), rest)) => name.first() == Some(stated) && matches_from(rest, &name[1..]),
     }
 }
 
@@ -226,6 +306,31 @@ mod tests {
         assert!(with_pattern_as("/home/u/src/*.rs/", "/.ssh/").is_none());
         assert!(with_pattern_as("/home/u/.ssh?/x/", "/.ssh/").is_none());
         assert!(with_pattern_as("/home/u/.kube/*.yaml/", "/.kube/config").is_none());
+    }
+
+    #[test]
+    fn a_bracket_class_matches_only_what_it_holds() {
+        assert!(pattern_matches(".[s]sh", ".ssh"));
+        assert!(pattern_matches("[.]ssh", ".ssh"));
+        assert!(pattern_matches(".[!x]sh", ".ssh"));
+        assert!(pattern_matches(".[^x]sh", ".ssh"));
+        assert!(pattern_matches(".[r-t]sh", ".ssh"));
+        assert!(!pattern_matches("[a-z_0-9]+", ".ssh"));
+        assert!(!pattern_matches("[a-z]*__[a-z_0-9]*", ".ssh"));
+        assert!(!pattern_matches(".[!s]sh", ".ssh"));
+    }
+
+    #[test]
+    fn a_class_that_cannot_be_read_is_taken_to_match() {
+        assert!(pattern_matches("[[:punct:]]ssh", ".ssh"));
+        assert!(pattern_matches("[[=.=]]ssh", ".ssh"));
+        assert!(pattern_matches(".[ssh", ".ssh"));
+    }
+
+    #[test]
+    fn a_closing_bracket_first_in_a_class_is_one_of_its_characters() {
+        assert!(pattern_matches("[]x]", "]"));
+        assert!(pattern_matches("[!]x]", "a"));
     }
 
     #[test]
