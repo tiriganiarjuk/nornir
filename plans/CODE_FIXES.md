@@ -18,6 +18,46 @@ check it in one lookup.
 
 ---
 
+## Order of work
+
+Each phase is committed on its own. A finished item leaves this list and its section below.
+
+- **Phase 0 — the deploy tool.** Verify steps get stdin from `/dev/null` and a timeout; the dead
+  deploy config goes (§3 the `hush` hang, §5 dead deploy config). First, because every later
+  phase deploys through it.
+- **Phase 1 — lifecycle hooks, one primitive.** One schema-validated payload reader for orient,
+  inject, end_handoff, stop_tts, notify_tts and compact_session_log, with its tests: session ids
+  checked before they reach a path (§1), payloads under a schema (§2), stdin parsing and
+  project-dir resolution in one place (§7).
+- **Phase 2 — cc_launch.** Refuse to launch when `.SYSTEM_PROMPT.xml` cannot be written (§3);
+  `process::exit` only in `main()` (§5); the hard-coded home paths (§5). One commit each.
+- **Phase 3 — interception removal.** Tag nornir `archive/interception-v1` and push it. Remove
+  `capability/intercept_io`, `interceptors/traffic_interceptor_rewriter`,
+  `interceptors/INTERCEPT_DESIGN.md` and the `~/ai/smidja/bifrost` repo; their items leave this
+  list and `DOC_FIXES.md`. `intercept_core` and `compaction_inject_core` stay.
+- **Phase 4 — the tomlx engine** (§3), after the spec work in `DOC_FIXES.md`.
+- **Phase 5 — remaining malfunctions.** The announce queue; announce's config and state files,
+  each given a schema; `hush`'s `pkill -f` regex; the two ways to find `announce`.
+- **Phase 6 — small confirmed fixes.** Confirm the jsonschema `resolve-file` finding, then turn
+  the feature off for core crates; the `convert_json_to_toml` usage comment; the `announce --help`
+  text.
+- **Phase 7 — decomposition** (§7). Workspace identity first — it carries the collision in §3 —
+  then `ai_home`, lock check plus announce spawn, the cc_launch core crate, dep_resolve, the
+  smaller ones. Each crate gets its tests as it is taken apart; `workspace_registry` and
+  `tool_face_io` get theirs at the start of the phase.
+
+**Held for the author's decision**, one at a time, each settled as binding or as an exception
+written down with its reason: typed errors and exit codes for hand-written binaries, the senders
+included; the naming in §6 — gate suffixes, the verb-prefix exceptions (`cli/`, daemons,
+interceptors); "never a flag" and announce's flags; the error registry's adversarial mode; the
+variant registry and engine-written failure text. PyO3 behind the `python` feature for the binary
+readers and writers waits on the binary-tools stop in `REQUIRED_UPGRADES.md`.
+
+**Waiting on the network-proxy agent** (`~/ai/projects/network-proxy/PLAN.md`): everything in
+`bifrost_proxy` and `intercept_replay`.
+
+---
+
 ## 1. Critical — security
 
 - **Session ids from outside are joined into paths unchecked.** No `validate_path_segment` in
@@ -63,6 +103,19 @@ check it in one lookup.
   binaries are copied and before the next category is built. `nornir_deploy --build tools,hooks`
   stopped there on 2026-11-16 and built no hooks; `nornir_deploy --build hooks < /dev/null`
   completed. `[Tyr, run]`
+
+- **The tomlx engine differs from its spec.** `core/format_core/TOMLX_SPEC.md` is the authority;
+  §1–§5 carry every decision. Test-first against the spec in `format_core::tomlx`, one change per
+  commit, `cargo test -p format_core`, then `nornir_deploy --build readers` (every `read_tomlx_*`
+  crate):
+  - enforce `type=` before deriving the schema (§4.6);
+  - accept any comment in unannotated sections, ` // ` notes on headers too (§1.3–1.4);
+  - case-insensitive annotations and references (§1.1);
+  - refuse date-times, NaN and infinities exactly as the TOML reader does (§1.6);
+  - path mode — keep trailing `/`, expand bases only, refuse any base or `expand=` in a later
+    header, error on unresolved home or variables, `config` for a bare filename (§3.2, §3.5);
+  - several annotations per field (§8.2);
+  - the date-time mode, built on `core/time_core` (§2.7).
 
 ## 4. Test integrity
 
