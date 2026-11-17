@@ -1183,6 +1183,42 @@ pub fn check_file_in_no_zone(source: &ParsedSource, _config: &CheckConfig) -> Ve
 }
 
 // -------------------------------------------------------------------------
+// v2_orchestrate_no_strings
+// -------------------------------------------------------------------------
+
+/// Whether a string sits inside another string: a literal in an f-string's
+/// interpolation belongs to the f-string's finding.
+fn has_string_ancestor(node: tree_sitter::Node) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind() == "string" {
+            return true;
+        }
+        current = ancestor.parent();
+    }
+    false
+}
+
+/// Detect a string literal in an orchestrate file.
+///
+/// Orchestrate sequences calls. A file name, a folder name, a schema name or a
+/// message written there is data in the wiring. A docstring is not: it is a
+/// statement of its own. The matrix runs this on orchestrate files only.
+pub fn check_v2_orchestrate_no_strings(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    for literal in find_nodes_by_type(source.tree.root_node(), "string") {
+        let is_docstring = literal.parent().is_some_and(|parent| parent.kind() == "expression_statement");
+        if is_docstring || has_string_ancestor(literal) {
+            continue;
+        }
+        let text = node_text(literal, source.source_bytes);
+        violations.push(violation(node_line(literal), format!("string literal in an orchestrate file: {text}")));
+    }
+    violations
+}
+
+// -------------------------------------------------------------------------
 // no_inline_dispatch
 // -------------------------------------------------------------------------
 
@@ -2075,5 +2111,68 @@ mod tests {
         );
         let violations = check_no_inline_dispatch(&parsed, &default_config());
         assert!(violations.is_empty()); // only catches function-local
+    }
+
+    // -- v2_orchestrate_no_strings --
+
+    const ORCHESTRATE_FILE: &str = "/project/src/pkg/logic/orchestrate/tag_registries/orchestrate.py";
+
+    fn orchestrate_strings(code: &str) -> Vec<Violation> {
+        check_v2_orchestrate_no_strings(&parse_with_path(code, ORCHESTRATE_FILE), &default_config())
+    }
+
+    #[test]
+    fn a_name_written_into_the_wiring_is_caught() {
+        // The specimen: a folder, a key file and a schema named at the call site.
+        let found = orchestrate_strings(
+            "def run(paths: SitePaths) -> Survey:\n    return survey_key_kind(paths.areas.input, \"entities\", \"definition.md\", \"entity_definition\")\n",
+        );
+        let messages: Vec<&str> = found.iter().map(|viol| viol.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec![
+                "string literal in an orchestrate file: \"entities\"",
+                "string literal in an orchestrate file: \"definition.md\"",
+                "string literal in an orchestrate file: \"entity_definition\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_string_compared_or_built_in_the_wiring_is_caught() {
+        for code in [
+            "def run(classes: Classes, name: Name) -> bool:\n    return classes[name] == \"pending\"\n",
+            "def run(count: int) -> str:\n    return f\"{count} read\"\n",
+            "def run(site: Site) -> Outcome:\n    return compile_from(site, kind='')\n",
+        ] {
+            assert_eq!(orchestrate_strings(code).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_literal_inside_an_f_string_is_one_finding() {
+        let found = orchestrate_strings("def run(names: Names) -> str:\n    return f\"{', '.join(names)} read\"\n");
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn docstrings_and_wiring_without_strings_are_ok() {
+        let code = "\"\"\"RELEASE — the author's act.\"\"\"\n\nfrom pkg.logic.pure.plan.simple import decide\n\n\ndef run(site: Site, scope: Scope) -> Report:\n    \"\"\"Survey, decide, report.\"\"\"\n    surveys = survey_input(site.paths)\n    return decide(surveys, scope)\n";
+        assert!(orchestrate_strings(code).is_empty());
+    }
+
+    #[test]
+    fn the_matrix_runs_it_on_orchestrate_files_and_nowhere_else() {
+        let code = b"def run(paths: SitePaths) -> Survey:\n    return survey(paths, \"entities\")\n";
+        let fired_in = |file_path: &str| {
+            crate::run_checks_v2(file_path, code)
+                .expect("the source parses")
+                .iter()
+                .any(|viol| viol.check_name == "v2_orchestrate_no_strings")
+        };
+        assert!(fired_in(ORCHESTRATE_FILE));
+        assert!(!fired_in("/project/src/pkg/logic/orchestrate/tag_registries/dispatch.py"));
+        assert!(!fired_in("/project/src/pkg/logic/impure/survey/simple.py"));
+        assert!(!fired_in("/project/src/pkg/cli.py"));
     }
 }

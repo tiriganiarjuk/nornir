@@ -611,6 +611,12 @@ signal = "A module-level constant is data masquerading as code. In OOP, constant
 direction = "Move the constant to the structure zone. A set of known string values becomes an Enum. A dict lookup table becomes a frozen Pydantic model with typed fields. A numeric constant becomes a field default on a config model. All data is typed and lives in the structure zone, all computation is in logic zones."
 canary = "LLM creates module-level constants to satisfy no-magic-string rules without properly typing the data."
 
+[v2_orchestrate_no_strings]
+detail = "String literal in an orchestrate file. Orchestrate sequences calls: the name of a file, a folder or a schema written here, a word compared against, a message put together, is data sitting in the wiring."
+signal = "The same name written at each call site has no home: nothing lists the names there are, two sites can spell one differently, and a reader of the wiring cannot tell a name the design fixes from one somebody typed. Wiring that holds no data can be read as a sequence and nothing else."
+direction = "Give the value its type in the structure zone — a member of an Enum for a name from a fixed set, a field with a default on a config model for a setting — and pass that. Text meant for a reader is built in the pure zone and handed back as a value."
+canary = "LLM keeps module-level constants out of logic by writing the same literals inline at every call site, so the names of files, folders and schemas are scattered through the wiring where no constant check looks."
+
 [unknown_file_in_zone]
 detail = "This file has a name that doesn't belong in this zone. Each zone has a fixed set of valid filenames that encode the composition level. A file that doesn't match any level name cannot be classified and cannot participate in the import hierarchy."
 signal = "Unrecognized filenames bypass the level system entirely. The file gets no CC bounds, no import rules, no gravity enforcement — it exists outside the architecture while physically sitting inside it."
