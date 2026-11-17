@@ -624,7 +624,8 @@ pub fn check_no_re_sub(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viol
     let bytes = source.source_bytes;
     let mut re_names = module_names(root, bytes, "re");
     re_names.push("re".to_string());
-    let sub_names = bound_names(root, bytes, "re", "sub");
+    let mut sub_names = bound_names(root, bytes, "re", "sub");
+    sub_names.extend(bound_names(root, bytes, "re", "subn"));
     let compile_names = bound_names(root, bytes, "re", "compile");
     let patterns = compiled_pattern_names(root, &re_names, &compile_names, bytes);
     let mut violations = Vec::new();
@@ -687,7 +688,7 @@ fn is_pattern_sub_call(
     let Some(func) = call.child_by_field_name("function").filter(|func| func.kind() == "attribute") else {
         return false;
     };
-    if !func.child_by_field_name("attribute").is_some_and(|attribute| node_text(attribute, source) == "sub") {
+    if !func.child_by_field_name("attribute").is_some_and(|attribute| is_sub_method(node_text(attribute, source))) {
         return false;
     }
     func.child_by_field_name("object").is_some_and(|object| match object.kind() {
@@ -710,10 +711,16 @@ fn is_re_sub_call(call: tree_sitter::Node, module_names: &[String], sub_names: &
             let object = func.child_by_field_name("object");
             let attribute = func.child_by_field_name("attribute");
             object.is_some_and(|object| named(object, module_names))
-                && attribute.is_some_and(|attribute| node_text(attribute, source) == "sub")
+                && attribute.is_some_and(|attribute| is_sub_method(node_text(attribute, source)))
         }
         _ => false,
     }
+}
+
+/// Whether a name is one of the substitution functions of `re`: `sub`, and `subn`,
+/// which takes the same callback and also counts what it replaced.
+fn is_sub_method(name: &str) -> bool {
+    matches!(name, "sub" | "subn")
 }
 
 // -------------------------------------------------------------------------
@@ -1329,6 +1336,26 @@ mod tests {
         ] {
             assert_eq!(check_no_re_sub(&parse(code), &default_config()).len(), 1, "{code}");
         }
+    }
+
+    #[test]
+    fn re_subn_caught_in_every_form() {
+        // The edge: subn takes the same callback as sub and was not looked for.
+        for code in [
+            "import re\nresult, count = re.subn(r'pattern', callback_fn, text)\n",
+            "from re import subn\nresult, count = subn(r'pattern', callback_fn, text)\n",
+            "from re import subn as replace\nresult, count = replace(r'pattern', callback_fn, text)\n",
+            "import re\nPATTERN = re.compile(r'x')\nresult, count = PATTERN.subn(callback_fn, text)\n",
+            "import re\nresult, count = re.compile(r'x').subn(callback_fn, text)\n",
+        ] {
+            assert_eq!(check_no_re_sub(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_subn_that_is_not_re_subn_ok() {
+        let code = "frame = load()\nresult = frame.subn(other)\nresult = subn(first, second)\n";
+        assert!(check_no_re_sub(&parse(code), &default_config()).is_empty());
     }
 
     #[test]

@@ -1308,17 +1308,113 @@ pub fn check_no_isinstance_ladder(source: &ParsedSource, _config: &CheckConfig) 
 /// (function reference), found inside a function body. Attribute access values
 /// (e.g. `model.field`) are data access, not callable dispatch — excluded to
 /// avoid false positives on model_copy update dicts and edge attribute dicts.
+/// The module names a file uses as receivers of a function: `x` of `import a.b as x`,
+/// `a` of `import a.b`, and `simple` of `from pkg.logic.pure.render import simple` —
+/// a name taken from a package that is one of the level files, which are modules.
+fn module_receivers(root: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut receivers = Vec::new();
+    for kind in ["import_statement", "import_from_statement"] {
+        for statement in find_nodes_by_type(root, kind) {
+            let mut cursor = statement.walk();
+            let names: Vec<_> = statement.children_by_field_name("name", &mut cursor).collect();
+            receivers.extend(names.into_iter().filter_map(|imported| imported_module_name(imported, kind, source)));
+        }
+    }
+    receivers
+}
+
+/// The local name one imported name binds, when what it binds is a module.
+fn imported_module_name(imported: tree_sitter::Node, statement_kind: &str, source: &[u8]) -> Option<String> {
+    let (original, local) = match imported.kind() {
+        "dotted_name" => (node_text(imported, source), node_text(imported, source)),
+        "aliased_import" => (node_text(node_field(imported, "name")?, source), node_text(node_field(imported, "alias")?, source)),
+        _ => return None,
+    };
+    let is_module = statement_kind == "import_statement" || LEVEL_MODULE_NAMES.contains(&original);
+    if !is_module {
+        return None;
+    }
+    // `import a.b` binds `a`; `import a.b as x` and `from p import simple` bind their own name.
+    let bound = if original == local { local.split('.').next().unwrap_or(local) } else { local };
+    Some(bound.to_string())
+}
+
+/// The filenames of the levels, by module name.
+const LEVEL_MODULE_NAMES: &[&str] = &["ffi", "primitive", "simple", "dispatch", "composed", "assembled", "orchestrate"];
+
+/// The names a file can hold a function under at module level: the functions it
+/// defines there, and every name a `from ... import` binds. A parameter or a local
+/// of a function is neither, so a dict of them is a record, not a table of functions.
+fn module_function_bindings(root: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut names: Vec<String> = module_function_names(root, source).into_iter().map(str::to_string).collect();
+    for statement in find_nodes_by_type(root, "import_from_statement") {
+        let mut cursor = statement.walk();
+        let imported: Vec<_> = statement.children_by_field_name("name", &mut cursor).collect();
+        names.extend(imported.into_iter().filter_map(|name| bound_local_name(name, source)));
+    }
+    names
+}
+
+/// The module's function names, with the locals of one function body that are
+/// assigned straight from one of them (`first = build_pattern`): a function named
+/// again is still the function.
+fn functions_in_body(body: tree_sitter::Node, module_functions: &[String], source: &[u8]) -> Vec<String> {
+    let mut functions = module_functions.to_vec();
+    for assignment in find_nodes_by_type(body, "assignment") {
+        let (Some(left), Some(right)) = (node_field(assignment, "left"), node_field(assignment, "right")) else {
+            continue;
+        };
+        let holds_function = right.kind() == "identifier"
+            && module_functions.iter().any(|function| function == node_text(right, source));
+        if left.kind() == "identifier" && holds_function {
+            functions.push(node_text(left, source).to_string());
+        }
+    }
+    functions
+}
+
+/// The local name one imported name binds: `b` of `a as b`, `a` of `a`.
+fn bound_local_name(imported: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match imported.kind() {
+        "dotted_name" => Some(node_text(imported, source).to_string()),
+        "aliased_import" => node_field(imported, "alias").map(|alias| node_text(alias, source).to_string()),
+        _ => None,
+    }
+}
+
+/// Whether a dict value is a reference to a function: a name the module holds a
+/// function under, or an attribute reached from a module the file imported.
+fn is_function_reference(value: tree_sitter::Node, functions: &[String], receivers: &[String], source: &[u8]) -> bool {
+    match value.kind() {
+        "identifier" => functions.iter().any(|function| function == node_text(value, source)),
+        "attribute" => {
+            let mut leftmost = value;
+            while leftmost.kind() == "attribute" {
+                match node_field(leftmost, "object") {
+                    Some(object) => leftmost = object,
+                    None => return false,
+                }
+            }
+            leftmost.kind() == "identifier" && receivers.iter().any(|receiver| receiver == node_text(leftmost, source))
+        }
+        _ => false,
+    }
+}
+
 pub fn check_no_inline_dispatch(
     source: &ParsedSource,
     _config: &CheckConfig,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
+    let receivers = module_receivers(source.tree.root_node(), source.source_bytes);
+    let module_functions = module_function_bindings(source.tree.root_node(), source.source_bytes);
 
     for func in find_nodes_by_type(source.tree.root_node(), "function_definition") {
         let body = match node_field(func, "body") {
             Some(b) => b,
             None => continue,
         };
+        let functions = functions_in_body(body, &module_functions, source.source_bytes);
 
         for dict_node in find_nodes_by_type(body, "dictionary") {
             let pairs: Vec<_> = {
@@ -1338,7 +1434,7 @@ pub fn check_no_inline_dispatch(
                 let children: Vec<_> = pair.named_children(&mut cursor).collect();
                 // pair has key + value as named children; value is the last one
                 match children.last() {
-                    Some(value) => value.kind() == "identifier",
+                    Some(value) => is_function_reference(*value, &functions, &receivers, source.source_bytes),
                     None => false,
                 }
             });
@@ -2150,7 +2246,7 @@ mod tests {
     #[test]
     fn inline_dispatch_caught() {
         let parsed = parse(
-            "def compile(root, graph):\n    dispatch = {\n        \"pattern\": build_pattern,\n        \"enum\": build_enum,\n    }\n",
+            "from pkg.logic.pure.build.simple import build_pattern, build_enum\n\ndef compile(root, graph):\n    dispatch = {\n        \"pattern\": build_pattern,\n        \"enum\": build_enum,\n    }\n",
         );
         let violations = check_no_inline_dispatch(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
@@ -2161,7 +2257,7 @@ mod tests {
     #[test]
     fn inline_dispatch_enum_keys_caught() {
         let parsed = parse(
-            "def run(args):\n    handlers = {\n        Mode.generate: run_generate,\n        Mode.check: run_check,\n    }\n",
+            "def run_generate(args):\n    return 1\n\ndef run_check(args):\n    return 2\n\ndef run(args):\n    handlers = {\n        Mode.generate: run_generate,\n        Mode.check: run_check,\n    }\n",
         );
         let violations = check_no_inline_dispatch(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
@@ -2203,6 +2299,52 @@ mod tests {
         );
         let violations = check_no_inline_dispatch(&parsed, &default_config());
         assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn inline_dispatch_of_functions_reached_through_their_module_caught() {
+        // The edge: values written as module.function were taken for model fields.
+        for code in [
+            "import pkg.logic.pure.render.simple as render\ndef run(kind):\n    table = {\"page\": render.page, \"list\": render.listing}\n",
+            "from pkg.logic.pure.render import simple\ndef run(kind):\n    table = {\"page\": simple.page, \"list\": simple.listing}\n",
+            "import handlers\nfrom pkg.logic.pure.run.simple import run_b as second\ndef run(kind):\n    table = {Mode.a: handlers.run_a, Mode.b: second}\n",
+        ] {
+            let violations = check_no_inline_dispatch(&parse(code), &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn functions_copied_into_locals_first_are_still_dispatch() {
+        // The move the narrower rule invites: name each function again as a local.
+        let code = "from pkg.logic.pure.build.simple import build_pattern, build_enum\n\ndef compile(kind):\n    first = build_pattern\n    second = build_enum\n    table = {\"pattern\": first, \"enum\": second}\n";
+        assert_eq!(check_no_inline_dispatch(&parse(code), &default_config()).len(), 1);
+    }
+
+    #[test]
+    fn a_dict_of_parameters_or_locals_is_data_not_dispatch() {
+        // The specimens: every firing of this check in a sweep of ~/ai was one of these —
+        // a record built from the function's own names, taken for a table of functions.
+        for code in [
+            // dragoman compose/readan.py: the parameters handed back as a dict
+            "def text(*, path: str, encoding: str = \"utf-8\") -> dict[str, str]:\n    return {\"path\": path, \"encoding\": encoding}\n",
+            // livrustkammaren functions/impure/filesystem.py: locals gathered into a dict
+            "def hropjan_exists(target):\n    exists = check(target)\n    is_file = probe(target)\n    return {\n        \"exists\": exists,\n        \"is_file\": is_file,\n    }\n",
+            // bragi tools: a loop variable and a local
+            "def collect(entries):\n    phases = []\n    for current_phase in entries:\n        phase_entries = entries[current_phase]\n        phases.append({\"phase\": current_phase, \"events\": phase_entries})\n    return phases\n",
+        ] {
+            assert!(check_no_inline_dispatch(&parse(code), &default_config()).is_empty(), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_dict_of_fields_of_imported_values_ok() {
+        for code in [
+            "from pkg.structure.model.kind import Kind\ndef run():\n    table = {\"a\": Kind.alpha, \"b\": Kind.beta}\n",
+            "import pkg.logic.pure.render.simple as render\ndef run(page):\n    table = {\"title\": page.title, \"body\": render.page}\n",
+        ] {
+            assert!(check_no_inline_dispatch(&parse(code), &default_config()).is_empty(), "{code}");
+        }
     }
 
     #[test]

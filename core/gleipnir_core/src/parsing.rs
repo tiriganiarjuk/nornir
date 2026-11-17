@@ -443,8 +443,12 @@ fn collect_bare_names<'a>(
     if node.kind() == "identifier" {
         let name = node_text(node, source);
         if target_names.contains(&name) {
-            let parent = node.parent();
-            let is_subscripted = parent.is_some_and(|p| {
+            // `typing.Dict[str, int]`: the name is the attribute, and the attribute is subscripted.
+            let named = match node.parent() {
+                Some(parent) if parent.kind() == "attribute" => parent,
+                _ => node,
+            };
+            let is_subscripted = named.parent().is_some_and(|p| {
                 p.kind() == "generic_type" || p.kind() == "subscript"
             });
             if !is_subscripted {

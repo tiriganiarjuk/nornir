@@ -308,13 +308,22 @@ pub fn check_no_parent_imports(source: &ParsedSource, _config: &CheckConfig) -> 
 // no_disallowed_stdlib — global ban on superseded stdlib modules
 // -------------------------------------------------------------------------
 
-/// Stdlib modules that have been replaced by project-standard alternatives.
+/// The replacement for every parser that hands back an untyped dict from JSON text.
+const JSON_REPLACEMENT: &str = "pydantic model_dump_json() / model_validate_json()";
+
+/// Modules that have been replaced by project-standard alternatives: the stdlib
+/// ones, and the third-party JSON parsers that give the same untyped dict as json.
 /// Each entry is (module_name, replacement).
 const DISALLOWED_STDLIB: &[(&str, &str)] = &[
     ("argparse", "typer"),
     ("logging", "loguru"),
     ("unittest", "pytest"),
-    ("json", "pydantic model_dump_json() / model_validate_json()"),
+    ("json", JSON_REPLACEMENT),
+    ("orjson", JSON_REPLACEMENT),
+    ("ujson", JSON_REPLACEMENT),
+    ("simplejson", JSON_REPLACEMENT),
+    ("rapidjson", JSON_REPLACEMENT),
+    ("msgspec", JSON_REPLACEMENT),
 ];
 
 pub fn check_no_disallowed_stdlib(
@@ -827,9 +836,13 @@ pub fn check_v2_import_boundaries(
         return violations;
     }
 
+    let root = source.tree.root_node();
+    let bytes = source.source_bytes;
+    let package = project_package(source.file_path);
+
     // Check import_from_statement nodes
-    for node in find_nodes_by_type(source.tree.root_node(), "import_from_statement") {
-        let (module, level) = extract_module_info(node, source.source_bytes);
+    for node in find_nodes_by_type(root, "import_from_statement") {
+        let (module, level) = extract_module_info(node, bytes);
 
         let dotted = if level > 0 {
             resolve_relative_import(source.file_path, &module, level)
@@ -837,33 +850,74 @@ pub fn check_v2_import_boundaries(
             module.clone()
         };
 
-        if let Some(target_class) = classify::classify_import_path(&dotted) {
-            check_import_legality(
-                source_class,
-                target_class,
-                &dotted,
-                node_line(node),
-                &mut violations,
-            );
-        }
+        judge_import(source_class, &dotted, package, node_line(node), &mut violations);
     }
 
     // Check bare import_statement nodes
-    for node in find_nodes_by_type(source.tree.root_node(), "import_statement") {
-        for dotted in imported_modules(node, source.source_bytes) {
-            if let Some(target_class) = classify::classify_import_path(dotted) {
-                check_import_legality(
-                    source_class,
-                    target_class,
-                    dotted,
-                    node_line(node),
-                    &mut violations,
-                );
-            }
+    for node in find_nodes_by_type(root, "import_statement") {
+        for dotted in imported_modules(node, bytes) {
+            judge_import(source_class, dotted, package, node_line(node), &mut violations);
+        }
+    }
+
+    // Check imports made by a name held in a string
+    let import_module_names = bound_names(root, bytes, "importlib", "import_module");
+    for call in find_nodes_by_type(root, "call") {
+        let Some(func) = call.child_by_field_name("function") else { continue };
+        let named_import = func.kind() == "identifier"
+            && import_module_names.iter().any(|name| name == node_text(func, bytes));
+        if !is_dynamic_import(func, bytes) && !named_import {
+            continue;
+        }
+        match first_positional_arg(call).and_then(|arg| string_literal_text(arg, bytes)) {
+            Some(dotted) => judge_import(source_class, dotted, package, node_line(call), &mut violations),
+            None => violations.push(violation(
+                node_line(call),
+                "dynamic import of a computed name — its target cannot be judged; import it by name at the top of the file".to_string(),
+            )),
         }
     }
 
     violations
+}
+
+/// The entry-point module names: a module of the project with one of these as its last
+/// segment is the entry point.
+const ENTRY_POINT_MODULES: &[&str] = &["cli", "__main__"];
+
+/// The project's own package: the directory right below `src/` in a file's path.
+fn project_package(file_path: &str) -> Option<&str> {
+    let mut segments = file_path.split('/');
+    segments.by_ref().find(|segment| *segment == "src")?;
+    segments.next().filter(|package| !package.is_empty() && !package.ends_with(".py"))
+}
+
+/// Judge one import by its dotted path. A module in a zone is judged by the level and
+/// zone rules; a module of the project's own that lies in no zone is a layout violation,
+/// unless it is the entry point, which is judged at its level; any other module is
+/// another project's, and is not judged here.
+fn judge_import(
+    source: V2Classification,
+    dotted_path: &str,
+    package: Option<&str>,
+    line: usize,
+    violations: &mut Vec<Violation>,
+) {
+    if let Some(target_class) = classify::classify_import_path(dotted_path) {
+        check_import_legality(source, target_class, dotted_path, line, violations);
+        return;
+    }
+    let is_own = package.is_some_and(|package| dotted_path.split('.').next() == Some(package));
+    if !is_own {
+        return;
+    }
+    let last = dotted_path.rsplit('.').next().unwrap_or("");
+    if ENTRY_POINT_MODULES.contains(&last) {
+        let entry_point = V2Classification { level: Level::L8, zone: Zone::Orchestrate };
+        check_import_legality(source, entry_point, dotted_path, line, violations);
+        return;
+    }
+    violations.push(violation(line, format!("import of {dotted_path}, a module of the project in no zone")));
 }
 
 fn check_import_legality(
@@ -1241,7 +1295,7 @@ mod tests {
 
     #[test]
     fn v2_pure_simple_imports_structure_ok() {
-        let code = "from mypackage.structures.models import MyModel\n";
+        let code = "from mypackage.structure.models import MyModel\n";
         let parsed = parse_with_path(code, "/project/src/mypackage/logic/pure/check/simple.py");
         let violations = check_v2_import_boundaries(&parsed, &default_config());
         assert!(violations.is_empty());
@@ -1327,6 +1381,72 @@ mod tests {
     fn v2_file_in_no_zone_is_left_to_its_own_check() {
         let code = "from mypackage.logic.pure.check.simple import run\n";
         let parsed = parse_with_path(code, "/project/src/mypackage/random_file.py");
+        assert!(check_v2_import_boundaries(&parsed, &default_config()).is_empty());
+    }
+
+    // The edge: a module of the project's own that lies in no zone, the entry point
+    // included, was taken for a third-party module and its import was not judged.
+
+    #[test]
+    fn v2_import_of_a_project_module_in_no_zone_is_violation() {
+        for code in [
+            "from mypackage.helpers import tidy\n",
+            "import mypackage.helpers\n",
+            "from mypackage import helpers\n",
+        ] {
+            let parsed = parse_with_path(code, "/project/src/mypackage/logic/impure/survey/simple.py");
+            let violations = check_v2_import_boundaries(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+            assert!(violations[0].message.contains("in no zone"), "{code}: {}", violations[0].message);
+        }
+    }
+
+    #[test]
+    fn v2_import_of_the_entry_point_is_a_level_violation() {
+        for code in ["from mypackage.cli import main\n", "from mypackage.__main__ import main\n"] {
+            let parsed = parse_with_path(code, "/project/src/mypackage/logic/orchestrate/run/orchestrate.py");
+            let violations = check_v2_import_boundaries(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+            assert!(violations[0].message.contains("level violation"), "{code}: {}", violations[0].message);
+        }
+    }
+
+    #[test]
+    fn v2_import_of_another_project_is_not_judged() {
+        let code = "from otherpackage.helpers import tidy\nimport loguru\n";
+        let parsed = parse_with_path(code, "/project/src/mypackage/logic/impure/survey/simple.py");
+        assert!(check_v2_import_boundaries(&parsed, &default_config()).is_empty());
+    }
+
+    // The edge: a module imported by a name held in a string never reached the import rules.
+
+    #[test]
+    fn v2_dynamic_import_is_judged_like_an_import() {
+        for code in [
+            "import importlib\nsibling = importlib.import_module(\"mypackage.logic.impure.other.simple\")\n",
+            "sibling = __import__(\"mypackage.logic.impure.other.simple\")\n",
+            "from importlib import import_module\nsibling = import_module(\"mypackage.logic.transform.reshape.primitive\")\n",
+        ] {
+            let parsed = parse_with_path(code, "/project/src/mypackage/logic/impure/survey/simple.py");
+            let violations = check_v2_import_boundaries(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+            assert!(violations[0].message.contains("violation"), "{code}: {}", violations[0].message);
+        }
+    }
+
+    #[test]
+    fn v2_dynamic_import_of_a_computed_name_is_violation() {
+        let code = "import importlib\nmodule = importlib.import_module(name)\n";
+        let parsed = parse_with_path(code, "/project/src/mypackage/logic/impure/survey/simple.py");
+        let violations = check_v2_import_boundaries(&parsed, &default_config());
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("dynamic import"), "{}", violations[0].message);
+    }
+
+    #[test]
+    fn v2_legal_dynamic_import_ok() {
+        let code = "import importlib\nleaf = importlib.import_module(\"mypackage.logic.pure.path_derive.primitive\")\n";
+        let parsed = parse_with_path(code, "/project/src/mypackage/logic/impure/survey/simple.py");
         assert!(check_v2_import_boundaries(&parsed, &default_config()).is_empty());
     }
 
@@ -1438,6 +1558,22 @@ mod tests {
     fn before_validator_under_another_name_caught() {
         let parsed = parse("from pydantic import BeforeValidator as Coerce\n");
         assert_eq!(check_no_before_validators(&parsed, &default_config()).len(), 1);
+    }
+
+    #[test]
+    fn third_party_json_parsers_caught() {
+        // The edge: the untyped dict json gives is given just the same by its faster cousins.
+        for (name, code) in [
+            ("orjson", "import orjson\n"),
+            ("ujson", "import ujson as fast\n"),
+            ("simplejson", "from simplejson import loads\n"),
+            ("rapidjson", "import rapidjson\n"),
+            ("msgspec", "from msgspec import json\n"),
+        ] {
+            let violations = check_no_disallowed_stdlib(&parse(code), &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+            assert!(violations[0].message.contains(name), "{code}: {}", violations[0].message);
+        }
     }
 
     #[test]

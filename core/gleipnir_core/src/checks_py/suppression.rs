@@ -29,8 +29,9 @@ struct ForbiddenPattern {
 static FORBIDDEN_PATTERNS: LazyLock<Vec<ForbiddenPattern>> = LazyLock::new(|| {
     let build_desc = |prefix: &str, suffix: &str| format!("# {prefix}: {suffix}");
     vec![
+        // Blanket: alone, before another comment, or before words explaining it.
         ForbiddenPattern {
-            regex: Regex::new(r"(?i)#\s*type:\s*ignore(?:\s*$|\s*#)").unwrap(),
+            regex: Regex::new(r"(?i)#\s*type:\s*ignore(?:\s*$|\s*#|\s+[^\s\[])").unwrap(),
             description: build_desc("type", "ignore (blanket suppression)"),
         },
         ForbiddenPattern {
@@ -48,6 +49,23 @@ static FORBIDDEN_PATTERNS: LazyLock<Vec<ForbiddenPattern>> = LazyLock::new(|| {
         ForbiddenPattern {
             regex: Regex::new(r"(?i)#\s*pyright:\s*ignore\s*(?:$|#)").unwrap(),
             description: build_desc("pyright", "ignore (blanket - must specify error code)"),
+        },
+        // File-wide: one comment that turns a tool down for every line of the file.
+        ForbiddenPattern {
+            regex: Regex::new(r"(?i)#\s*(?:ruff|flake8)\s*:\s*noqa").unwrap(),
+            description: "file-wide noqa (ruff/flake8 suppression for the whole file)".to_string(),
+        },
+        ForbiddenPattern {
+            regex: Regex::new(r"(?i)#\s*pyright:\s*basic\b").unwrap(),
+            description: build_desc("pyright", "basic (type checking lowered for the whole file)"),
+        },
+        ForbiddenPattern {
+            regex: Regex::new(r"(?i)#\s*pyright:[^#]*\breport\w+\s*=\s*(?:false|none)\b").unwrap(),
+            description: build_desc("pyright", "report...=false (a rule switched off for the whole file)"),
+        },
+        ForbiddenPattern {
+            regex: Regex::new(r"(?i)#\s*mypy:\s*(?:ignore-errors|disable-error-code)").unwrap(),
+            description: build_desc("mypy", "ignore-errors / disable-error-code (checking switched off for the whole file)"),
         },
     ]
 });
@@ -152,6 +170,44 @@ mod tests {
         let violations = check_no_suppression_comments(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("blanket"));
+    }
+
+    #[test]
+    fn file_wide_suppressions_caught() {
+        // The edge: a comment that turns a tool down for the whole file was not looked for.
+        for comment in [
+            format!("# {}: {}", "ruff", "noqa"),
+            format!("# {}: {}: E501", "ruff", "noqa"),
+            format!("# {}: {}", "flake8", "noqa"),
+            format!("# {}: {}", "pyright", "basic"),
+            format!("# {}: {}=false", "pyright", "reportMissingImports"),
+            format!("# {}: {}=none, reportAny=false", "pyright", "reportUnknownMemberType"),
+            format!("# {}: {}", "mypy", "ignore-errors"),
+            format!("# {}: {}=attr-defined", "mypy", "disable-error-code"),
+        ] {
+            let parsed = parse(&format!("{comment}\nx = 1\n"));
+            assert_eq!(check_no_suppression_comments(&parsed, &default_config()).len(), 1, "{comment}");
+        }
+    }
+
+    #[test]
+    fn type_ignore_followed_by_words_caught() {
+        // The edge: a blanket ignore with an explanation after it slipped both patterns.
+        let comment = format!("x = 1  # {}: {} because the stub is wrong", "type", "ignore");
+        assert_eq!(check_no_suppression_comments(&parse(&comment), &default_config()).len(), 1);
+    }
+
+    #[test]
+    fn directives_that_tighten_or_name_a_tool_are_ok() {
+        for line in [
+            format!("# {}: {}", "pyright", "strict"),
+            format!("# {}: {}=error", "pyright", "reportAny"),
+            "# the ruff docs say noqa is discouraged".to_string(),
+            "# types: ignored here are listed below".to_string(),
+        ] {
+            let parsed = parse(&format!("{line}\nx = 1\n"));
+            assert!(check_no_suppression_comments(&parsed, &default_config()).is_empty(), "{line}");
+        }
     }
 
     #[test]

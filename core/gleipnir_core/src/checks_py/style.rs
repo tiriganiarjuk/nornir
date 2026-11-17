@@ -179,6 +179,12 @@ fn extract_param_name<'a>(param: tree_sitter::Node<'a>, source: &'a [u8]) -> &'a
     }
 }
 
+/// Whether a parameter is `*args` or `**kwargs`, annotated or not.
+fn is_splat_parameter(param: tree_sitter::Node) -> bool {
+    let is_splat = |node: tree_sitter::Node| matches!(node.kind(), "list_splat_pattern" | "dictionary_splat_pattern");
+    is_splat(param) || (param.kind() == "typed_parameter" && param.named_child(0).is_some_and(is_splat))
+}
+
 pub fn check_param_count(source: &ParsedSource, config: &CheckConfig) -> Vec<Violation> {
     let mut violations = Vec::new();
 
@@ -200,7 +206,9 @@ pub fn check_param_count(source: &ParsedSource, config: &CheckConfig) -> Vec<Vio
         let mut count = 0;
         let mut cursor = params_node.walk();
         for param in params_node.named_children(&mut cursor) {
-            if param.kind() == "list_splat_pattern" || param.kind() == "dictionary_splat_pattern" {
+            // *args and **kwargs carry any number of inputs: each is one parameter at least.
+            if is_splat_parameter(param) {
+                count += 1;
                 continue;
             }
             let name = extract_param_name(param, source.source_bytes);
@@ -232,6 +240,7 @@ const NESTING_TYPES: &[&str] = &[
     "with_statement",
     "try_statement",
     "except_clause",
+    "match_statement",
 ];
 
 fn compute_max_nesting(node: tree_sitter::Node, current: usize) -> usize {
@@ -276,6 +285,19 @@ pub fn check_nesting_depth(source: &ParsedSource, config: &CheckConfig) -> Vec<V
 // no_none_returns
 // -------------------------------------------------------------------------
 
+/// Whether a function body hands a value back: a `return` with a value, or a `yield`.
+/// A nested function, class or lambda answers for its own.
+fn hands_back_a_value(node: tree_sitter::Node) -> bool {
+    let mut cursor = node.walk();
+    let found = node.named_children(&mut cursor).any(|child| match child.kind() {
+        "function_definition" | "class_definition" | "lambda" => false,
+        "return_statement" => child.named_child_count() > 0,
+        "yield" => true,
+        _ => hands_back_a_value(child),
+    });
+    found
+}
+
 pub fn check_no_none_returns(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
     let mut violations = Vec::new();
 
@@ -291,7 +313,15 @@ pub fn check_no_none_returns(source: &ParsedSource, _config: &CheckConfig) -> Ve
 
         let return_type = match node_field(func_node, "return_type") {
             Some(n) => n,
-            None => continue,
+            None => {
+                // With no annotation the body is the only witness: a function that hands
+                // back nothing returns None whether or not it says so.
+                let hands_back = node_field(func_node, "body").is_some_and(hands_back_a_value);
+                if !hands_back {
+                    violations.push(violation(node_line(func_node), format!("{func_name}() returns nothing")));
+                }
+                continue;
+            }
         };
 
         let rt_text = node_text(return_type, source.source_bytes).trim();
@@ -872,7 +902,44 @@ mod tests {
         assert!(violations.is_empty()); // 5 params after excluding self
     }
 
+    #[test]
+    fn splat_parameters_are_counted() {
+        // The edge: *args and **kwargs carried any number of inputs and counted as none.
+        for code in [
+            "def foo(a, b, c, d, e, *rest):\n    pass\n",
+            "def foo(a, b, c, d, e, **options):\n    pass\n",
+            "def foo(a, b, c, d, *rest, **options):\n    pass\n",
+            "def foo(a, b, c, d, e, *rest: int):\n    pass\n",
+            "def foo(a, b, c, d, e, **options: str):\n    pass\n",
+        ] {
+            assert_eq!(check_param_count(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn the_keyword_only_marker_is_not_a_parameter() {
+        let parsed = parse("def foo(a, b, *, c, d, e):\n    pass\n");
+        assert!(check_param_count(&parsed, &default_config()).is_empty());
+    }
+
     // -- nesting_depth --
+
+    #[test]
+    fn nesting_through_match_is_counted() {
+        // The edge: a match statement was not a level of nesting.
+        let code = "\
+def foo(value):
+    if value:
+        for item in value:
+            match item:
+                case 1:
+                    if item:
+                        while True:
+                            pass
+";
+        let violations = check_nesting_depth(&parse(code), &default_config());
+        assert_eq!(violations.len(), 1);
+    }
 
     #[test]
     fn shallow_nesting_ok() {
@@ -913,6 +980,31 @@ def foo():
         let parsed = parse("def foo() -> int:\n    return 1\n");
         let violations = check_no_none_returns(&parsed, &default_config());
         assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn a_function_with_no_return_annotation_that_returns_nothing_caught() {
+        // The edge: leaving `-> None` off silenced the check.
+        for code in [
+            "def save(page):\n    write(page)\n",
+            "def save(page):\n    write(page)\n    return\n",
+            "def save(page):\n    def inner():\n        return 1\n    write(page)\n",
+        ] {
+            let violations = check_no_none_returns(&parse(code), &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+            assert!(violations[0].message.contains("save"), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_function_with_no_return_annotation_that_returns_a_value_ok() {
+        for code in [
+            "def total(page):\n    return page.count\n",
+            "def total(page):\n    if page:\n        return 1\n    return 0\n",
+            "def pages(site):\n    yield site.first\n",
+        ] {
+            assert!(check_no_none_returns(&parse(code), &default_config()).is_empty(), "{code}");
+        }
     }
 
     #[test]

@@ -24,11 +24,18 @@ fn violation(line: usize, message: String) -> Violation {
     }
 }
 
+/// The modules `object` is imported from under another name.
+const OBJECT_MODULES: &[&str] = &["builtins"];
+/// The modules `JsonValue` is imported from.
+const JSON_VALUE_MODULES: &[&str] = &["pydantic", "pydantic.types"];
+
 pub fn check_no_object(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let object_names = names_for(root, source.source_bytes, "object", OBJECT_MODULES);
     let mut violations = Vec::new();
 
-    for type_node in find_type_annotations(source.tree.root_node(), source.source_bytes) {
-        if annotation_contains_name(type_node, "object", source.source_bytes) {
+    for type_node in find_type_annotations(root, source.source_bytes) {
+        if contains_any_of(type_node, &object_names, source.source_bytes) {
             let text = node_text(type_node, source.source_bytes);
             violations.push(violation(
                 node_line(type_node),
@@ -40,10 +47,12 @@ pub fn check_no_object(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viol
 }
 
 pub fn check_no_json_value(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let json_value_names = names_for(root, source.source_bytes, "JsonValue", JSON_VALUE_MODULES);
     let mut violations = Vec::new();
 
-    for type_node in find_type_annotations(source.tree.root_node(), source.source_bytes) {
-        if annotation_contains_name(type_node, "JsonValue", source.source_bytes) {
+    for type_node in find_type_annotations(root, source.source_bytes) {
+        if contains_any_of(type_node, &json_value_names, source.source_bytes) {
             let text = node_text(type_node, source.source_bytes);
             violations.push(violation(
                 node_line(type_node),
@@ -81,7 +90,11 @@ pub fn check_no_any_types(source: &ParsedSource, _config: &CheckConfig) -> Vec<V
     violations
 }
 
-static BARE_COLLECTION_NAMES: &[&str] = &["dict", "list", "set", "tuple"];
+/// Collection types that say nothing about their contents when written bare: the
+/// builtins, and the typing and collections.abc names for the same collections.
+static BARE_COLLECTION_NAMES: &[&str] = &[
+    "dict", "list", "set", "frozenset", "tuple", "Dict", "List", "Set", "FrozenSet", "Tuple", "Mapping", "Sequence",
+];
 
 pub fn check_no_bare_collections(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
     let mut violations = Vec::new();
@@ -299,15 +312,32 @@ pub fn check_no_callable_type_aliases(
             .unwrap_or("<unknown>");
 
         if contains_any_of(value_node, &callable_names, source.source_bytes) {
-            violations.push(violation(
-                node_line(node),
-                format!(
-                    "type alias '{alias_name}' wraps Callable — callables must not be passed as arguments"
-                ),
-            ));
+            violations.push(callable_alias_violation(node, alias_name));
+        }
+    }
+    for assignment in module_level_assignments(root) {
+        let (Some(left), Some(right)) = (node_field(assignment, "left"), node_field(assignment, "right")) else {
+            continue;
+        };
+        if left.kind() == "identifier" && contains_any_of(right, &callable_names, source.source_bytes) {
+            violations.push(callable_alias_violation(assignment, node_text(left, source.source_bytes)));
         }
     }
     violations
+}
+
+fn callable_alias_violation(node: tree_sitter::Node, alias_name: &str) -> Violation {
+    violation(
+        node_line(node),
+        format!("type alias '{alias_name}' wraps Callable — callables must not be passed as arguments"),
+    )
+}
+
+/// The assignments a module makes at its top level: `Name = value` and `Name: T = value`.
+fn module_level_assignments(root: tree_sitter::Node) -> Vec<tree_sitter::Node> {
+    let mut cursor = root.walk();
+    let assignments = root.named_children(&mut cursor).filter_map(statement_assignment).collect();
+    assignments
 }
 
 // -------------------------------------------------------------------------
@@ -480,22 +510,53 @@ pub fn check_no_implicit_type_aliases(
 // no_string_annotations — string forward references in type positions
 // -------------------------------------------------------------------------
 
-/// Check if a type annotation node is a string literal (forward reference).
-///
-/// Tree-sitter wraps return types in a `type` node, so we check both
-/// the node itself and its first named child.
-fn is_string_type_node<'a>(node: tree_sitter::Node<'a>, source: &'a [u8]) -> Option<&'a str> {
-    if node.kind() == "string" {
-        return Some(node_text(node, source));
+/// The name a generic is written on: `Literal` of `Literal["a"]`, `Annotated` of
+/// `typing.Annotated[str, ...]`.
+fn generic_base_name<'a>(generic: tree_sitter::Node, source: &'a [u8]) -> Option<&'a str> {
+    let base = match generic.kind() {
+        "generic_type" => generic.named_child(0)?,
+        "subscript" => generic.child_by_field_name("value")?,
+        _ => return None,
+    };
+    match base.kind() {
+        "identifier" => Some(node_text(base, source)),
+        "attribute" => base.child_by_field_name("attribute").map(|segment| node_text(segment, source)),
+        _ => None,
     }
-    // return_type wraps in a "type" node
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if child.kind() == "string" {
-            return Some(node_text(child, source));
+}
+
+/// Whether a string inside an annotation is a value rather than a type: a member of
+/// `Literal[...]`, or a note in `Annotated[T, ...]` after its first argument.
+fn is_value_string(string: tree_sitter::Node, annotation: tree_sitter::Node, source: &[u8]) -> bool {
+    let mut previous = string;
+    let mut current = string.parent();
+    while let Some(node) = current {
+        let (generic, first_argument) = match node.kind() {
+            "type_parameter" => (node.parent().filter(|parent| parent.kind() == "generic_type"), node.named_child(0)),
+            "subscript" => (Some(node), node.child_by_field_name("subscript")),
+            _ => (None, None),
+        };
+        match generic.and_then(|generic| generic_base_name(generic, source)) {
+            Some("Literal") => return true,
+            Some("Annotated") if first_argument.map(|first| first.id()) != Some(previous.id()) => return true,
+            _ => {}
         }
+        if node.id() == annotation.id() {
+            break;
+        }
+        previous = node;
+        current = node.parent();
     }
-    None
+    false
+}
+
+/// The first string anywhere in an annotation that stands for a type (a forward
+/// reference), if there is one.
+fn is_string_type_node<'a>(node: tree_sitter::Node<'a>, source: &'a [u8]) -> Option<&'a str> {
+    find_nodes_by_type(node, "string")
+        .into_iter()
+        .find(|string| !is_value_string(*string, node, source))
+        .map(|string| node_text(string, source))
 }
 
 /// Detect string annotations used as forward references.
@@ -710,8 +771,26 @@ pub fn check_no_base_type_annotations(source: &ParsedSource, _config: &CheckConf
 // no_builtin_records — a record or a table with no model naming it
 // -------------------------------------------------------------------------
 
-/// The base name and the type arguments of a parameterized type:
-/// `dict[str, int]` → `("dict", [str, int])`. None for any other node.
+/// The typing and collections.abc names for the builtin collections, each with the
+/// builtin it stands for: a record spelled `Dict[str, str]` is still `dict[str, str]`.
+const COLLECTION_SPELLINGS: &[(&str, &str)] = &[
+    ("Dict", "dict"),
+    ("Mapping", "dict"),
+    ("List", "list"),
+    ("Sequence", "list"),
+    ("Set", "set"),
+    ("FrozenSet", "frozenset"),
+    ("Tuple", "tuple"),
+];
+
+/// A collection's builtin name, whichever of its names it is written under.
+fn builtin_spelling(name: &str) -> &str {
+    COLLECTION_SPELLINGS.iter().find(|(spelling, _)| *spelling == name).map_or(name, |(_, builtin)| *builtin)
+}
+
+/// The base name and the type arguments of a parameterized type, the base by its
+/// builtin name: `dict[str, int]` and `Dict[str, int]` → `("dict", [str, int])`.
+/// None for any other node.
 fn parameterized_type<'tree, 'text>(
     node: tree_sitter::Node<'tree>,
     source: &'text [u8],
@@ -723,12 +802,12 @@ fn parameterized_type<'tree, 'text>(
             let parameters = node.named_children(&mut cursor).find(|child| child.kind() == "type_parameter")?;
             let mut parameter_cursor = parameters.walk();
             let arguments = parameters.named_children(&mut parameter_cursor).collect();
-            Some((node_text(base, source), arguments))
+            Some((builtin_spelling(node_text(base, source)), arguments))
         }
         "subscript" => {
             let base = node.child_by_field_name("value").filter(|value| value.kind() == "identifier")?;
             let arguments = node.children_by_field_name("subscript", &mut cursor).collect();
-            Some((node_text(base, source), arguments))
+            Some((builtin_spelling(node_text(base, source)), arguments))
         }
         _ => None,
     }
@@ -995,6 +1074,26 @@ mod tests {
         assert!(violations.is_empty());
     }
 
+    #[test]
+    fn json_value_and_object_under_another_name_caught() {
+        // The edge: Any and Callable were followed through a renamed import; these were not.
+        for code in [
+            "from pydantic import JsonValue as Payload\ndef load(data: Payload) -> int:\n    return 1\n",
+            "from pydantic.types import JsonValue as Payload\nrows: list[Payload] = []\n",
+        ] {
+            assert_eq!(check_no_json_value(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+        let code = "from builtins import object as Thing\ndef load(data: Thing) -> int:\n    return 1\n";
+        assert_eq!(check_no_object(&parse(code), &default_config()).len(), 1);
+    }
+
+    #[test]
+    fn a_name_that_is_not_json_value_or_object_is_not_one() {
+        let code = "from mypkg.models import Payload, Thing\ndef load(data: Payload, other: Thing) -> int:\n    return 1\n";
+        assert!(check_no_json_value(&parse(code), &default_config()).is_empty());
+        assert!(check_no_object(&parse(code), &default_config()).is_empty());
+    }
+
     // -- no_any_types --
 
     #[test]
@@ -1057,6 +1156,27 @@ mod tests {
         let parsed = parse("x: dict[str, int]\n");
         let violations = check_no_bare_collections(&parsed, &default_config());
         assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn bare_typing_collections_and_bare_frozenset_caught() {
+        // The edge: only dict, list, set and tuple were looked for.
+        for name in ["frozenset", "Dict", "List", "Set", "FrozenSet", "Tuple", "Mapping", "Sequence"] {
+            let parsed = parse(&format!("def load(items: {name}) -> int:\n    return 1\n"));
+            let violations = check_no_bare_collections(&parsed, &default_config());
+            assert_eq!(violations.len(), 1, "{name}");
+            assert!(violations[0].message.contains(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn subscripted_typing_collections_ok() {
+        let parsed = parse("def load(items: Mapping[str, Page], rows: Sequence[Page]) -> FrozenSet[int]:\n    return frozenset()\n");
+        assert!(check_no_bare_collections(&parsed, &default_config()).is_empty());
+        let parsed = parse("def load(items: typing.Dict[str, int], rows: collections.abc.Sequence[Page]) -> int:\n    return 1\n");
+        assert!(check_no_bare_collections(&parsed, &default_config()).is_empty());
+        let parsed = parse("def load(items: typing.Dict) -> int:\n    return 1\n");
+        assert_eq!(check_no_bare_collections(&parsed, &default_config()).len(), 1);
     }
 
     #[test]
@@ -1231,6 +1351,26 @@ mod tests {
     }
 
     #[test]
+    fn callable_alias_written_as_a_plain_assignment_caught() {
+        // The edge: an alias by assignment, not by `type`, gives the parameter a name
+        // no_callable_params cannot see through.
+        for code in [
+            "from typing import Callable\nStep = Callable[[int], int]\ndef run(step: Step) -> int:\n    return 1\n",
+            "from typing import Callable, TypeAlias\nStep: TypeAlias = Callable[[int], int]\n",
+            "from collections.abc import Callable as Hook\nStep = Hook[[int], int]\n",
+            "import typing\nStep = typing.Callable[[int], int]\n",
+        ] {
+            assert_eq!(check_no_callable_type_aliases(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_callable_built_inside_a_function_is_not_an_alias() {
+        let code = "from typing import Callable\ndef run() -> int:\n    step = Callable[[int], int]\n    return 1\n";
+        assert!(check_no_callable_type_aliases(&parse(code), &default_config()).is_empty());
+    }
+
+    #[test]
     fn callable_return_type_ok() {
         let parsed = parse("def factory() -> Callable[[int], str]:\n    pass\n");
         let violations = check_no_callable_params(&parsed, &default_config());
@@ -1369,6 +1509,30 @@ mod tests {
         let parsed = parse("def process(data: \"InputModel\") -> None:\n    pass\n");
         let violations = check_no_string_annotations(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn a_string_annotation_inside_a_generic_is_caught() {
+        // The edge: only a whole annotation that is a string was looked for.
+        for code in [
+            "def load(pages: list[\"Page\"]) -> int:\n    return 1\n",
+            "def load(page: Page) -> dict[str, \"Report\"]:\n    return {}\n",
+            "def load(page: \"Page\" | None) -> int:\n    return 1\n",
+        ] {
+            let violations = check_no_string_annotations(&parse(code), &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn strings_that_are_values_in_an_annotation_are_ok() {
+        for code in [
+            "def load(kind: Literal[\"entity\", \"source\"]) -> int:\n    return 1\n",
+            "def load(name: Annotated[str, \"a note\"]) -> int:\n    return 1\n",
+            "def load(kind: Literal[\"entity\"] | None) -> int:\n    return 1\n",
+        ] {
+            assert!(check_no_string_annotations(&parse(code), &default_config()).is_empty(), "{code}");
+        }
     }
 
     #[test]
@@ -1548,6 +1712,32 @@ mod tests {
             let found = builtin_records(code);
             assert_eq!(found.len(), 1, "{code}");
             assert_eq!(found[0].message, format!("dict of builtin values: {annotation}"), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_builtin_record_spelled_with_typing_names_is_caught() {
+        // The edge: Dict, Mapping, List and Tuple are the same records under other names.
+        for (finding, code) in [
+            ("dict of builtin values", "counts: Dict[str, int] = {}\n"),
+            ("dict of builtin values", "def render(classes: Mapping[str, str]) -> str:\n    return \"\"\n"),
+            ("dict of builtin values", "carriers: dict[str, List[str]] = {}\n"),
+            ("collection of tuples", "pairs: List[Tuple[str, str]] = []\n"),
+            ("collection of tuples", "pairs: Sequence[tuple[str, int]] = []\n"),
+        ] {
+            let found = builtin_records(code);
+            assert_eq!(found.len(), 1, "{code}");
+            assert!(found[0].message.starts_with(finding), "{code}: {}", found[0].message);
+        }
+        let found = builtin_records("def pick(page: Page) -> Tuple[Page, List[str]]:\n    return page, []\n");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].message.contains("returns a tuple"), "{}", found[0].message);
+    }
+
+    #[test]
+    fn a_typing_table_of_models_is_ok() {
+        for code in ["registry: Mapping[str, TagMeaning] = {}\n", "tags: List[str] = []\n", "sizes: Tuple[int, ...] = ()\n"] {
+            assert!(builtin_records(code).is_empty(), "{code}");
         }
     }
 
