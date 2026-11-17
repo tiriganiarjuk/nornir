@@ -135,45 +135,44 @@ pub fn check_no_bare_except(source: &ParsedSource, _config: &CheckConfig) -> Vec
 // no_broad_exceptions
 // -------------------------------------------------------------------------
 
-fn except_clause_type_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            "identifier" => return Some(node_text(child, source).to_string()),
-            "attribute" => {
-                return child
-                    .child_by_field_name("attribute")
-                    .map(|a| node_text(a, source).to_string())
-            }
-            "as_pattern" => {
-                let mut inner_cursor = child.walk();
-                for inner in child.named_children(&mut inner_cursor) {
-                    if inner.kind() == "identifier" {
-                        return Some(node_text(inner, source).to_string());
-                    }
-                    if inner.kind() == "attribute" {
-                        return inner
-                            .child_by_field_name("attribute")
-                            .map(|a| node_text(a, source).to_string());
-                    }
-                }
-            }
-            _ => {}
+/// The exception types an except clause catches, each by its last name:
+/// `except A`, `except mod.A`, `except (A, B) as caught`.
+fn caught_type_names<'a>(clause: tree_sitter::Node, source: &'a [u8]) -> Vec<&'a str> {
+    let mut cursor = clause.walk();
+    let Some(caught) = clause.named_children(&mut cursor).find(|child| child.kind() != "block") else {
+        return Vec::new();
+    };
+    let caught = match caught.kind() {
+        "as_pattern" => caught.named_child(0).unwrap_or(caught),
+        _ => caught,
+    };
+    let members: Vec<tree_sitter::Node> = match caught.kind() {
+        "tuple" | "parenthesized_expression" => {
+            let mut member_cursor = caught.walk();
+            caught.named_children(&mut member_cursor).collect()
         }
-    }
-    None
+        _ => vec![caught],
+    };
+    members.into_iter().filter_map(|member| last_name(member, source)).collect()
 }
+
+/// A name, or an attribute's last segment.
+fn last_name<'a>(node: tree_sitter::Node, source: &'a [u8]) -> Option<&'a str> {
+    match node.kind() {
+        "identifier" => Some(node_text(node, source)),
+        "attribute" => node.child_by_field_name("attribute").map(|attribute| node_text(attribute, source)),
+        _ => None,
+    }
+}
+
+/// The exception types that catch whatever a program raises.
+const BROAD_EXCEPTIONS: &[&str] = &["Exception", "BaseException"];
 
 pub fn check_no_broad_exceptions(source: &ParsedSource, _config: &CheckConfig) -> Vec<Violation> {
     let mut violations = Vec::new();
     for node in find_nodes_by_type(source.tree.root_node(), "except_clause") {
-        if let Some(name) = except_clause_type_name(node, source.source_bytes) {
-            if name == "Exception" {
-                violations.push(violation(
-                    node_line(node),
-                    "except Exception is too broad".to_string(),
-                ));
-            }
+        if let Some(name) = caught_type_names(node, source.source_bytes).into_iter().find(|name| BROAD_EXCEPTIONS.contains(name)) {
+            violations.push(violation(node_line(node), format!("except {name} is too broad")));
         }
     }
     violations
@@ -370,13 +369,8 @@ pub fn check_init_files_empty(source: &ParsedSource, _config: &CheckConfig) -> V
         return Vec::new();
     }
 
-    // Warning marker constructed at runtime
-    let marker = format!("This {} file is EPHEMERAL:", "__init__.py");
-
     let content = std::str::from_utf8(source.source_bytes).unwrap_or("");
-    let trimmed = content.trim();
-
-    if trimmed.is_empty() || trimmed.contains(&marker) {
+    if content.trim().is_empty() {
         return Vec::new();
     }
 
@@ -631,9 +625,11 @@ pub fn check_no_re_sub(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viol
     let mut re_names = module_names(root, bytes, "re");
     re_names.push("re".to_string());
     let sub_names = bound_names(root, bytes, "re", "sub");
+    let compile_names = bound_names(root, bytes, "re", "compile");
+    let patterns = compiled_pattern_names(root, &re_names, &compile_names, bytes);
     let mut violations = Vec::new();
     for node in find_nodes_by_type(root, "call") {
-        if is_re_sub_call(node, &re_names, &sub_names, bytes) {
+        if is_re_sub_call(node, &re_names, &sub_names, bytes) || is_pattern_sub_call(node, &re_names, &compile_names, &patterns, bytes) {
             violations.push(violation(
                 node_line(node),
                 "re.sub() — use re.finditer() with a loop instead".to_string(),
@@ -641,6 +637,64 @@ pub fn check_no_re_sub(source: &ParsedSource, _config: &CheckConfig) -> Vec<Viol
         }
     }
     violations
+}
+
+/// Whether a call is `re.compile(...)`, through a name the file uses for `re`
+/// or for `compile` imported from it.
+fn is_compile_call(call: tree_sitter::Node, re_names: &[String], compile_names: &[String], source: &[u8]) -> bool {
+    let Some(func) = call.child_by_field_name("function") else {
+        return false;
+    };
+    let named = |node: tree_sitter::Node, names: &[String]| names.iter().any(|name| name == node_text(node, source));
+    match func.kind() {
+        "identifier" => named(func, compile_names),
+        "attribute" => {
+            func.child_by_field_name("object").is_some_and(|object| named(object, re_names))
+                && func.child_by_field_name("attribute").is_some_and(|attribute| node_text(attribute, source) == "compile")
+        }
+        _ => false,
+    }
+}
+
+/// The names a file binds to a compiled pattern: `PATTERN = re.compile(...)`.
+fn compiled_pattern_names(
+    root: tree_sitter::Node,
+    re_names: &[String],
+    compile_names: &[String],
+    source: &[u8],
+) -> Vec<String> {
+    find_nodes_by_type(root, "assignment")
+        .into_iter()
+        .filter(|assignment| {
+            assignment
+                .child_by_field_name("right")
+                .is_some_and(|right| right.kind() == "call" && is_compile_call(right, re_names, compile_names, source))
+        })
+        .filter_map(|assignment| assignment.child_by_field_name("left").filter(|left| left.kind() == "identifier"))
+        .map(|left| node_text(left, source).to_string())
+        .collect()
+}
+
+/// Whether a call is `.sub(...)` on a compiled pattern: one a name holds, or
+/// `re.compile(...)` itself.
+fn is_pattern_sub_call(
+    call: tree_sitter::Node,
+    re_names: &[String],
+    compile_names: &[String],
+    patterns: &[String],
+    source: &[u8],
+) -> bool {
+    let Some(func) = call.child_by_field_name("function").filter(|func| func.kind() == "attribute") else {
+        return false;
+    };
+    if !func.child_by_field_name("attribute").is_some_and(|attribute| node_text(attribute, source) == "sub") {
+        return false;
+    }
+    func.child_by_field_name("object").is_some_and(|object| match object.kind() {
+        "identifier" => patterns.iter().any(|pattern| pattern == node_text(object, source)),
+        "call" => is_compile_call(object, re_names, compile_names, source),
+        _ => false,
+    })
 }
 
 /// Whether a call is `re.sub`: through a name the file uses for `re`, or
@@ -844,6 +898,33 @@ mod tests {
         let parsed = parse("try:\n    pass\nexcept Exception:\n    pass\n");
         let violations = check_no_broad_exceptions(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn broad_exception_in_a_tuple_or_as_base_exception_caught() {
+        // The canary: the broad type hidden beside a specific one, or one level up.
+        for (shown, code) in [
+            ("Exception", "try:\n    pass\nexcept (ValueError, Exception):\n    pass\n"),
+            ("Exception", "try:\n    pass\nexcept (KeyError, builtins.Exception) as caught:\n    pass\n"),
+            ("BaseException", "try:\n    pass\nexcept BaseException:\n    pass\n"),
+            ("Exception", "try:\n    pass\nexcept Exception as caught:\n    pass\n"),
+        ] {
+            let violations = check_no_broad_exceptions(&parse(code), &default_config());
+            assert_eq!(violations.len(), 1, "{code}");
+            assert_eq!(violations[0].message, format!("except {shown} is too broad"));
+        }
+    }
+
+    #[test]
+    fn specific_exceptions_in_a_tuple_ok() {
+        let parsed = parse("try:\n    pass\nexcept (ValueError, KeyError) as caught:\n    pass\n");
+        assert!(check_no_broad_exceptions(&parsed, &default_config()).is_empty());
+    }
+
+    #[test]
+    fn init_with_any_content_caught() {
+        let parsed = parse_init("# This __init__.py file is EPHEMERAL: generated\nfrom foo import bar\n");
+        assert_eq!(check_init_files_empty(&parsed, &default_config()).len(), 1);
     }
 
     #[test]
@@ -1236,6 +1317,24 @@ mod tests {
         ] {
             assert_eq!(check_no_re_sub(&parse(code), &default_config()).len(), 1, "{code}");
         }
+    }
+
+    #[test]
+    fn sub_on_a_compiled_pattern_caught() {
+        // The canary: the callback API reached through the pattern instead of the module.
+        for code in [
+            "import re\nPATTERN = re.compile(r'x')\nresult = PATTERN.sub(callback_fn, text)\n",
+            "import re\nresult = re.compile(r'x').sub(callback_fn, text)\n",
+            "from re import compile as build\nword = build(r'x')\nresult = word.sub(callback_fn, text)\n",
+        ] {
+            assert_eq!(check_no_re_sub(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn sub_on_something_not_compiled_by_re_ok() {
+        let code = "frame = load()\nresult = frame.sub(other)\nPATTERN = build(r'x')\nresult = PATTERN.sub(other)\n";
+        assert!(check_no_re_sub(&parse(code), &default_config()).is_empty());
     }
 
     #[test]

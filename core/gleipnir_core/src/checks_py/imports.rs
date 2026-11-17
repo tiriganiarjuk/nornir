@@ -913,25 +913,75 @@ fn check_import_legality(
 // no_before_validators
 // -------------------------------------------------------------------------
 
+/// The validators that see a value before its field is validated.
+const COERCING_VALIDATORS: &[&str] = &["BeforeValidator", "WrapValidator"];
+/// The decorators whose `mode=` can make a validator run before the field's.
+const MODE_VALIDATORS: &[&str] = &["field_validator", "model_validator", "validator", "root_validator"];
+/// The modes in which a decorated validator sees the raw input.
+const COERCING_MODES: &[&str] = &["before", "wrap"];
+
 pub fn check_no_before_validators(
     source: &ParsedSource,
     _config: &CheckConfig,
 ) -> Vec<Violation> {
+    let root = source.tree.root_node();
+    let bytes = source.source_bytes;
     let mut violations = Vec::new();
 
-    for node in find_nodes_by_type(source.tree.root_node(), "import_from_statement") {
-        let imported = extract_imported_names(node, source.source_bytes);
-        for name in &imported {
-            if *name == "BeforeValidator" {
+    for node in find_nodes_by_type(root, "import_from_statement") {
+        for name in extract_imported_names(node, bytes) {
+            if COERCING_VALIDATORS.contains(&name.as_str()) {
                 violations.push(violation(
                     node_line(node),
-                    "BeforeValidator import — use explicit transforms instead of implicit coercion".to_string(),
+                    format!("{name} import — use explicit transforms instead of implicit coercion"),
                 ));
             }
         }
     }
+    for attribute in find_nodes_by_type(root, "attribute") {
+        let name = attribute.child_by_field_name("attribute").map(|name| node_text(name, bytes)).unwrap_or("");
+        if COERCING_VALIDATORS.contains(&name) {
+            violations.push(violation(
+                node_line(attribute),
+                format!("{} — use explicit transforms instead of implicit coercion", node_text(attribute, bytes)),
+            ));
+        }
+    }
+    for call in find_nodes_by_type(root, "call") {
+        if let Some(found) = coercing_mode_violation(call, bytes) {
+            violations.push(found);
+        }
+    }
 
     violations
+}
+
+/// `@field_validator("x", mode="before")` and its kin: a validator that sees the
+/// raw input before the field is validated.
+fn coercing_mode_violation(call: tree_sitter::Node, source: &[u8]) -> Option<Violation> {
+    let function = call.child_by_field_name("function")?;
+    let decorator = match function.kind() {
+        "identifier" => node_text(function, source),
+        "attribute" => node_text(function.child_by_field_name("attribute")?, source),
+        _ => return None,
+    };
+    if !MODE_VALIDATORS.contains(&decorator) {
+        return None;
+    }
+    let arguments = call.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    let mode = arguments
+        .named_children(&mut cursor)
+        .filter(|argument| argument.kind() == "keyword_argument")
+        .find(|argument| argument.child_by_field_name("name").is_some_and(|name| node_text(name, source) == "mode"))
+        .and_then(|argument| argument.child_by_field_name("value"))
+        .and_then(|value| string_literal_text(value, source))?;
+    COERCING_MODES.contains(&mode).then(|| {
+        violation(
+            node_line(call),
+            format!("{decorator}(mode=\"{mode}\") — use explicit transforms instead of implicit coercion"),
+        )
+    })
 }
 
 // -------------------------------------------------------------------------
@@ -1774,6 +1824,31 @@ mod tests {
         let violations = check_no_before_validators(&parsed, &default_config());
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("BeforeValidator"));
+    }
+
+    #[test]
+    fn coercion_before_validation_caught_in_every_form() {
+        // The canaries: the same implicit coercion, reached without importing the name.
+        for code in [
+            "import pydantic\nName = Annotated[str, pydantic.BeforeValidator(strip)]\n",
+            "from pydantic import WrapValidator\n",
+            "class Page(BaseModel):\n    title: str\n    @field_validator(\"title\", mode=\"before\")\n    @classmethod\n    def strip(cls, value: str) -> str:\n        return value\n",
+            "class Page(BaseModel):\n    @model_validator(mode=\"wrap\")\n    def coerce(cls, data, handler):\n        return handler(data)\n",
+            "class Page(BaseModel):\n    @pydantic.field_validator(\"title\", mode='before')\n    def strip(cls, value):\n        return value\n",
+        ] {
+            assert_eq!(check_no_before_validators(&parse(code), &default_config()).len(), 1, "{code}");
+        }
+    }
+
+    #[test]
+    fn validation_after_the_field_ok() {
+        for code in [
+            "class Page(BaseModel):\n    @field_validator(\"title\", mode=\"after\")\n    def check(cls, value):\n        return value\n",
+            "class Page(BaseModel):\n    @field_validator(\"title\")\n    def check(cls, value):\n        return value\n",
+            "from pydantic import AfterValidator\n",
+        ] {
+            assert!(check_no_before_validators(&parse(code), &default_config()).is_empty(), "{code}");
+        }
     }
 
     #[test]
