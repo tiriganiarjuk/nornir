@@ -46,7 +46,7 @@ fn is_here_string(line: &str, opener_start: usize) -> bool {
     line[..opener_start].ends_with('<') || line[opener_start..].starts_with("<<<")
 }
 
-fn heredoc_bodies_removed(command: &str) -> String {
+pub(crate) fn heredoc_bodies_removed(command: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
     let mut awaited: Vec<String> = Vec::new();
     for line in command.lines() {

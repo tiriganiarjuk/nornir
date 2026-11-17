@@ -9,6 +9,7 @@
 //!            matched against a subject
 //!   flags  — the `--category severity` command line, read strictly
 //!   paths  — lexical path normalisation, applied before any path is matched
+//!   shape  — whether a command is one command, one in a directory, or several
 //!   shell  — a command line read as text: its structure, the paths it names
 //!   speech — what is spoken for a decision
 //!
@@ -18,6 +19,7 @@
 pub mod flags;
 pub mod paths;
 pub mod rules;
+pub mod shape;
 pub mod shell;
 pub mod speech;
 
