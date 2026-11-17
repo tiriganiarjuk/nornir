@@ -288,9 +288,10 @@ pub fn compact_path(path: &str) -> String {
     }
 }
 
+/// The ai home with its closing `/`, as the prefix a path under it starts with.
 fn ai_base_dir() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/ai/")
+    let ai_home = path_core::ai_home_under(std::env::var("HOME").ok().as_deref());
+    format!("{}/", ai_home.display())
 }
 
 #[cfg(test)]

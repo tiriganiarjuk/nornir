@@ -271,7 +271,8 @@ Before writing logic, check if it already exists:
 | Schema constants | `schemas_embedded` |
 | Directory listing: every entry, its kind, size and sha256, unreadable paths reported | `directory_read_io` |
 | Path traversal / filename validation | `path_core::validate_path_segment` |
-| Runtime $HOME/ai resolution | `write_engine::ai_home` |
+| The ai home, `~/ai`, of the running process | `write_engine::ai_home` |
+| Where the ai home is under a home directory — the rule itself, pure | `path_core::ai_home_under` |
 
 ---
 

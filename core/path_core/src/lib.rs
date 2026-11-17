@@ -4,6 +4,10 @@
 //! recursively through `properties`, `allOf`, `oneOf`, `anyOf`, `if/then/else`,
 //! and `items` to find all fields annotated with `format: path_exists_absolute`,
 //! then extracts the corresponding values from the data using JSON pointers.
+//!
+//! Also the two rules about paths every tool shares: what makes a name one
+//! plain path segment (`validate_path_segment`), and where the ai home is under
+//! a home directory (`ai_home_under`).
 
 use error_core::{PathField, SchemaError};
 use serde_json::Value;
@@ -194,9 +198,33 @@ pub fn validate_path_segment(input: &str) -> Result<(), String> {
     Ok(())
 }
 
+// =============================================================================
+// The ai home
+// =============================================================================
+
+/// The ai home, `~/ai`, under the home directory `home`.
+///
+/// `home` is the value of `$HOME` as the caller read it. With none, or an empty
+/// one, the ai home is under `/tmp`.
+pub fn ai_home_under(home: Option<&str>) -> std::path::PathBuf {
+    let home = home.filter(|named| !named.is_empty()).unwrap_or("/tmp");
+    std::path::Path::new(home).join("ai")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ai_home_is_under_the_home_directory() {
+        assert_eq!(ai_home_under(Some("/Users/u")), std::path::Path::new("/Users/u/ai"));
+    }
+
+    #[test]
+    fn without_a_home_directory_the_ai_home_is_under_tmp() {
+        assert_eq!(ai_home_under(None), std::path::Path::new("/tmp/ai"));
+        assert_eq!(ai_home_under(Some("")), std::path::Path::new("/tmp/ai"));
+    }
 
     #[test]
     fn test_simple_flat_path_field() {

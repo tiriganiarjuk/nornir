@@ -33,7 +33,7 @@ Each phase is committed on its own. A finished item leaves this list and its sec
   the feature off for core crates; the `convert_json_to_toml` usage comment; the `announce --help`
   text.
 - **Phase 7 — decomposition** (§7). Workspace identity first — it carries the collision in §3 —
-  then `ai_home`, lock check plus announce spawn, the cc_launch core crate, dep_resolve, the
+  then lock check plus announce spawn, the cc_launch core crate, dep_resolve, the
   smaller ones. Each crate gets its tests as it is taken apart; `workspace_registry` and
   `tool_face_io` get theirs at the start of the phase.
 
@@ -144,7 +144,6 @@ Each of these is one missing primitive, not many local problems.
   fallbacks). One owner for "who and where is this session", including the prompt-file names now
   repeated as literals across five crates. `[A+B]`
 - **Lock check plus announce spawn**, written six times. `[A+B]`
-- **`ai_home`**, three to four homes with different fallbacks. `[A+B]`
 - **cc_launch** — 2287 lines, no core crate: assembly order, descriptor ordering, language
   derivation, the persona-to-grant table. `[A+B]`
 - **dep_resolve** — `dep_resolve_file` and `dep_resolve_function` near-identical;

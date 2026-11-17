@@ -811,6 +811,7 @@ version = "0.1.0"
 dependencies = [
  "datagram_core",
  "libc",
+ "path_core",
  "schemas_embedded",
  "serde",
  "serde_json",
