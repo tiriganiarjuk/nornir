@@ -141,7 +141,9 @@ for every format the crate handles:
 - which values are quoted on write, and in which style (dates, numbers and booleans held as
   strings);
 - how each kind of mapping and list is laid out on write (block or flow);
-- whether `write(read(file)) == file` holds, and for which inputs;
+- whether `write(read(file)) == file` holds, and for which inputs. Measured by the same session:
+  a markdown file with no frontmatter block and one whose block is present and empty both read
+  as `"frontmatter": {}`, and the second comes back from the writer without its two `---` lines;
 - what happens to comments, blank lines and trailing whitespace;
 - a markdown body: what is preserved byte for byte, the line ending, the final newline.
 
@@ -150,14 +152,29 @@ for every format the crate handles:
 - `systems/bifrost.xml` — "dumb plumbing, all logic in taps"; `bifrost_proxy` does the work
   in-process. The descriptor states the design in `~/ai/projects/network-proxy/DESIGN.md`; whether
   `bifrost_proxy` is the drift or the descriptor is, **decide** `[B]`
-- `systems/syn.xml` — "No staleness warning exists" (`:8`): syn reports a sidecar whose source
-  has changed as a fault; a change to check logic is the case nothing warns of. "Syn has no
-  dependency on gleipnir_core" (`:13`): `syn_cli` links it through `syn_runner` and
-  `saga_runner`. "CLI overrides further narrow" (`:6`): in `syn_core::is_visible` a command-line
-  selector is used in place of the warn filter — **decide**. `[Tyr]`
-- `systems/saga.xml` — the sidecar concept (`:6`) names the content hash and none of what reads
-  it: the four sidecar states, `saga <dir>` refreshing what is not current, `saga <dir> --check`.
-  `[Tyr]`
-- `systems/saga.xml`, `systems/guardrail-system.xml` — the rebuild after a check change is given
-  as `nornir_deploy --build tools`; the write hook links gleipnir too, so it is
-  `--build tools,hooks`. `[Tyr]`
+- **The four guardrail descriptors teach a staleness model the tools have left.** They are
+  assembled into Tyr's prompt and read before anything else. What the tools do is in
+  `cli/saga_cli/SAGA_DESIGN.md`, `cli/syn_cli/SYN_DESIGN.md` and
+  `~/ai/control/instructions/GLEIPNIR_OPERATOR_MANUAL.md` §3. `[Tyr]`
+  - `systems/syn.xml` `:8` (`staleness-invisible`): syn "shows stale results silently. No
+    staleness warning exists". A sidecar records the hash of its source and the fingerprint of
+    what examined it; syn reports one that is stale, unreadable, without its source or absent as
+    a fault, which no filter hides.
+  - `systems/saga.xml` `:6`, `:19`: `saga <dir>` "generate[s] missing sidecars". It also refreshes
+    every sidecar that is not current; `saga <dir> --check` lists them and changes nothing.
+  - `systems/gleipnir.xml` `:23`, `systems/saga.xml` `:22`, `systems/syn.xml` `:24`,
+    `systems/guardrail-system.xml` `:23`: the refresh after a check change is given as
+    `saga . --force --kind rs`. After the rebuild, `saga <scope>` refreshes what the change made
+    stale; `--force` is for what the fingerprint does not see.
+  - `systems/saga.xml` `:13`, `systems/guardrail-system.xml` `:23`: the rebuild is given as
+    `nornir_deploy --build tools`. The write hook links gleipnir too: `--build tools,hooks`.
+  - `systems/syn.xml` `:13`: "Syn has no dependency on gleipnir_core". `syn_cli` links it through
+    `syn_runner` and `saga_runner`.
+  - `systems/syn.xml` `:6`: "CLI overrides further narrow". In `syn_core::is_visible` a
+    command-line selector is used in place of the warn filter — **decide**.
+  - `systems/syn.xml`: gate mode denies on any fault (`syn_core::decision_of`); the write hook
+    assesses in-process through `syn_runner`, in report mode.
+- **The Tyr persona and space fragments** describe the hooks as they were: the chaining rule is a
+  command shape (one call is one command), each security hook is pinned by a `fixtures.toml`,
+  and every trigger is a line in `~/ai/logs/<hook>.log.jsonl`. Whether any of that belongs in
+  the fragments, or only in the operator manual, **decide**. `[Tyr]`
