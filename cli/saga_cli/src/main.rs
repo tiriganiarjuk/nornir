@@ -9,6 +9,7 @@
 //!   saga <dir> [--kind py|rs|svelte|all]           — remove orphaned .qa, write every sidecar that is not current
 //!   saga <dir> --force [--kind py|rs|svelte|all]   — remove orphaned .qa, write every sidecar
 //!   saga <dir> --check [--kind py|rs|svelte|all]   — print every source whose sidecar is not current
+//!   saga <dir> --orphans                           — remove only the .qa whose source is gone; examine nothing
 //!   saga <dir> --strip                             — remove ALL .qa sidecars recursively
 //!   echo "content" | saga --stdin <file>           — examine stdin content
 //!
@@ -60,6 +61,10 @@ struct Args {
     #[arg(long)]
     strip: bool,
 
+    /// Remove only the .qa sidecars whose source is gone, and examine nothing (directory only)
+    #[arg(long, conflicts_with_all = ["force", "strip", "check"])]
+    orphans: bool,
+
     /// Write .qa sidecar file (file mode)
     #[arg(long)]
     sidecar: bool,
@@ -92,13 +97,15 @@ fn wanted_kind(kind: Kind) -> Option<SourceKind> {
 }
 
 /// What is wrong with a directory-only flag given with a path that is no directory.
-fn directory_flag_without_directory(strip: bool, check: bool, path_is_directory: bool) -> Option<&'static str> {
+fn directory_flag_without_directory(strip: bool, check: bool, orphans: bool, path_is_directory: bool) -> Option<&'static str> {
     if path_is_directory {
         None
     } else if strip {
         Some("[saga] --strip requires a directory")
     } else if check {
         Some("[saga] --check requires a directory")
+    } else if orphans {
+        Some("[saga] --orphans requires a directory")
     } else {
         None
     }
@@ -222,19 +229,45 @@ fn write_sidecar(file: &Path, project_root: &Path, tally: &mut DirectoryTally) -
     }
 }
 
+/// Remove the sidecars whose source is gone, printing each that could not be removed;
+/// what the sweep did. A tree that cannot be listed whole is a refusal.
+fn sweep_orphans(project_root: &Path) -> Result<saga_runner::OrphanSweep, String> {
+    let orphans = saga_runner::remove_orphaned_sidecars(project_root).map_err(refusal)?;
+    for (sidecar, reason) in &orphans.not_removed {
+        eprintln!("  FAIL {}: orphaned, and could not be removed: {}", sidecar.display(), reason);
+    }
+    Ok(orphans)
+}
+
+/// The summary line of an orphan sweep.
+fn orphan_summary(orphans: &saga_runner::OrphanSweep) -> String {
+    format!(
+        "[saga] removed {} orphaned .qa sidecars, {} could not be removed",
+        orphans.removed.len(),
+        orphans.not_removed.len()
+    )
+}
+
+/// `--orphans`: the sweep alone, after files were deleted. Nothing is examined. A
+/// sidecar that could not be removed fails the run, removing them being its whole job.
+fn run_orphans(search_dir: &Path) -> Result<(), String> {
+    let project_root = search_dir.canonicalize().unwrap_or_else(|_| search_dir.to_path_buf());
+    let orphans = sweep_orphans(&project_root)?;
+    let summary = orphan_summary(&orphans);
+    if orphans.not_removed.is_empty() {
+        eprintln!("{summary}");
+        return Ok(());
+    }
+    Err(summary)
+}
+
 fn run_directory(search_dir: &Path, force: bool, wanted: Option<SourceKind>) -> Result<(), String> {
     let project_root = search_dir.canonicalize().unwrap_or_else(|_| search_dir.to_path_buf());
 
     // Remove orphaned .qa sidecars before generation
-    let orphans = saga_runner::remove_orphaned_sidecars(&project_root).map_err(refusal)?;
-    for (sidecar, reason) in &orphans.not_removed {
-        eprintln!("  FAIL {}: orphaned, and could not be removed: {}", sidecar.display(), reason);
-    }
+    let orphans = sweep_orphans(&project_root)?;
     if !orphans.removed.is_empty() || !orphans.not_removed.is_empty() {
-        eprintln!(
-            "[saga] removed {} orphaned .qa sidecars, {} could not be removed",
-            orphans.removed.len(), orphans.not_removed.len()
-        );
+        eprintln!("{}", orphan_summary(&orphans));
     }
 
     let files = find_source_files(&project_root, wanted)?;
@@ -357,7 +390,7 @@ fn main() {
     let args = Args::parse();
 
     let path_is_directory = args.path.is_dir();
-    if let Some(usage) = directory_flag_without_directory(args.strip, args.check, path_is_directory) {
+    if let Some(usage) = directory_flag_without_directory(args.strip, args.check, args.orphans, path_is_directory) {
         eprintln!("{usage}");
         process::exit(2);
     }
@@ -374,6 +407,8 @@ fn main() {
 
     let result = if args.strip {
         strip_sidecars(&args.path)
+    } else if args.orphans {
+        run_orphans(&args.path)
     } else if args.check {
         run_check(&args.path, wanted_kind(args.kind))
     } else if path_is_directory {
@@ -482,15 +517,55 @@ mod tests {
 
     #[test]
     fn a_directory_only_flag_on_a_file_is_wrong_arguments() {
-        assert!(directory_flag_without_directory(true, false, false).is_some_and(|usage| usage.contains("--strip")));
-        assert!(directory_flag_without_directory(false, true, false).is_some_and(|usage| usage.contains("--check")));
+        assert!(directory_flag_without_directory(true, false, false, false).is_some_and(|usage| usage.contains("--strip")));
+        assert!(directory_flag_without_directory(false, true, false, false).is_some_and(|usage| usage.contains("--check")));
+        assert!(directory_flag_without_directory(false, false, true, false).is_some_and(|usage| usage.contains("--orphans")));
     }
 
     #[test]
     fn a_directory_only_flag_on_a_directory_and_no_flag_on_a_file_are_accepted() {
-        assert_eq!(directory_flag_without_directory(true, false, true), None);
-        assert_eq!(directory_flag_without_directory(false, true, true), None);
-        assert_eq!(directory_flag_without_directory(false, false, false), None);
+        assert_eq!(directory_flag_without_directory(true, false, false, true), None);
+        assert_eq!(directory_flag_without_directory(false, true, false, true), None);
+        assert_eq!(directory_flag_without_directory(false, false, true, true), None);
+        assert_eq!(directory_flag_without_directory(false, false, false, false), None);
+    }
+
+    #[test]
+    fn orphans_is_refused_together_with_any_other_directory_mode() {
+        for other in ["--force", "--strip", "--check"] {
+            assert!(Args::try_parse_from(["saga", ".", "--orphans", other]).is_err(), "{other}");
+        }
+    }
+
+    #[test]
+    fn orphans_alone_is_accepted() {
+        assert!(Args::try_parse_from(["saga", ".", "--orphans"]).is_ok_and(|args| args.orphans));
+    }
+
+    /// A tree with a source and its sidecar, a source with none, and a sidecar whose source is gone.
+    fn tree_after_a_delete(test_name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("saga_cli_{test_name}_{}", process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        for file in ["src/kept.py", "src/.kept.py.qa", "src/new.py", "src/.deleted.py.qa"] {
+            std::fs::write(dir.join(file), "").unwrap();
+        }
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn orphans_removes_the_sidecar_of_a_deleted_source_and_nothing_else() {
+        let dir = tree_after_a_delete("orphans_only");
+        let outcome = run_orphans(&dir);
+        let deleted_gone = !dir.join("src/.deleted.py.qa").exists();
+        let kept_stays = dir.join("src/.kept.py.qa").exists();
+        let new_untouched = !dir.join("src/.new.py.qa").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert!(deleted_gone, "the orphan is removed");
+        assert!(kept_stays, "a sidecar whose source is there is left");
+        assert!(new_untouched, "nothing is examined, so no sidecar is written");
     }
 
     #[test]

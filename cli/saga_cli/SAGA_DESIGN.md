@@ -139,6 +139,15 @@ The summary line on stderr counts generated, refreshed, current, failed
 (a sidecar that could not be written) and not fully examined (a report with a
 fault).
 
+### `--orphans`
+
+`saga <dir> --orphans` does step 1 of directory mode alone: it removes each
+sidecar whose source the listing shows absent, and examines nothing. A file
+deleted outside the write hook leaves its sidecar behind, and this clears it
+without re-examining the tree. A tree that cannot be listed whole is a failure,
+and nothing is removed; a sidecar that could not be removed fails the run. It is
+refused together with `--force`, `--check` and `--strip`.
+
 ### `--check`
 
 `saga <dir> --check` reports and changes nothing on disk: no sidecar is
