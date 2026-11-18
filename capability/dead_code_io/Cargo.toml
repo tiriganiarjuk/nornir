@@ -1,0 +1,13 @@
+[package]
+name = "dead_code_io"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+toml = { workspace = true }
+dep_resolve_core = { path = "../../core/dep_resolve_core" }
+failure_mode_core = { path = "../../core/failure_mode_core" }
+saga_runner = { path = "../saga_runner" }

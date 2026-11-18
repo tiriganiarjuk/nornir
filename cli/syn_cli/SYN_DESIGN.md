@@ -10,7 +10,8 @@ issue. Syn applies policy: which issues are shown, and which ones a gate denies.
 saga (truth)  →  .qa sidecars  →  syn (policy)  →  report + decision
 ```
 
-Syn reads reports. It runs no instrument and writes no sidecar.
+Syn reads reports, and writes no sidecar. On a directory given on the command
+line it runs one examination of its own, the dead-code banner (below).
 
 `syn --help` is the flag reference. This document is the model behind the flags.
 
@@ -177,6 +178,17 @@ sends nothing in any case. The datagram is fire-and-forget: it costs nothing
 when Hlidskjalf is not listening.
 
 ---
+
+## The dead-code banner
+
+When syn is run on a directory — not on a file, not with `--stdin` — it also
+prints, on stderr, the dead code of every Python project at or under it: one
+line per top-level function or class nothing reaches, `path:line  name  (kind)`,
+ready to hand to whoever wrote it. Nothing is printed when nothing is dead. It is
+`dead_code_find <dir>`'s report, from the same crate, `capability/dead_code_io`;
+what counts as alive is `core/dep_resolve_core/src/liveness.rs`. It is computed
+fresh on each such run and recorded nowhere, and it does not touch the decision
+or the exit code. The write hook never reaches it.
 
 ## The write hook
 

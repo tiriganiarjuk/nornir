@@ -116,6 +116,8 @@ members = [
     "core/dep_resolve_core",
     "cli/dep_resolve_file",
     "cli/dep_resolve_function",
+    "capability/dead_code_io",
+    "cli/dead_code_find",
     "core/announce_core",
     "core/time_core",
     "core/stamp_core",

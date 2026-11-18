@@ -1,0 +1,12 @@
+[package]
+name = "dead_code_find"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dead_code_find"
+path = "src/main.rs"
+
+[dependencies]
+dead_code_io = { path = "../../capability/dead_code_io" }
+clap = { workspace = true }

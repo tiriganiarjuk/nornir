@@ -16,6 +16,7 @@ use std::fmt;
 
 pub mod digest;
 pub mod extract;
+pub mod liveness;
 pub mod order;
 pub mod references;
 pub mod render;

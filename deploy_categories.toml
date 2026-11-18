@@ -64,6 +64,7 @@ crates = [
     "cc_launch",
     "dep_resolve_file",
     "dep_resolve_function",
+    "dead_code_find",
 ]
 verify = "exit_codes"
 valid_exit_codes = [0, 1, 2]

@@ -818,6 +818,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dead_code_find"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dead_code_io",
+]
+
+[[package]]
+name = "dead_code_io"
+version = "0.1.0"
+dependencies = [
+ "dep_resolve_core",
+ "failure_mode_core",
+ "saga_runner",
+ "toml",
+]
+
+[[package]]
 name = "default_apply_core"
 version = "0.1.0"
 dependencies = [
@@ -4322,6 +4340,7 @@ name = "syn_cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dead_code_io",
  "failure_mode_core",
  "report_render_core",
  "syn_core",

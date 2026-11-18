@@ -13,3 +13,4 @@ syn_core = { path = "../../core/syn_core" }
 syn_runner = { path = "../../capability/syn_runner" }
 report_render_core = { path = "../../core/report_render_core" }
 failure_mode_core = { path = "../../core/failure_mode_core" }
+dead_code_io = { path = "../../capability/dead_code_io" }

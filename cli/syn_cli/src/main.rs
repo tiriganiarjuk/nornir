@@ -232,6 +232,27 @@ fn exit_code_of(decision: &str) -> i32 {
     }
 }
 
+/// The directory a dead-code banner is written for: the path syn was given, when it
+/// is a directory and reports are not read from stdin. A file, stdin and the write
+/// hook never reach here.
+fn dead_code_directory(args: &Args) -> Option<&Path> {
+    if args.stdin {
+        return None;
+    }
+    let path = args.path.as_deref().unwrap_or_else(|| Path::new("."));
+    path.is_dir().then_some(path)
+}
+
+/// The dead code of every project under the directory, as `dead_code_find` prints
+/// it; nothing when there is none. An examination that fails says so in one line
+/// and does not fail syn.
+fn dead_code_banner(directory: &Path) -> String {
+    match dead_code_io::find_dead_code(directory) {
+        Ok(projects) => dead_code_io::render_dead_code(&projects, directory),
+        Err(failure) => format!("[dead code] not examined: {failure}\n"),
+    }
+}
+
 fn run(args: &Args) -> Result<i32, Failure> {
     let policy_directory = match &args.project_dir {
         Some(stated) => stated.clone(),
@@ -255,6 +276,10 @@ fn run(args: &Args) -> Result<i32, Failure> {
     let output = format_output(&result.warn_groups, faults, args.output);
     if !output.is_empty() {
         println!("{}", output);
+    }
+
+    if let Some(directory) = dead_code_directory(args) {
+        eprint!("{}", dead_code_banner(directory));
     }
 
     if args.mode == Mode::Gate {
