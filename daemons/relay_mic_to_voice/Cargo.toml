@@ -3,7 +3,8 @@ name = "relay_mic_to_voice"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+# macOS only: every dependency belongs to the implementation in macos.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
 write_engine = { path = "../../capability/write_engine" }
 keystroke_io = { path = "../../capability/keystroke_io" }
 coreaudio-sys = { workspace = true }
