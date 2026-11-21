@@ -16,9 +16,9 @@ You are an LLM. You lose context silently. Right now, you may be in **pattern-ma
 
 ### How to actually engage with this document
 
-**Look for things that CONTRADICT what you're about to do.** If you read through this document and everything matches what you already "know," you are skimming — seeing what confirms your current model and filtering out what doesn't. This workspace's design documents contain specifics that will surprise you. If you found zero surprises, you didn't read carefully enough.
+**Look for things that CONTRADICT what you're about to do.** If you read through this document and everything matches what you already "know," you are skimming — seeing what confirms your current model and filtering out what doesn't.
 
-**State what you recover, not that you understand.** Don't say "now I'm aligned with the design." Say: "[specific thing] works this way, not the way I was about to implement it. [Other specific thing] is a decision that's already been made — I was treating it as open." Specifics prove engagement. "I understand" proves nothing.
+**Let it change the work.** What you recover shows in what you do next, not in what you say about it. Don't announce that you are aligned; change course where the sources contradict you.
 
 **Do not defend your implementation.** If you catch yourself explaining why what you built is fine — stop. The user already knows it isn't. That's why you're here. Read the sources, find the gap, fix it.
 
@@ -93,7 +93,7 @@ _Fill in: Decisions that LLMs violate most often in this workspace._
 
 **After a long coding session:** Re-read the Critical Decisions list. Verify you haven't drifted from any of them.
 
-**When the user seems frustrated:** Something you're treating as new information was probably already decided. Check this document.
+**When the user keeps referring to things you don't know:** That knowledge is in the workspace, and you haven't found it. Find it through the Document Map above before going on. If you can't, say what you are missing and ask where it lives.
 
 **When you're about to implement:** Find the relevant section. Read the linked source documents. Don't implement from memory — implement from sources.
 

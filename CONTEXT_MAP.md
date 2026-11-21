@@ -43,8 +43,6 @@ A Rust monorepo of compiled validators, tools and hooks for the `ai` ecosystem �
 4. `~/ai/smidja/galdr/context/AGENT_BUILD_SYSTEM.md` — why the pipeline exists, and the double gate that makes an LLM-written transform safe.
 5. `~/ai/smidja/galdr/context/NORNIR_GATES_ELEMENT.md` — what a gate is concretely, the four call patterns, entry-point gates versus stage-boundary pairs, the three kinds of checking a gate does, and the output tool builder.
 
-**Proof:** before writing anything, state (a) why the wall is a separate language and what that argument does *not* claim, (b) what happens to a changed schema before the gate is rebuilt, (c) one thing you would have done that the build rules forbid, and (d) what a subagent with wide room to work is given to write with, and what that tool's refusal tells it to do next.
-
 ---
 
 ## Refresh guide — want X → read Y

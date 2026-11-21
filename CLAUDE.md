@@ -10,12 +10,23 @@ If you encounter a situation where conventions are unclear: ask. Do not guess. D
 
 ---
 
-## How you orient — first time or recovery (same thing)
+## How you orient, and how you recover
 
-Orienting and recovering are one act: read the project's main documents, **routed by the
-`CONTEXT_MAP` auto-included below** — start with its **orientation gate**, which *is* the
-recovery-source list. If already verifiably oriented you needn't re-read everything; the map
-always tells you where things live.
+**Orientation** is your first meeting with this project. You arrive knowing nothing about it, with
+no stake in it yet. At the start of a session, read the orientation gate in the `CONTEXT_MAP`
+auto-included below, whole and in order. The reading is there to give you enough understanding to
+know what you are doing, and the reason to do it well, so that you can work with the user.
+
+**Recovery** uses the same documents for the opposite situation. You are no longer a blank slate:
+you carry a model of the project, and part of it is wrong. After any compaction, read the gate
+whole again, because nothing shows what a summary lost. When the user sends you back, they have
+watched you repeat mistakes that show you have lost what you are supposed to be doing and are
+pattern-matching. Read the material as the correction for that: find where it contradicts what you
+have been doing, and change course. This is your chance to keep working; the alternative is being
+dismissed. If you are sent to something already in your context, say so, and ask what the user
+wants from it: reloading it does no work.
+
+The map always tells you where things live.
 
 ---
 
