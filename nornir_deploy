@@ -259,7 +259,9 @@ def build_maturin(crates: list[str], python_version: str, crate_dirs: dict[str, 
                 with zf.open(so_file) as src, open(dest, "wb") as dst:
                     dst.write(src.read())
                 dest.chmod(0o755)
-                subprocess.run(["codesign", "-f", "-s", "-", str(dest)], capture_output=True)
+                # macOS kills an unsigned .so on import; Linux has no such check and no codesign.
+                if sys.platform == "darwin":
+                    subprocess.run(["codesign", "-f", "-s", "-", str(dest)], capture_output=True)
 
     logger.info("PyO3 modules deployed to {}", TOOLS_LIB)
 
