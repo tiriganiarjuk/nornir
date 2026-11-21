@@ -1,2 +1,4 @@
+# Relative to this repo: ~/ai/.derived is a link to $DERIVED_ROOT on each
+# machine (the T7 on the Air), so the build folder is never under the repo.
 [build]
-target-dir = "/Volumes/External/Derived/cargo-target/nornir"
+target-dir = "../../.derived/cargo-target/nornir"
